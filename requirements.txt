@@ -1,4 +1,7 @@
 fastapi
-uvicorn[standard]
+uvicorn
 websockets
+google-cloud-aiplatform
 google-generativeai
+pip uninstall google-generativeai
+pip install google-genai

@@ -13,8 +13,8 @@ import uvicorn
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("LocusIA")
 
-GEMINI_API_KEY = "AIzaSyCxyKbcAT6eYLzj84zP850xa37DxzT76ug"
-MAPS_API_KEY = "AIzaSyCKhECP7BFg34Kw6lkN96jcbcXrJqTDH5U"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+MAPS_API_KEY = os.environ.get("MAPS_API_KEY")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 

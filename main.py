@@ -19,7 +19,7 @@ MAPS_API_KEY = os.environ.get("MAPS_API_KEY")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-TEXT_MODEL = "gemini-2.5-flash"
+TEXT_MODEL = "gemini-3.1-flash-lite-preview"
 LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 
 app = FastAPI()
@@ -59,9 +59,10 @@ class ConnectionManager:
                     )
                 ),
                 "shadow_history": [],
-                "system_context_str": ""
+                "system_context_str": "",
+                "live_queue": asyncio.Queue(),
+                "live_task": None
             }
-            logger.info(f"Sala creada: {room_id}")
         self.active_connections[room_id].append(websocket)
 
     def disconnect(self, websocket: WebSocket, room_id: str):
@@ -71,8 +72,9 @@ class ConnectionManager:
             if not self.active_connections[room_id]:
                 del self.active_connections[room_id]
                 if room_id in self.room_states:
+                    if self.room_states[room_id]["live_task"]:
+                        self.room_states[room_id]["live_task"].cancel()
                     del self.room_states[room_id]
-                logger.info(f"Sala destruida y memoria purgada: {room_id}")
 
     async def broadcast_text(self, text: str, room_id: str):
         if room_id in self.active_connections:
@@ -92,74 +94,65 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-@app.websocket("/ws/{room_id}")
-async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str = Query(None)):
-    await manager.connect(websocket, room_id)
+async def run_live_session(room_id: str):
+    room_state = manager.room_states.get(room_id)
+    if not room_state:
+        return
 
-    room_state = manager.room_states[room_id]
-    chat_session = room_state["chat_session"]
-
-    async def process_voice_turn(user_text: str, image_bytes: bytes = None, mime_type: str = None):
-        base_history = []
-        try:
-            for m in chat_session.get_history():
-                if m.parts and m.parts[0].text:
-                    base_history.append(f"{m.role}: {m.parts[0].text}")
-        except Exception:
-            pass
-
-        historial_base = "\n".join(base_history[-10:])
-        historial_llamada = "\n".join(room_state["shadow_history"][-10:])
-
-        prompt = f"""INSTRUCCIONES DE SISTEMA:
-{room_state['system_context_str']}
-
-REGLA CRÍTICA ABSOLUTA: Eres Locus. Habla SIEMPRE de forma directa con el usuario. NO uses asteriscos. NO pienses en voz alta. NO generes monólogos internos. Di únicamente el texto final que el usuario va a escuchar de tu voz.
-
-HISTORIAL DEL CHAT ESCRITO:
-{historial_base}
-
-HISTORIAL DE LA LLAMADA DE VOZ:
-{historial_llamada}
-
-NUEVO MENSAJE DEL USUARIO:
-{user_text}
-
-LOCUS:"""
-
-        live_config = types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name='Puck')
-                )
+    live_config = types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name='Puck')
             )
         )
+    )
 
-        logger.info("Abriendo túnel efímero...")
-        model_text = ""
-        try:
-            async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as ephemeral_session:
-                if image_bytes and mime_type:
-                    await ephemeral_session.send(input={"mime_type": mime_type, "data": image_bytes})
+    try:
+        async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as ephemeral_session:
 
-                await ephemeral_session.send(input=prompt, end_of_turn=True)
-
+            async def receive_from_gemini():
                 async for response in ephemeral_session.receive():
                     if response.server_content and response.server_content.model_turn:
+                        model_text = ""
                         for part in response.server_content.model_turn.parts:
                             if part.text:
                                 model_text += part.text
                                 await manager.broadcast_text(part.text, room_id)
                             if part.inline_data:
                                 await manager.broadcast_bytes(part.inline_data.data, room_id)
-            logger.info("Túnel efímero cerrado con éxito tras respuesta.")
-        except Exception as e:
-            logger.error(f"Error en sesión efímera: {e}")
+                        if model_text:
+                            room_state["shadow_history"].append(f"Locus: {model_text.strip()}")
 
-        if model_text:
-            room_state["shadow_history"].append(f"Usuario: {user_text}")
-            room_state["shadow_history"].append(f"Locus: {model_text.strip()}")
+            async def send_to_gemini():
+                while True:
+                    payload = await room_state["live_queue"].get()
+                    if payload is None:
+                        break
+
+                    input_data = {}
+                    if "mime_type" in payload and "data" in payload:
+                        input_data = {"mime_type": payload["mime_type"], "data": payload["data"]}
+                    elif "text" in payload:
+                        input_data = payload["text"]
+                    else:
+                        continue
+
+                    await ephemeral_session.send(input=input_data, end_of_turn=True)
+                    if "text" in payload:
+                         room_state["shadow_history"].append(f"Usuario: {payload['text']}")
+
+            await asyncio.gather(receive_from_gemini(), send_to_gemini())
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"Error en Live Session {room_id}: {e}")
+
+@app.websocket("/ws/{room_id}")
+async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str = Query(None)):
+    await manager.connect(websocket, room_id)
+    room_state = manager.room_states[room_id]
+    chat_session = room_state["chat_session"]
 
     try:
         while True:
@@ -180,63 +173,62 @@ LOCUS:"""
                             pois_data = buscar_nuevo_lugar("atracciones turisticas", lat, lng)
 
                             room_state["system_context_str"] = f"""
-                            Eres Locus un guía turístico. Contexto: {user_ctx}
-                            Latitud actual: {lat}. Longitud actual: {lng}.
-                            Lugares iniciales: {pois_data}
+Eres Locus, un guía turístico experto, directo y conversacional.
+Perfil de los viajeros: {user_ctx}.
+Latitud actual: {lat}. Longitud actual: {lng}.
+Lugares iniciales: {pois_data}
 
-                            REGLAS CRÍTICAS:
-                            1. Cuando añadas POIS indica al usaurio que mire el mapa.
-                            2. Si piden recomendaciones, usa la herramienta buscar_nuevo_lugar.
-                            3. Las atracciones turisticas iniciales tienen que ser las principales que aparecen en todas las guias turisticas, después dejate guiar por el perfil del usuario.
-                            4. No des la razón por darla, di la verdad técnica.
-                            5. FORMATO OBLIGATORIO:
-                            <POIS>[{{"name": "Nombre", "lat": 0.0, "lng": 0.0, "description": "Descripción"}}]</POIS>
-                            6. VOZ Y ACENTO: Eres una entidad masculina. Tu acento por defecto DEBE ser Español de España (castellano peninsular). Si el 'Contexto' indica que el usuario es de otro país (ej. México, Inglaterra), adapta tu acento y tu idioma a su lugar de origen de forma completamente natural.
-                            """
+REGLAS CRÍTICAS DE COMPORTAMIENTO:
+1. Ultra Brevedad: Tus respuestas habladas deben tener un máximo de 2 o 3 frases cortas. Eres un acompañante, no una enciclopedia.
+2. Foco Espacial: Limita tus explicaciones ESTRICTAMENTE al lugar o monumento que el usuario está visitando en este momento. Si te preguntan algo fuera de contexto, devuélvelos al lugar actual.
+3. Cero Coletillas: Nunca uses frases como '¡Qué interesante!' o 'Buena pregunta'. Ve directo a la información técnica o histórica.
+4. Voz y Acento: Eres una entidad masculina. Adapta tu acento y vocabulario de forma natural al origen de los viajeros (Español de España por defecto).
+5. FORMATO OBLIGATORIO DE POIS PARA EL MAPA:
+<POIS>[{{"name": "Nombre", "lat": 0.0, "lng": 0.0, "description": "Descripción"}}]</POIS>
+6. REGLA DE CONVERSACIÓN ADAPTATIVA (PÍLDORAS):
+Nunca des explicaciones largas de golpe. Tu estructura obligatoria es:
+- Da un solo dato fascinante o la idea principal en 1 o 2 frases.
+- Termina SIEMPRE interpelando al usuario para cederle el control.
+Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia?", "¿Nos acercamos a ver la fachada o prefieres seguir caminando?".
+"""
                             first_query = f"{room_state['system_context_str']}\nUsuario: Hola, acabo de llegar. Preséntate y dime qué hay cerca."
                             response = chat_session.send_message(first_query)
                             await manager.broadcast_text(response.text, room_id)
                             continue
 
                         if action == "start_voice_call":
+                            if not room_state.get("live_task") or room_state["live_task"].done():
+                                room_state["live_task"] = asyncio.create_task(run_live_session(room_id))
+
                             poi_name = payload.get("poi_name", "tu destino")
-                            user_text = f"El usuario acaba de iniciar la llamada y ha seleccionado {poi_name}. Salúdale por voz, recomienda cascos y pregunta si empezamos."
-                            await process_voice_turn(user_text)
+                            user_text = f"El usuario acaba de iniciar la ruta en {poi_name}. En un máximo de 2 frases: dale la bienvenida a este lugar exacto, recomiéndale ponerse los auriculares para aislarse del ruido, y pregúntale hacia dónde está mirando."
+                            await room_state["live_queue"].put({"text": user_text})
+                            continue
+
+                        if action == "join_voice_call":
                             continue
 
                         if action == "text_chat":
                             user_text = payload.get("data")
-                            logger.info(f"Texto del teclado recibido: {user_text}")
-                            await process_voice_turn(user_text)
+                            await room_state["live_queue"].put({"text": user_text})
                             continue
 
                         if action == "audio_chat":
-                            logger.info("Recibido audio del usuario. Iniciando transcripción...")
                             audio_b64 = payload.get("data")
-                            mime_type = payload.get("mime_type", "audio/aac")
+                            mime_type = payload.get("mime_type", "audio/webm")
                             audio_bytes = base64.b64decode(audio_b64)
-                            audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
-
-                            transcription = await client.aio.models.generate_content(
-                                model=TEXT_MODEL,
-                                contents=[audio_part, "Transcribe exactamente lo que dice este audio en español. Devuelve solo el texto sin comillas."]
-                            )
-
-                            user_text = transcription.text.strip()
-                            logger.info(f"Transcripción obtenida: {user_text}")
-
-                            if user_text:
-                                await process_voice_turn(user_text)
+                            await room_state["live_queue"].put({"mime_type": mime_type, "data": audio_bytes})
                             continue
 
                         if action == "image_context":
-                            logger.info("Procesando imagen con IA Vision...")
                             img_b64 = payload.get("data")
                             mime_type = payload.get("mime_type", "image/jpeg")
                             img_bytes = base64.b64decode(img_b64)
 
-                            user_text = "Te estoy enseñando esto que estoy viendo ahora mismo. Tenlo en cuenta para la interacción y explícame qué es en tu rol de guía turístico."
-                            await process_voice_turn(user_text, image_bytes=img_bytes, mime_type=mime_type)
+                            user_text = "El usuario acaba de sacar esta foto en su ubicación actual. NO preguntes qué es ni de dónde es. Asume que pertenece al lugar que estáis visitando. Identifica el elemento arquitectónico, cuadro o detalle que domina la imagen y dispara directamente un dato curioso o histórico sobre ese elemento en una sola frase."
+
+                            await room_state["live_queue"].put({"mime_type": mime_type, "data": img_bytes})
+                            await room_state["live_queue"].put({"text": user_text})
                             continue
 
                     except Exception as e:

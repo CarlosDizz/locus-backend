@@ -130,13 +130,13 @@ async def run_live_session(room_id: str):
                     if payload is None:
                         break
 
-                    input_data = {}
-                   if "mime_type" in payload and "data" in payload:
-                       input_data = {"mime_type": payload["mime_type"], "data": payload["data"]}
-                   elif "text" in payload:
-                       # API Live exige este formato anidado para el texto
-                       input_data = [{"text": payload["text"]}]
-                    else:
+                    input_data = None
+                    if "mime_type" in payload and "data" in payload:
+                        input_data = {"mime_type": payload["mime_type"], "data": payload["data"]}
+                    elif "text" in payload:
+                        input_data = [{"text": payload["text"]}]
+
+                    if input_data is None:
                         continue
 
                     await ephemeral_session.send(input=input_data, end_of_turn=True)

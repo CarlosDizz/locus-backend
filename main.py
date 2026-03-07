@@ -99,7 +99,6 @@ async def run_live_session(room_id: str):
     if not room_state:
         return
 
-    # Configuración limpia: SIN system_instruction para evitar el error 1008
     live_config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         speech_config=types.SpeechConfig(
@@ -132,12 +131,13 @@ async def run_live_session(room_id: str):
                         break
 
                     if "mime_type" in payload and "data" in payload:
-                        # Envíamos binarios como objeto Part oficial
-                        part = types.Part.from_bytes(data=payload["data"], mime_type=payload["mime_type"])
+                        # La API Live exige un diccionario simple para los archivos binarios
+                        media_input = {"mime_type": payload["mime_type"], "data": payload["data"]}
                         is_audio = payload["mime_type"].startswith("audio/")
-                        await ephemeral_session.send(input=part, end_of_turn=is_audio)
+                        await ephemeral_session.send(input=media_input, end_of_turn=is_audio)
+
                     elif "text" in payload:
-                        # Envíamos texto como String puro
+                        # El texto se envía como string puro
                         await ephemeral_session.send(input=payload["text"], end_of_turn=True)
                         room_state["shadow_history"].append(f"Usuario: {payload['text']}")
 
@@ -201,7 +201,6 @@ Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia
 
                             poi_name = payload.get("poi_name", "tu destino")
 
-                            # Inyectamos el sistema de forma segura como el primer mensaje del usuario
                             user_text = f"INSTRUCCIONES DE COMPORTAMIENTO:\n{room_state['system_context_str']}\n\nSITUACIÓN ACTUAL:\nEl usuario acaba de iniciar la ruta en {poi_name}. En un máximo de 2 frases: dale la bienvenida a este lugar exacto, recomiéndale ponerse los auriculares para aislarse del ruido, y pregúntale hacia dónde está mirando."
                             await room_state["live_queue"].put({"text": user_text})
                             continue

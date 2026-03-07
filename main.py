@@ -130,18 +130,13 @@ async def run_live_session(room_id: str):
                     if payload is None:
                         break
 
-                    input_data = None
                     if "mime_type" in payload and "data" in payload:
-                        input_data = {"mime_type": payload["mime_type"], "data": payload["data"]}
+                        part = types.Part.from_bytes(data=payload["data"], mime_type=payload["mime_type"])
+                        is_audio = payload["mime_type"].startswith("audio/")
+                        await ephemeral_session.send(input=part, end_of_turn=is_audio)
                     elif "text" in payload:
-                        input_data = [{"text": payload["text"]}]
-
-                    if input_data is None:
-                        continue
-
-                    await ephemeral_session.send(input=input_data, end_of_turn=True)
-                    if "text" in payload:
-                         room_state["shadow_history"].append(f"Usuario: {payload['text']}")
+                        await ephemeral_session.send(input=payload["text"], end_of_turn=True)
+                        room_state["shadow_history"].append(f"Usuario: {payload['text']}")
 
             await asyncio.gather(receive_from_gemini(), send_to_gemini())
     except asyncio.CancelledError:
@@ -202,7 +197,7 @@ Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia
                                 room_state["live_task"] = asyncio.create_task(run_live_session(room_id))
 
                             poi_name = payload.get("poi_name", "tu destino")
-                            user_text = f"El usuario acaba de iniciar la ruta en {poi_name}. En un máximo de 2 frases: dale la bienvenida a este lugar exacto, recomiéndale ponerse los auriculares para aislarse del ruido, y pregúntale hacia dónde está mirando."
+                            user_text = f"INSTRUCCIONES DE COMPORTAMIENTO:\n{room_state['system_context_str']}\n\nSITUACIÓN ACTUAL:\nEl usuario acaba de iniciar la ruta en {poi_name}. En un máximo de 2 frases: dale la bienvenida a este lugar exacto, recomiéndale ponerse los auriculares para aislarse del ruido, y pregúntale hacia dónde está mirando."
                             await room_state["live_queue"].put({"text": user_text})
                             continue
 

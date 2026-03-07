@@ -20,7 +20,7 @@ MAPS_API_KEY = os.environ.get("MAPS_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 TEXT_MODEL = "gemini-3.1-flash-lite-preview"
-LIVE_MODEL = "gemini-2.5-flash"
+LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 
 app = FastAPI()
 app.add_middleware(

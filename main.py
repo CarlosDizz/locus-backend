@@ -112,7 +112,6 @@ async def run_live_session(room_id: str):
 
     try:
         async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as ephemeral_session:
-
             async def receive_from_gemini():
                 async for response in ephemeral_session.receive():
                     if response.server_content and response.server_content.model_turn:
@@ -136,7 +135,6 @@ async def run_live_session(room_id: str):
                         media_input = {"mime_type": payload["mime_type"], "data": payload["data"]}
                         is_audio = payload["mime_type"].startswith("audio/")
                         await ephemeral_session.send(input=media_input, end_of_turn=is_audio)
-
                     elif "text" in payload:
                         await ephemeral_session.send(input=payload["text"], end_of_turn=True)
                         room_state["shadow_history"].append(f"Usuario: {payload['text']}")
@@ -156,10 +154,8 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
     try:
         while True:
             msg = await websocket.receive()
-
             if "text" in msg:
                 data = msg["text"]
-
                 if data.strip().startswith('{'):
                     try:
                         payload = json.loads(data)
@@ -178,17 +174,12 @@ Latitud actual: {lat}. Longitud actual: {lng}.
 Lugares iniciales: {pois_data}
 
 REGLAS CRÍTICAS DE COMPORTAMIENTO:
-1. Ultra Brevedad: Tus respuestas habladas deben tener un máximo de 2 o 3 frases cortas. Eres un acompañante, no una enciclopedia.
-2. Foco Espacial: Limita tus explicaciones ESTRICTAMENTE al lugar o monumento que el usuario está visitando en este momento. Si te preguntan algo fuera de contexto, devuélvelos al lugar actual.
-3. Cero Coletillas: Nunca uses frases como '¡Qué interesante!' o 'Buena pregunta'. Ve directo a la información técnica o histórica.
-4. Voz y Acento: Eres una entidad masculina. Adapta tu acento y vocabulario de forma natural al origen de los viajeros (Español de España por defecto).
-5. FORMATO OBLIGATORIO DE POIS PARA EL MAPA:
-<POIS>[{{"name": "Nombre", "lat": 0.0, "lng": 0.0, "description": "Descripción"}}]</POIS>
-6. REGLA DE CONVERSACIÓN ADAPTATIVA (PÍLDORAS):
-Nunca des explicaciones largas de golpe. Tu estructura obligatoria es:
-- Da un solo dato fascinante o la idea principal en 1 o 2 frases.
-- Termina SIEMPRE interpelando al usuario para cederle el control.
-Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia?", "¿Nos acercamos a ver la fachada o prefieres seguir caminando?".
+1. Ultra Brevedad: Tus respuestas habladas deben tener un máximo de 2 o 3 frases cortas.
+2. Foco Espacial: Limita explicaciones al lugar actual.
+3. Cero Coletillas: Ve directo a la información.
+4. Voz y Acento: Masculino. Adapta el acento según el contexto.
+5. FORMATO OBLIGATORIO POIS: <POIS>[{{"name": "Nombre", "lat": 0.0, "lng": 0.0, "description": "Desc"}}]</POIS>
+6. REGLA ADAPTATIVA: Da un solo dato y termina interpelando al usuario.
 """
                             first_query = f"{room_state['system_context_str']}\nUsuario: Hola, acabo de llegar. Preséntate y dime qué hay cerca."
                             response = chat_session.send_message(first_query)
@@ -198,13 +189,9 @@ Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia
                         if action == "start_voice_call":
                             if not room_state.get("live_task") or room_state["live_task"].done():
                                 room_state["live_task"] = asyncio.create_task(run_live_session(room_id))
-
                             poi_name = payload.get("poi_name", "tu destino")
-                            user_text = f"INSTRUCCIONES DE COMPORTAMIENTO:\n{room_state['system_context_str']}\n\nSITUACIÓN ACTUAL:\nEl usuario acaba de iniciar la ruta en {poi_name}. En un máximo de 2 frases: dale la bienvenida a este lugar exacto, recomiéndale ponerse los auriculares para aislarse del ruido, y pregúntale hacia dónde está mirando."
+                            user_text = f"INSTRUCCIONES DE COMPORTAMIENTO:\n{room_state['system_context_str']}\n\nSITUACIÓN ACTUAL:\nEl usuario acaba de iniciar la ruta en {poi_name}. Dale la bienvenida en 2 frases, recomienda cascos y pregunta hacia dónde mira."
                             await room_state["live_queue"].put({"text": user_text})
-                            continue
-
-                        if action == "join_voice_call":
                             continue
 
                         if action == "text_chat":
@@ -216,27 +203,22 @@ Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia
                             try:
                                 audio_b64 = payload.get("data")
                                 audio_bytes = base64.b64decode(audio_b64)
-
-                                # Magia pura de Pydub: de WebM a PCM en milisegundos en memoria RAM
-                                audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes), format="webm")
-                                # Gemini exige exactamente 16kHz, mono, 16-bit
-                                pcm_data = audio_segment.set_frame_rate(16000).set_channels(1).set_sample_width(2).raw_data
-
+                                audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
+                                audio_segment = audio_segment.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+                                pcm_data = audio_segment.raw_data
                                 await room_state["live_queue"].put({
                                     "mime_type": "audio/pcm;rate=16000",
                                     "data": pcm_data
                                 })
                             except Exception as e:
-                                logger.error(f"Error procesando audio con pydub: {e}")
+                                logger.error(f"Error procesando audio: {e}")
                             continue
 
                         if action == "image_context":
                             img_b64 = payload.get("data")
                             mime_type = payload.get("mime_type", "image/jpeg")
                             img_bytes = base64.b64decode(img_b64)
-
-                            user_text = "El usuario acaba de sacar esta foto en su ubicación actual. NO preguntes qué es ni de dónde es. Asume que pertenece al lugar que estáis visitando. Identifica el elemento arquitectónico, cuadro o detalle que domina la imagen y dispara directamente un dato curioso o histórico sobre ese elemento en una sola frase."
-
+                            user_text = "El usuario saca esta foto. Identifica el detalle y dispara un dato curioso en una frase."
                             await room_state["live_queue"].put({"mime_type": mime_type, "data": img_bytes})
                             await room_state["live_queue"].put({"text": user_text})
                             continue

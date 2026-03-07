@@ -131,10 +131,11 @@ async def run_live_session(room_id: str):
                         break
 
                     input_data = {}
-                    if "mime_type" in payload and "data" in payload:
-                        input_data = {"mime_type": payload["mime_type"], "data": payload["data"]}
-                    elif "text" in payload:
-                        input_data = payload["text"]
+                   if "mime_type" in payload and "data" in payload:
+                       input_data = {"mime_type": payload["mime_type"], "data": payload["data"]}
+                   elif "text" in payload:
+                       # API Live exige este formato anidado para el texto
+                       input_data = [{"text": payload["text"]}]
                     else:
                         continue
 

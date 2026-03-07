@@ -28,9 +28,6 @@ app.add_middleware(
     allow_methods=["*"], allow_headers=["*"]
 )
 
-sessions = {}
-call_histories = {}
-
 def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
     try:
         query = urllib.parse.quote(consulta)
@@ -44,25 +41,63 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
         logger.error(f"Error en Maps: {e}")
         return "[]"
 
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: dict[str, list[WebSocket]] = {}
+        self.room_states: dict[str, dict] = {}
+
+    async def connect(self, websocket: WebSocket, room_id: str):
+        await websocket.accept()
+        if room_id not in self.active_connections:
+            self.active_connections[room_id] = []
+            self.room_states[room_id] = {
+                "chat_session": client.chats.create(
+                    model=TEXT_MODEL,
+                    config=types.GenerateContentConfig(
+                        tools=[buscar_nuevo_lugar],
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=False)
+                    )
+                ),
+                "shadow_history": [],
+                "system_context_str": ""
+            }
+            logger.info(f"Sala creada: {room_id}")
+        self.active_connections[room_id].append(websocket)
+
+    def disconnect(self, websocket: WebSocket, room_id: str):
+        if room_id in self.active_connections:
+            if websocket in self.active_connections[room_id]:
+                self.active_connections[room_id].remove(websocket)
+            if not self.active_connections[room_id]:
+                del self.active_connections[room_id]
+                if room_id in self.room_states:
+                    del self.room_states[room_id]
+                logger.info(f"Sala destruida y memoria purgada: {room_id}")
+
+    async def broadcast_text(self, text: str, room_id: str):
+        if room_id in self.active_connections:
+            for connection in self.active_connections[room_id]:
+                try:
+                    await connection.send_text(text)
+                except Exception:
+                    pass
+
+    async def broadcast_bytes(self, data: bytes, room_id: str):
+        if room_id in self.active_connections:
+            for connection in self.active_connections[room_id]:
+                try:
+                    await connection.send_bytes(data)
+                except Exception:
+                    pass
+
+manager = ConnectionManager()
+
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str = Query(None)):
-    await websocket.accept()
-    session_key = f"{room_id}_{deviceId}" if deviceId else room_id
+    await manager.connect(websocket, room_id)
 
-    if session_key not in sessions:
-        sessions[session_key] = client.chats.create(
-            model=TEXT_MODEL,
-            config=types.GenerateContentConfig(
-                tools=[buscar_nuevo_lugar],
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=False)
-            )
-        )
-        call_histories[session_key] = []
-        logger.info(f"Sesion TEXTO iniciada: {session_key}")
-
-    chat_session = sessions[session_key]
-    shadow_history = call_histories[session_key]
-    system_context_str = ""
+    room_state = manager.room_states[room_id]
+    chat_session = room_state["chat_session"]
 
     async def process_voice_turn(user_text: str, image_bytes: bytes = None, mime_type: str = None):
         base_history = []
@@ -74,10 +109,10 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
             pass
 
         historial_base = "\n".join(base_history[-10:])
-        historial_llamada = "\n".join(shadow_history[-10:])
+        historial_llamada = "\n".join(room_state["shadow_history"][-10:])
 
         prompt = f"""INSTRUCCIONES DE SISTEMA:
-{system_context_str}
+{room_state['system_context_str']}
 
 REGLA CRÍTICA ABSOLUTA: Eres Locus. Habla SIEMPRE de forma directa con el usuario. NO uses asteriscos. NO pienses en voz alta. NO generes monólogos internos. Di únicamente el texto final que el usuario va a escuchar de tu voz.
 
@@ -115,16 +150,16 @@ LOCUS:"""
                         for part in response.server_content.model_turn.parts:
                             if part.text:
                                 model_text += part.text
-                                await websocket.send_text(part.text)
+                                await manager.broadcast_text(part.text, room_id)
                             if part.inline_data:
-                                await websocket.send_bytes(part.inline_data.data)
+                                await manager.broadcast_bytes(part.inline_data.data, room_id)
             logger.info("Túnel efímero cerrado con éxito tras respuesta.")
         except Exception as e:
             logger.error(f"Error en sesión efímera: {e}")
 
         if model_text:
-            shadow_history.append(f"Usuario: {user_text}")
-            shadow_history.append(f"Locus: {model_text.strip()}")
+            room_state["shadow_history"].append(f"Usuario: {user_text}")
+            room_state["shadow_history"].append(f"Locus: {model_text.strip()}")
 
     try:
         while True:
@@ -144,7 +179,7 @@ LOCUS:"""
                             lng = float(payload.get("lng", 0.0))
                             pois_data = buscar_nuevo_lugar("atracciones turisticas", lat, lng)
 
-                            system_context_str = f"""
+                            room_state["system_context_str"] = f"""
                             Eres Locus un guía turístico. Contexto: {user_ctx}
                             Latitud actual: {lat}. Longitud actual: {lng}.
                             Lugares iniciales: {pois_data}
@@ -158,9 +193,9 @@ LOCUS:"""
                             <POIS>[{{"name": "Nombre", "lat": 0.0, "lng": 0.0, "description": "Descripción"}}]</POIS>
                             6. VOZ Y ACENTO: Eres una entidad masculina. Tu acento por defecto DEBE ser Español de España (castellano peninsular). Si el 'Contexto' indica que el usuario es de otro país (ej. México, Inglaterra), adapta tu acento y tu idioma a su lugar de origen de forma completamente natural.
                             """
-                            first_query = f"{system_context_str}\nUsuario: Hola, acabo de llegar. Preséntate y dime qué hay cerca."
+                            first_query = f"{room_state['system_context_str']}\nUsuario: Hola, acabo de llegar. Preséntate y dime qué hay cerca."
                             response = chat_session.send_message(first_query)
-                            await websocket.send_text(response.text)
+                            await manager.broadcast_text(response.text, room_id)
                             continue
 
                         if action == "start_voice_call":
@@ -209,12 +244,13 @@ LOCUS:"""
                         continue
 
                 response = chat_session.send_message(data)
-                await websocket.send_text(response.text)
+                await manager.broadcast_text(response.text, room_id)
 
     except WebSocketDisconnect:
-        logger.info(f"{session_key} desconectado.")
+        manager.disconnect(websocket, room_id)
     except Exception as e:
         logger.error(f"Error Critico: {e}")
+        manager.disconnect(websocket, room_id)
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

@@ -20,7 +20,7 @@ MAPS_API_KEY = os.environ.get("MAPS_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 TEXT_MODEL = "gemini-3.1-flash-lite-preview"
-LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+LIVE_MODEL = "gemini-2.5-flash"
 
 app = FastAPI()
 app.add_middleware(
@@ -99,6 +99,7 @@ async def run_live_session(room_id: str):
     if not room_state:
         return
 
+    # Configuración limpia: SIN system_instruction para evitar el error 1008
     live_config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         speech_config=types.SpeechConfig(
@@ -131,10 +132,12 @@ async def run_live_session(room_id: str):
                         break
 
                     if "mime_type" in payload and "data" in payload:
+                        # Envíamos binarios como objeto Part oficial
                         part = types.Part.from_bytes(data=payload["data"], mime_type=payload["mime_type"])
                         is_audio = payload["mime_type"].startswith("audio/")
                         await ephemeral_session.send(input=part, end_of_turn=is_audio)
                     elif "text" in payload:
+                        # Envíamos texto como String puro
                         await ephemeral_session.send(input=payload["text"], end_of_turn=True)
                         room_state["shadow_history"].append(f"Usuario: {payload['text']}")
 
@@ -197,6 +200,8 @@ Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia
                                 room_state["live_task"] = asyncio.create_task(run_live_session(room_id))
 
                             poi_name = payload.get("poi_name", "tu destino")
+
+                            # Inyectamos el sistema de forma segura como el primer mensaje del usuario
                             user_text = f"INSTRUCCIONES DE COMPORTAMIENTO:\n{room_state['system_context_str']}\n\nSITUACIÓN ACTUAL:\nEl usuario acaba de iniciar la ruta en {poi_name}. En un máximo de 2 frases: dale la bienvenida a este lugar exacto, recomiéndale ponerse los auriculares para aislarse del ruido, y pregúntale hacia dónde está mirando."
                             await room_state["live_queue"].put({"text": user_text})
                             continue

@@ -2,3 +2,4 @@ fastapi
 uvicorn
 websockets
 google-genai
+pydub==0.25.1

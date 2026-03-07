@@ -5,6 +5,8 @@ import urllib.request
 import logging
 import base64
 import asyncio
+import io
+from pydub import AudioSegment
 from google import genai
 from google.genai import types
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
@@ -20,7 +22,6 @@ MAPS_API_KEY = os.environ.get("MAPS_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 TEXT_MODEL = "gemini-3.1-flash-lite-preview"
-# GRABADO A FUEGO:
 LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 
 app = FastAPI()
@@ -132,15 +133,11 @@ async def run_live_session(room_id: str):
                         break
 
                     if "mime_type" in payload and "data" in payload:
-                        # Enviamos el audio o la foto como el diccionario crudo que la API exige
                         media_input = {"mime_type": payload["mime_type"], "data": payload["data"]}
-
-                        # Si es audio, cerramos turno para que hable. Si es foto, dejamos abierto para el texto.
                         is_audio = payload["mime_type"].startswith("audio/")
                         await ephemeral_session.send(input=media_input, end_of_turn=is_audio)
 
                     elif "text" in payload:
-                        # Enviamos el texto como string puro
                         await ephemeral_session.send(input=payload["text"], end_of_turn=True)
                         room_state["shadow_history"].append(f"Usuario: {payload['text']}")
 
@@ -216,11 +213,21 @@ Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia
                             continue
 
                         if action == "audio_chat":
-                            # AUDIO DIRECTO: Sin transcripciones. Va a las tripas del modelo Native.
-                            audio_b64 = payload.get("data")
-                            mime_type = payload.get("mime_type", "audio/webm")
-                            audio_bytes = base64.b64decode(audio_b64)
-                            await room_state["live_queue"].put({"mime_type": mime_type, "data": audio_bytes})
+                            try:
+                                audio_b64 = payload.get("data")
+                                audio_bytes = base64.b64decode(audio_b64)
+
+                                # Magia pura de Pydub: de WebM a PCM en milisegundos en memoria RAM
+                                audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes), format="webm")
+                                # Gemini exige exactamente 16kHz, mono, 16-bit
+                                pcm_data = audio_segment.set_frame_rate(16000).set_channels(1).set_sample_width(2).raw_data
+
+                                await room_state["live_queue"].put({
+                                    "mime_type": "audio/pcm;rate=16000",
+                                    "data": pcm_data
+                                })
+                            except Exception as e:
+                                logger.error(f"Error procesando audio con pydub: {e}")
                             continue
 
                         if action == "image_context":

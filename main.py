@@ -10,7 +10,6 @@ import base64
 import asyncio
 import re
 from typing import Optional
-
 from openai import OpenAI
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +23,7 @@ MAPS_API_KEY = os.environ.get("MAPS_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
 OPENAI_TTS_MODEL = os.environ.get("OPENAI_TTS_MODEL", "tts-1")
-OPENAI_TTS_VOICE = os.environ.get("OPENAI_TTS_VOICE", "alloy")
+OPENAI_TTS_VOICE = os.environ.get("OPENAI_TTS_VOICE", "onyx")
 OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1")
 
 if not OPENAI_API_KEY:
@@ -47,7 +46,6 @@ app.add_middleware(
 
 def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
     if not MAPS_API_KEY:
-        logger.warning("MAPS_API_KEY no configurada")
         return "[]"
 
     try:
@@ -75,6 +73,7 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
                             "name": r.get("name"),
                             "lat": geometry["lat"],
                             "lng": geometry["lng"],
+                            "description": "POI cercano"
                         }
                     )
 
@@ -85,68 +84,47 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
         return "[]"
 
 def build_home_context(user_ctx: str, lat: float, lng: float, pois_data: str) -> str:
-    return f"""Eres Locus, un guía turístico experto, carismático y directo.
-Perfil de los viajeros: {user_ctx}
-Ubicación: Latitud {lat}, longitud {lng}
-Lugares cercanos detectados: {pois_data}
-
-REGLAS DE IDENTIDAD:
-1. Adapta tu acento y vocabulario de forma natural al origen de los viajeros.
-2. Eres ágil. Ve directo al dato útil.
-3. El formato obligatorio para el mapa es exactamente:
-<POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
-"""
-
-def build_voice_context(
-    user_ctx: str,
-    lat: float,
-    lng: float,
-    pois_data: str,
-) -> str:
-    return f"""Eres Locus, un guía turístico presencial acompañando a los viajeros.
+    return f"""Eres Locus, un guía turístico experto y directo.
 Perfil de los viajeros: {user_ctx}
 Ubicación actual: Latitud {lat}, longitud {lng}
-Lugares en la zona: {pois_data}
+Lugares cercanos: {pois_data}
 
-ACTITUD Y FORMATO DE RESPUESTA:
-1. Hablas directamente al visitante. Eres un humano experto.
-2. Adapta tu acento y dialecto al origen del viajero.
-3. ULTRA BREVEDAD: Responde siempre en máximo 2 o 3 frases. Sin introducciones.
-4. Ve directo al dato fascinante, la anécdota o la instrucción de navegación.
-5. Cede el control rápido interpelando al usuario.
+REGLAS OBLIGATORIAS:
+1. El formato para mostrar lugares en el mapa debe ser estrictamente:
+<POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
+2. Preséntate rápido y usa el bloque <POIS>.
+"""
+
+def build_voice_context(user_ctx: str, lat: float, lng: float, pois_data: str, poi_name: str) -> str:
+    ubicacion_foco = f"ATENCIÓN CRÍTICA: Estás físicamente dentro o delante de {poi_name}. LIMITA toda tu explicación a este lugar exacto." if poi_name else "Aún no hay un destino fijado."
+    
+    return f"""Eres Locus, un guía turístico experto en arte e historia que acompaña presencialmente a los viajeros.
+Perfil de los viajeros: {user_ctx}
+{ubicacion_foco}
+
+REGLAS DE ORO DEL GUÍA:
+1. FOCO DE TÚNEL: Ignora el resto de lugares de la ciudad (aunque los conozcas) a menos que el usuario pregunte expresamente por ellos.
+2. PROFUNDIDAD RADICAL: No des datos genéricos. Ofrece un solo detalle arquitectónico profundo, una anécdota histórica oscura o un dato de construcción fascinante.
+3. EXTREMA BREVEDAD: Tu respuesta no puede superar las 2 o 3 frases cortas.
+4. ENGANCHE: Termina siempre tu intervención con una pregunta directa sobre lo que están viendo para mantener el flujo ágil.
 """
 
 def build_poi_research_prompt(user_ctx: str, poi_name: str, lat: float, lng: float) -> str:
-    return f"""Genera una ficha de conocimientos directa y verificable sobre este lugar:
-Lugar: {poi_name} (Lat: {lat}, Lng: {lng})
-Perfil del visitante: {user_ctx}
+    return f"""Extrae la información histórica y arquitectónica más profunda y precisa sobre: {poi_name}.
+Ubicación: Lat {lat}, Lng {lng}.
+Formato: Viñetas cortas con el año, creador, estilo arquitectónico, un secreto del lugar y detalles visuales que el visitante pueda comprobar in situ."""
 
-Estructura tu respuesta en viñetas cortas:
-- Año y creador (si aplica).
-- Un dato histórico clave.
-- Un detalle visual en el que fijarse in situ.
-- Una curiosidad o mito.
-Solo datos duros, sin introducciones.
-"""
-
-def build_turn_prompt(
-    user_message: str,
-    current_poi_name: str,
-    poi_research_summary: str,
-    last_image_summary: str = "",
-) -> str:
-    ctx = ""
-    if current_poi_name:
-        ctx += f"Lugar actual de la visita: {current_poi_name}.\n"
+def build_turn_prompt(user_message: str, current_poi_name: str, poi_research_summary: str, last_image_summary: str = "") -> str:
+    ctx = f"SITUACIÓN: El visitante está observando {current_poi_name}.\n" if current_poi_name else ""
     if poi_research_summary:
-        ctx += f"Tus conocimientos sobre el lugar:\n{poi_research_summary}\n"
+        ctx += f"TUS CONOCIMIENTOS DE FONDO:\n{poi_research_summary}\n"
     if last_image_summary:
-        ctx += f"Lo que el visitante te acaba de enseñar:\n{last_image_summary}\n"
+        ctx += f"ANÁLISIS DE LO QUE ACABA DE VER EL VISITANTE:\n{last_image_summary}\n"
 
     return f"""{ctx}
 Viajero: "{user_message}"
 
-Responde como Locus. Máximo 3 frases. Directo y natural:"""
+Responde como Locus. Profundo pero en un máximo de 3 frases. Lanza una pregunta al final:"""
 
 def ask_openai_chat(system_context: str, user_message: str, allow_web_search: bool = False) -> str:
     args = {
@@ -156,19 +134,11 @@ def ask_openai_chat(system_context: str, user_message: str, allow_web_search: bo
             {"role": "user", "content": user_message},
         ],
     }
-
     response = openai_client.chat.completions.create(**args)
     return response.choices[0].message.content.strip()
 
-def ask_openai_image(
-    system_context: str,
-    prompt: str,
-    image_bytes: bytes,
-    mime_type: str,
-    allow_web_search: bool = False,
-) -> str:
+def ask_openai_image(system_context: str, prompt: str, image_bytes: bytes, mime_type: str, allow_web_search: bool = False) -> str:
     image_data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}"
-
     args = {
         "model": OPENAI_CHAT_MODEL,
         "messages": [
@@ -182,16 +152,10 @@ def ask_openai_image(
             },
         ],
     }
-
     response = openai_client.chat.completions.create(**args)
     return response.choices[0].message.content.strip()
 
-def pcm16_to_wav_bytes(
-    pcm_bytes: bytes,
-    sample_rate: int = FRONT_AUDIO_SAMPLE_RATE,
-    channels: int = FRONT_AUDIO_CHANNELS,
-    sample_width: int = FRONT_AUDIO_BYTES_PER_SAMPLE,
-) -> bytes:
+def pcm16_to_wav_bytes(pcm_bytes: bytes, sample_rate: int = FRONT_AUDIO_SAMPLE_RATE, channels: int = FRONT_AUDIO_CHANNELS, sample_width: int = FRONT_AUDIO_BYTES_PER_SAMPLE) -> bytes:
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
         wav_file.setnchannels(channels)
@@ -202,7 +166,6 @@ def pcm16_to_wav_bytes(
 
 def transcribe_pcm16_audio(audio_bytes: bytes, language_hint: Optional[str] = None) -> str:
     wav_bytes = pcm16_to_wav_bytes(audio_bytes)
-
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -218,12 +181,10 @@ def transcribe_pcm16_audio(audio_bytes: bytes, language_hint: Optional[str] = No
             }
             if language_hint:
                 kwargs["language"] = language_hint
-
             transcript = openai_client.audio.transcriptions.create(**kwargs)
 
         if isinstance(transcript, str):
             return transcript.strip()
-
         return (getattr(transcript, "text", "") or "").strip()
     finally:
         if tmp_path and os.path.exists(tmp_path):
@@ -238,14 +199,13 @@ def synthesize_speech_wav(text: str) -> bytes:
         voice=OPENAI_TTS_VOICE,
         input=text,
         response_format="wav",
-        speed=1.05,
+        speed=1.07,
     )
     return response.read()
 
 def sanitize_for_voice(text: str) -> str:
     if not text:
         return text
-
     sanitized = re.sub(r'https?://\S+', '', text)
     sanitized = re.sub(r'www\.\S+', '', sanitized)
     sanitized = re.sub(r'\s+', ' ', sanitized).strip()
@@ -259,7 +219,6 @@ class RoomState:
         self.poi_research_summary = ""
         self.last_image_summary = ""
         self.poi_research_task: Optional[asyncio.Task] = None
-
         self.profile = {
             "user_ctx": "",
             "lat": 0.0,
@@ -274,22 +233,17 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, room_id: str):
         await websocket.accept()
-
         if room_id not in self.active_connections:
             self.active_connections[room_id] = []
-
         if room_id not in self.room_states:
             self.room_states[room_id] = RoomState(room_id)
-
         self.active_connections[room_id].append(websocket)
 
     async def disconnect(self, websocket: WebSocket, room_id: str):
         if room_id in self.active_connections and websocket in self.active_connections[room_id]:
             self.active_connections[room_id].remove(websocket)
-
         if room_id in self.active_connections and not self.active_connections[room_id]:
             del self.active_connections[room_id]
-
             room_state = self.room_states.pop(room_id, None)
             if room_state and room_state.poi_research_task and not room_state.poi_research_task.done():
                 room_state.poi_research_task.cancel()
@@ -297,14 +251,12 @@ class ConnectionManager:
     async def broadcast_text(self, text: str, room_id: str):
         if room_id not in self.active_connections:
             return
-
         stale = []
         for connection in self.active_connections[room_id]:
             try:
                 await connection.send_text(text)
             except Exception:
                 stale.append(connection)
-
         for connection in stale:
             try:
                 self.active_connections[room_id].remove(connection)
@@ -314,14 +266,12 @@ class ConnectionManager:
     async def broadcast_bytes(self, data: bytes, room_id: str):
         if room_id not in self.active_connections:
             return
-
         stale = []
         for connection in self.active_connections[room_id]:
             try:
                 await connection.send_bytes(data)
             except Exception:
                 stale.append(connection)
-
         for connection in stale:
             try:
                 self.active_connections[room_id].remove(connection)
@@ -337,18 +287,16 @@ async def enrich_poi_context_in_background(room_state: RoomState):
         lng = float(room_state.profile.get("lng", 0.0))
         user_ctx = room_state.profile.get("user_ctx", "")
 
-        system_context = "Eres un documentalista extrayendo datos duros."
+        system_context = "Eres un documentalista extrayendo datos puros, exactos y profundos."
         prompt = build_poi_research_prompt(user_ctx, poi_name, lat, lng)
 
         summary = await asyncio.to_thread(
             ask_openai_chat,
             system_context,
             prompt,
-            True,
+            False,
         )
-
         room_state.poi_research_summary = summary.strip()
-
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -377,6 +325,7 @@ async def generate_fast_answer(room_state: RoomState, user_message: str) -> str:
         lat=float(room_state.profile.get("lat", 0.0)),
         lng=float(room_state.profile.get("lng", 0.0)),
         pois_data=room_state.profile.get("pois_data", "[]"),
+        poi_name=room_state.current_poi_name,
     )
 
     prompt = build_turn_prompt(
@@ -395,18 +344,11 @@ async def generate_fast_answer(room_state: RoomState, user_message: str) -> str:
 
 async def respond_in_call(room_state: RoomState, room_id: str, user_message: str):
     answer = await generate_fast_answer(room_state, user_message)
-
     if not answer:
-        answer = "Cuéntame qué ves exactamente y lo afinamos."
-
+        answer = "Acércame un poco más a ese detalle y te cuento lo que es."
     await speak_text(room_state, room_id, answer)
 
-async def respond_to_image_in_call(
-    room_state: RoomState,
-    room_id: str,
-    image_bytes: bytes,
-    mime_type: str,
-):
+async def respond_to_image_in_call(room_state: RoomState, room_id: str, image_bytes: bytes, mime_type: str):
     poi_name = room_state.current_poi_name or "el lugar actual"
 
     system_context = build_voice_context(
@@ -414,12 +356,10 @@ async def respond_to_image_in_call(
         lat=float(room_state.profile.get("lat", 0.0)),
         lng=float(room_state.profile.get("lng", 0.0)),
         pois_data=room_state.profile.get("pois_data", "[]"),
+        poi_name=poi_name,
     )
 
-    prompt = (
-        f"El visitante te enseña esto en {poi_name}. "
-        "Identifica lo que es e intégralo en tu explicación en máximo 2 frases."
-    )
+    prompt = f"El visitante te enseña este detalle en {poi_name}. Desvela algo profundamente técnico o una anécdota fascinante sobre este elemento exacto en solo 2 frases."
 
     answer = await asyncio.to_thread(
         ask_openai_image,
@@ -427,11 +367,11 @@ async def respond_to_image_in_call(
         prompt,
         image_bytes,
         mime_type,
-        True,
+        False,
     )
 
     if not answer:
-        answer = "No lo aprecio bien. ¿Puedes darme un poco más de contexto de la sala?"
+        answer = "La luz no me deja verlo bien, ¿qué parte concreta te llama la atención?"
 
     room_state.last_image_summary = answer
     await speak_text(room_state, room_id, answer)
@@ -451,10 +391,8 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
     try:
         while True:
             msg = await websocket.receive()
-
             if "text" not in msg:
                 continue
-
             raw_data = msg["text"]
             if not raw_data:
                 continue
@@ -490,7 +428,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             "Hola. Preséntate de forma natural y dime qué hay cerca. Incluye el bloque POIS.",
                             False,
                         )
-
                         await manager.broadcast_text(response_text, room_id)
                         continue
 
@@ -508,7 +445,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                         await respond_in_call(
                             room_state,
                             room_id,
-                            f"Acabo de llegar a {room_state.current_poi_name}. Salúdame y dime algo rápido del lugar."
+                            f"Acabo de llegar a {room_state.current_poi_name}. Dame un solo dato fascinante de este lugar exacto y pregúntame qué estoy mirando."
                         )
                         continue
 
@@ -522,18 +459,15 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                         try:
                             audio_b64 = payload.get("data", "")
                             audio_bytes = base64.b64decode(audio_b64)
-
                             if not audio_bytes:
                                 continue
 
                             language_hint = infer_language_hint(room_state.profile.get("user_ctx", ""))
-
                             transcript = await asyncio.to_thread(
                                 transcribe_pcm16_audio,
                                 audio_bytes,
                                 language_hint,
                             )
-
                             if not transcript:
                                 continue
 
@@ -548,16 +482,10 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             img_b64 = payload.get("data", "")
                             mime_type = payload.get("mime_type", "image/jpeg")
                             img_bytes = base64.b64decode(img_b64)
-
                             if not img_bytes:
                                 continue
 
-                            await respond_to_image_in_call(
-                                room_state,
-                                room_id,
-                                img_bytes,
-                                mime_type,
-                            )
+                            await respond_to_image_in_call(room_state, room_id, img_bytes, mime_type)
 
                         except Exception as e:
                             logger.exception(f"[{room_id}] Error procesando image_context: {e}")

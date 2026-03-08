@@ -10,6 +10,7 @@ import base64
 import asyncio
 import re
 from typing import Optional
+
 from openai import OpenAI
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,6 +44,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------
+# MAPS
+# ---------------------------------------------------------
 
 def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
     if not MAPS_API_KEY:
@@ -83,6 +89,11 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
         logger.exception(f"Error en Maps: {e}")
         return "[]"
 
+
+# ---------------------------------------------------------
+# PROMPTS
+# ---------------------------------------------------------
+
 def build_home_context(user_ctx: str, lat: float, lng: float, pois_data: str) -> str:
     return f"""Eres Locus, un guía turístico local empático, vibrante y muy cercano.
 Perfil de los viajeros: {user_ctx}
@@ -94,9 +105,18 @@ Lugares cercanos: {pois_data}
 <POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
 """
 
-def build_voice_context(user_ctx: str, lat: float, lng: float, pois_data: str, poi_name: str, research: str, last_img: str) -> str:
+
+def build_voice_context(
+    user_ctx: str,
+    lat: float,
+    lng: float,
+    pois_data: str,
+    poi_name: str,
+    research: str,
+    last_img: str
+) -> str:
     ubicacion_foco = f"ESTÁS FÍSICAMENTE EN: {poi_name}." if poi_name else "Caminando por la ciudad, sin destino fijo."
-    
+
     info = ""
     if research:
         info += f"\nTUS NOTAS DE EXPERTO (No las leas literales, úsalas para dar datos profundos):\n{research}\n"
@@ -117,26 +137,41 @@ REGLAS DE ORO:
 5. PASA EL MICRÓFONO: Termina siempre preguntándoles su opinión sobre el detalle exacto que estáis mirando.
 """
 
+
 def build_poi_research_prompt(user_ctx: str, poi_name: str, lat: float, lng: float, pois_data: str) -> str:
     return f"""Eres el documentalista de un guía experto. Busca la historia, anécdotas avanzadas y detalles técnicos visuales sobre: {poi_name} (Zona: {pois_data}).
 Perfil de la audiencia: {user_ctx}.
-Devuelve solo viñetas rápidas con datos duros: año de creación, creador, un secreto histórico o leyenda, y 2 detalles en los que fijarse in situ. Sin relleno."""
+Devuelve solo viñetas rápidas con datos duros: año de creación, creador, un secreto histórico o leyenda, y 2 detalles en los que fijarse in situ. Sin relleno.
+No des enlaces ni URLs.
+"""
 
-def ask_openai_chat(system_context: str, user_message: str, history: list = None) -> str:
+
+# ---------------------------------------------------------
+# OPENAI HELPERS
+# ---------------------------------------------------------
+
+def ask_openai_chat(system_context: str, user_message: str, history: list | None = None) -> str:
     messages = [{"role": "system", "content": system_context}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": user_message})
 
-    args = {
-        "model": OPENAI_CHAT_MODEL,
-        "messages": messages,
-    }
-    response = openai_client.chat.completions.create(**args)
-    return response.choices[0].message.content.strip()
+    response = openai_client.chat.completions.create(
+        model=OPENAI_CHAT_MODEL,
+        messages=messages,
+    )
+    return (response.choices[0].message.content or "").strip()
 
-def ask_openai_image(system_context: str, prompt: str, image_bytes: bytes, mime_type: str, history: list = None) -> str:
+
+def ask_openai_image(
+    system_context: str,
+    prompt: str,
+    image_bytes: bytes,
+    mime_type: str,
+    history: list | None = None
+) -> str:
     image_data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}"
+
     messages = [{"role": "system", "content": system_context}]
     if history:
         messages.extend(history)
@@ -148,14 +183,38 @@ def ask_openai_image(system_context: str, prompt: str, image_bytes: bytes, mime_
         ],
     })
 
-    args = {
-        "model": OPENAI_CHAT_MODEL,
-        "messages": messages,
-    }
-    response = openai_client.chat.completions.create(**args)
-    return response.choices[0].message.content.strip()
+    response = openai_client.chat.completions.create(
+        model=OPENAI_CHAT_MODEL,
+        messages=messages,
+    )
+    return (response.choices[0].message.content or "").strip()
 
-def pcm16_to_wav_bytes(pcm_bytes: bytes, sample_rate: int = FRONT_AUDIO_SAMPLE_RATE, channels: int = FRONT_AUDIO_CHANNELS, sample_width: int = FRONT_AUDIO_BYTES_PER_SAMPLE) -> bytes:
+
+def ask_openai_research(system_context: str, user_message: str) -> str:
+    response = openai_client.responses.create(
+        model=OPENAI_CHAT_MODEL,
+        tools=[{"type": "web_search"}],
+        tool_choice="auto",
+        input=[
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": system_context}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": user_message}],
+            },
+        ],
+    )
+    return (response.output_text or "").strip()
+
+
+def pcm16_to_wav_bytes(
+    pcm_bytes: bytes,
+    sample_rate: int = FRONT_AUDIO_SAMPLE_RATE,
+    channels: int = FRONT_AUDIO_CHANNELS,
+    sample_width: int = FRONT_AUDIO_BYTES_PER_SAMPLE
+) -> bytes:
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
         wav_file.setnchannels(channels)
@@ -164,9 +223,11 @@ def pcm16_to_wav_bytes(pcm_bytes: bytes, sample_rate: int = FRONT_AUDIO_SAMPLE_R
         wav_file.writeframes(pcm_bytes)
     return buffer.getvalue()
 
+
 def transcribe_pcm16_audio(audio_bytes: bytes, language_hint: Optional[str] = None) -> str:
     wav_bytes = pcm16_to_wav_bytes(audio_bytes)
     tmp_path = None
+
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             tmp.write(wav_bytes)
@@ -181,17 +242,21 @@ def transcribe_pcm16_audio(audio_bytes: bytes, language_hint: Optional[str] = No
             }
             if language_hint:
                 kwargs["language"] = language_hint
+
             transcript = openai_client.audio.transcriptions.create(**kwargs)
 
         if isinstance(transcript, str):
             return transcript.strip()
+
         return (getattr(transcript, "text", "") or "").strip()
+
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
             except Exception:
                 pass
+
 
 def synthesize_speech_wav(text: str) -> bytes:
     response = openai_client.audio.speech.create(
@@ -203,13 +268,20 @@ def synthesize_speech_wav(text: str) -> bytes:
     )
     return response.read()
 
+
 def sanitize_for_voice(text: str) -> str:
     if not text:
         return text
+
     sanitized = re.sub(r'https?://\S+', '', text)
     sanitized = re.sub(r'www\.\S+', '', sanitized)
     sanitized = re.sub(r'\s+', ' ', sanitized).strip()
     return sanitized
+
+
+# ---------------------------------------------------------
+# ROOM STATE
+# ---------------------------------------------------------
 
 class RoomState:
     def __init__(self, room_id: str):
@@ -218,14 +290,26 @@ class RoomState:
         self.current_poi_name = ""
         self.poi_research_summary = ""
         self.last_image_summary = ""
-        self.chat_history = [] 
+        self.chat_history: list[dict] = []
         self.poi_research_task: Optional[asyncio.Task] = None
+
         self.profile = {
             "user_ctx": "",
             "lat": 0.0,
             "lng": 0.0,
             "pois_data": "[]",
         }
+
+        # Arquitectura / concurrencia
+        self.turn_lock = asyncio.Lock()
+        self.call_active = False
+        self.poi_generation = 0
+        self.last_public_text = ""
+
+
+# ---------------------------------------------------------
+# CONNECTION MANAGER
+# ---------------------------------------------------------
 
 class ConnectionManager:
     def __init__(self):
@@ -234,30 +318,43 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, room_id: str):
         await websocket.accept()
+
         if room_id not in self.active_connections:
             self.active_connections[room_id] = []
+
         if room_id not in self.room_states:
             self.room_states[room_id] = RoomState(room_id)
+
         self.active_connections[room_id].append(websocket)
+        logger.info(f"[{room_id}] Cliente conectado. Total={len(self.active_connections[room_id])}")
 
     async def disconnect(self, websocket: WebSocket, room_id: str):
         if room_id in self.active_connections and websocket in self.active_connections[room_id]:
             self.active_connections[room_id].remove(websocket)
+
         if room_id in self.active_connections and not self.active_connections[room_id]:
             del self.active_connections[room_id]
             room_state = self.room_states.pop(room_id, None)
             if room_state and room_state.poi_research_task and not room_state.poi_research_task.done():
                 room_state.poi_research_task.cancel()
 
+    async def send_text_to_one(self, websocket: WebSocket, text: str):
+        try:
+            await websocket.send_text(text)
+        except Exception:
+            pass
+
     async def broadcast_text(self, text: str, room_id: str):
         if room_id not in self.active_connections:
             return
+
         stale = []
         for connection in self.active_connections[room_id]:
             try:
                 await connection.send_text(text)
             except Exception:
                 stale.append(connection)
+
         for connection in stale:
             try:
                 self.active_connections[room_id].remove(connection)
@@ -267,45 +364,72 @@ class ConnectionManager:
     async def broadcast_bytes(self, data: bytes, room_id: str):
         if room_id not in self.active_connections:
             return
+
         stale = []
         for connection in self.active_connections[room_id]:
             try:
                 await connection.send_bytes(data)
             except Exception:
                 stale.append(connection)
+
         for connection in stale:
             try:
                 self.active_connections[room_id].remove(connection)
             except ValueError:
                 pass
 
+
 manager = ConnectionManager()
 
-async def enrich_poi_context_in_background(room_state: RoomState):
+
+# ---------------------------------------------------------
+# BACKGROUND ENRICHMENT
+# ---------------------------------------------------------
+
+async def enrich_poi_context_in_background(room_state: RoomState, poi_generation: int, poi_name: str):
     try:
-        poi_name = room_state.current_poi_name or "el lugar actual"
         lat = float(room_state.profile.get("lat", 0.0))
         lng = float(room_state.profile.get("lng", 0.0))
         user_ctx = room_state.profile.get("user_ctx", "")
         pois_data = room_state.profile.get("pois_data", "[]")
 
         prompt = build_poi_research_prompt(user_ctx, poi_name, lat, lng, pois_data)
+
         summary = await asyncio.to_thread(
-            ask_openai_chat,
-            "Eres un documentalista de élite. Ve al grano.",
+            ask_openai_research,
+            "Eres un documentalista de élite. Ve al grano. No inventes nada. No des enlaces ni URLs.",
             prompt
         )
+
+        # Evita sobrescribir si la sala ya cambió de POI
+        if room_state.poi_generation != poi_generation:
+            logger.info(f"[{room_state.room_id}] Research obsoleto descartado para {poi_name}")
+            return
+
+        if room_state.current_poi_name != poi_name:
+            logger.info(f"[{room_state.room_id}] Research descartado: POI actual cambió")
+            return
+
         room_state.poi_research_summary = summary.strip()
+        logger.info(f"[{room_state.room_id}] Contexto enriquecido para {poi_name}")
+
     except asyncio.CancelledError:
+        logger.info(f"[{room_state.room_id}] Enriquecimiento cancelado")
         raise
     except Exception as e:
         logger.exception(f"[{room_state.room_id}] Error enriqueciendo POI: {e}")
+
+
+# ---------------------------------------------------------
+# SPEAK / ANSWERS
+# ---------------------------------------------------------
 
 async def speak_text(room_state: RoomState, room_id: str, text: str):
     clean_text = sanitize_for_voice(text)
     if not clean_text:
         return
 
+    room_state.last_public_text = clean_text
     await manager.broadcast_text(clean_text, room_id)
 
     try:
@@ -318,6 +442,7 @@ async def speak_text(room_state: RoomState, room_id: str, text: str):
     except Exception as e:
         logger.exception(f"[{room_id}] Error generando TTS: {e}")
 
+
 async def generate_fast_answer(room_state: RoomState, user_message: str) -> str:
     system_context = build_voice_context(
         user_ctx=room_state.profile.get("user_ctx", ""),
@@ -329,7 +454,7 @@ async def generate_fast_answer(room_state: RoomState, user_message: str) -> str:
         last_img=room_state.last_image_summary
     )
 
-    prompt = f"Continúa la conversación con total naturalidad.\nViajero: \"{user_message}\""
+    prompt = f'Continúa la conversación con total naturalidad.\nViajero: "{user_message}"'
 
     answer = await asyncio.to_thread(
         ask_openai_chat,
@@ -338,60 +463,72 @@ async def generate_fast_answer(room_state: RoomState, user_message: str) -> str:
         room_state.chat_history
     )
 
-    # Inyección de memoria: guardamos las últimas 12 frases para que recuerde el hilo exacto
     room_state.chat_history.append({"role": "user", "content": user_message})
     room_state.chat_history.append({"role": "assistant", "content": answer})
     room_state.chat_history = room_state.chat_history[-12:]
 
     return answer
 
+
 async def respond_in_call(room_state: RoomState, room_id: str, user_message: str):
-    answer = await generate_fast_answer(room_state, user_message)
-    if not answer:
-        answer = "No te he escuchado bien, ¿qué decías de este lugar?"
-    await speak_text(room_state, room_id, answer)
+    async with room_state.turn_lock:
+        answer = await generate_fast_answer(room_state, user_message)
+        if not answer:
+            answer = "No te he escuchado bien, ¿qué decías de este lugar?"
+        await speak_text(room_state, room_id, answer)
+
 
 async def respond_to_image_in_call(room_state: RoomState, room_id: str, image_bytes: bytes, mime_type: str):
-    poi_name = room_state.current_poi_name or "el lugar actual"
+    async with room_state.turn_lock:
+        poi_name = room_state.current_poi_name or "el lugar actual"
 
-    system_context = build_voice_context(
-        user_ctx=room_state.profile.get("user_ctx", ""),
-        lat=float(room_state.profile.get("lat", 0.0)),
-        lng=float(room_state.profile.get("lng", 0.0)),
-        pois_data=room_state.profile.get("pois_data", "[]"),
-        poi_name=poi_name,
-        research=room_state.poi_research_summary,
-        last_img=""
-    )
+        system_context = build_voice_context(
+            user_ctx=room_state.profile.get("user_ctx", ""),
+            lat=float(room_state.profile.get("lat", 0.0)),
+            lng=float(room_state.profile.get("lng", 0.0)),
+            pois_data=room_state.profile.get("pois_data", "[]"),
+            poi_name=poi_name,
+            research=room_state.poi_research_summary,
+            last_img=""
+        )
 
-    prompt = f"El visitante te acaba de señalar este detalle exacto en {poi_name}. Reacciona y cuéntale qué es en 2 frases, aportando un dato experto."
+        prompt = f"El visitante te acaba de señalar este detalle exacto en {poi_name}. Reacciona y cuéntale qué es en 2 frases, aportando un dato experto."
 
-    answer = await asyncio.to_thread(
-        ask_openai_image,
-        system_context,
-        prompt,
-        image_bytes,
-        mime_type,
-        room_state.chat_history
-    )
+        answer = await asyncio.to_thread(
+            ask_openai_image,
+            system_context,
+            prompt,
+            image_bytes,
+            mime_type,
+            room_state.chat_history
+        )
 
-    if not answer:
-        answer = "La perspectiva no me deja verlo bien, ¿qué te llama la atención exactamente?"
+        if not answer:
+            answer = "La perspectiva no me deja verlo bien, ¿qué te llama la atención exactamente?"
 
-    room_state.last_image_summary = answer
-    
-    room_state.chat_history.append({"role": "user", "content": "[El usuario te ha enseñado una foto]"})
-    room_state.chat_history.append({"role": "assistant", "content": answer})
-    room_state.chat_history = room_state.chat_history[-12:]
+        room_state.last_image_summary = answer
 
-    await speak_text(room_state, room_id, answer)
+        room_state.chat_history.append({"role": "user", "content": "[El usuario te ha enseñado una foto]"})
+        room_state.chat_history.append({"role": "assistant", "content": answer})
+        room_state.chat_history = room_state.chat_history[-12:]
+
+        await speak_text(room_state, room_id, answer)
+
 
 def infer_language_hint(user_ctx: str) -> Optional[str]:
     lowered = (user_ctx or "").lower()
-    if "english" in lowered or "inglés" in lowered or "ingles" in lowered: return "en"
-    if "italiano" in lowered or "italian" in lowered: return "it"
-    if "francés" in lowered or "frances" in lowered or "french" in lowered: return "fr"
+    if "english" in lowered or "inglés" in lowered or "ingles" in lowered:
+        return "en"
+    if "italiano" in lowered or "italian" in lowered:
+        return "it"
+    if "francés" in lowered or "frances" in lowered or "french" in lowered:
+        return "fr"
     return "es"
+
+
+# ---------------------------------------------------------
+# WEBSOCKET
+# ---------------------------------------------------------
 
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str = Query(None)):
@@ -401,8 +538,10 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
     try:
         while True:
             msg = await websocket.receive()
+
             if "text" not in msg:
                 continue
+
             raw_data = msg["text"]
             if not raw_data:
                 continue
@@ -441,15 +580,35 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                         continue
 
                     if action == "start_voice_call":
-                        room_state.current_poi_name = payload.get("poi_name", "tu destino")
+                        requested_poi = payload.get("poi_name", "tu destino").strip()
+
+                        # Si la sala ya está activa en ese mismo POI, no reiniciar nada
+                        if room_state.call_active and room_state.current_poi_name == requested_poi:
+                            logger.info(f"[{room_id}] start_voice_call duplicado ignorado para {requested_poi}")
+
+                            # Opcional: mandar al cliente nuevo el último texto público para que no entre "a oscuras"
+                            if room_state.last_public_text:
+                                await manager.send_text_to_one(websocket, room_state.last_public_text)
+                            continue
+
+                        # Si cambia el POI, eso sí reinicia el hilo de visita
+                        room_state.current_poi_name = requested_poi
                         room_state.last_image_summary = ""
-                        room_state.chat_history = [] # Limpiamos memoria al empezar un POI nuevo
+                        room_state.chat_history = []
+                        room_state.poi_research_summary = ""
+                        room_state.call_active = True
+                        room_state.poi_generation += 1
+                        current_generation = room_state.poi_generation
 
                         if room_state.poi_research_task and not room_state.poi_research_task.done():
                             room_state.poi_research_task.cancel()
 
                         room_state.poi_research_task = asyncio.create_task(
-                            enrich_poi_context_in_background(room_state)
+                            enrich_poi_context_in_background(
+                                room_state,
+                                current_generation,
+                                requested_poi
+                            )
                         )
 
                         await respond_in_call(
@@ -478,6 +637,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                                 audio_bytes,
                                 language_hint,
                             )
+
                             if not transcript:
                                 continue
 
@@ -505,7 +665,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                     logger.exception(f"[{room_id}] Error procesando JSON: {e}")
                     continue
 
-            # Fallback para chat plano (mapa)
+            # Fallback para chat plano
             try:
                 response_text = await asyncio.to_thread(
                     ask_openai_chat,
@@ -521,6 +681,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
     except Exception as e:
         logger.exception(f"[{room_id}] WebSocket Error: {e}")
         await manager.disconnect(websocket, room_id)
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

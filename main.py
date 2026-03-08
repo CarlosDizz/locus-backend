@@ -134,19 +134,16 @@ async def run_live_session(room_id: str):
                         payload = await room_state["live_queue"].get()
                         if payload is None: break
 
-                        if "mime_type" in payload and "data" in payload:
+                        if "image_dict" in payload:
+                            await ephemeral_session.send(input=payload["image_dict"], end_of_turn=False)
+
+                        elif "mime_type" in payload and "data" in payload:
                             is_audio = payload["mime_type"].startswith("audio/")
 
-                            # LA CLAVE DEL ÉXITO:
-                            # Convertimos los bytes puros en Part y luego lo envolvemos en Content
-                            part = types.Part.from_bytes(
-                                data=payload["data"],
-                                mime_type=payload["mime_type"]
-                            )
-                            content = types.Content(role="user", parts=[part])
+                            media_input = {"mime_type": payload["mime_type"], "data": payload["data"]}
 
-                            logger.info(f"[{room_id}] Inyectando {payload['mime_type']} envuelto en types.Content...")
-                            await ephemeral_session.send(input=content, end_of_turn=is_audio)
+                            logger.info(f"[{room_id}] Inyectando {payload['mime_type']} crudo en túnel...")
+                            await ephemeral_session.send(input=media_input, end_of_turn=is_audio)
 
                             if is_audio:
                                 logger.info(f"[{room_id}] Turno cerrado. Esperando respuesta de la IA...")
@@ -223,7 +220,6 @@ Nunca des explicaciones largas de golpe. Tu estructura obligatoria es:
                             try:
                                 audio_bytes = base64.b64decode(payload.get("data"))
 
-                                # OSCILOSCOPIO MATEMÁTICO: Calcular volumen máximo
                                 valid_length = (len(audio_bytes) // 2) * 2
                                 samples = struct.unpack(f"<{valid_length // 2}h", audio_bytes[:valid_length])
                                 max_amp = max(abs(s) for s in samples) if samples else 0

@@ -21,7 +21,8 @@ MAPS_API_KEY = os.environ.get("MAPS_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 TEXT_MODEL = "gemini-3.1-flash-lite-preview"
-LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+# SUGERENCIA APLICADA: Modelo oficial y robusto para Live API
+LIVE_MODEL = "gemini-2.0-flash-exp"
 
 app = FastAPI()
 app.add_middleware(
@@ -97,8 +98,9 @@ async def run_live_session(room_id: str):
     room_state = manager.room_states.get(room_id)
     if not room_state: return
 
+    # SUGERENCIA APLICADA: Solicitamos TEXT y AUDIO explícitamente
     live_config = types.LiveConnectConfig(
-        response_modalities=["AUDIO"],
+        response_modalities=["TEXT", "AUDIO"],
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name='Puck')
@@ -107,7 +109,7 @@ async def run_live_session(room_id: str):
     )
 
     try:
-        logger.info(f"[{room_id}] Abriendo túnel Gemini Live...")
+        logger.info(f"[{room_id}] Abriendo túnel Gemini Live ({LIVE_MODEL})...")
         async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as ephemeral_session:
             async def receive_from_gemini():
                 try:
@@ -140,13 +142,14 @@ async def run_live_session(room_id: str):
                         elif "mime_type" in payload and "data" in payload:
                             is_audio = payload["mime_type"].startswith("audio/")
 
+                            # Retornamos al diccionario simple que no crashea
                             media_input = {"mime_type": payload["mime_type"], "data": payload["data"]}
 
-                            logger.info(f"[{room_id}] Inyectando {payload['mime_type']} crudo en túnel...")
+                            logger.info(f"[{room_id}] Inyectando {payload['mime_type']} en túnel...")
                             await ephemeral_session.send(input=media_input, end_of_turn=is_audio)
 
                             if is_audio:
-                                logger.info(f"[{room_id}] Turno cerrado. Esperando respuesta de la IA...")
+                                logger.info(f"[{room_id}] Turno de audio cerrado. Esperando respuesta de la IA...")
 
                         elif "text" in payload:
                             logger.info(f"[{room_id}] Inyectando TEXTO en túnel: {payload['text'][:50]}...")
@@ -223,12 +226,13 @@ Nunca des explicaciones largas de golpe. Tu estructura obligatoria es:
                                 valid_length = (len(audio_bytes) // 2) * 2
                                 samples = struct.unpack(f"<{valid_length // 2}h", audio_bytes[:valid_length])
                                 max_amp = max(abs(s) for s in samples) if samples else 0
-                                is_silent = "SÍ (Microfono bloqueado/vacío)" if max_amp < 150 else "NO (Hay sonido)"
+                                is_silent = "SÍ (Microfono silencioso/bloqueado)" if max_amp < 500 else "NO (Hay voz/sonido)"
 
                                 logger.info(f"[{room_id}] PCM Recibido: {len(audio_bytes)} bytes | Amplitud Max: {max_amp}/32768 | Silencio: {is_silent}")
 
+                                # SUGERENCIA APLICADA: Añadido channels=1 para evitar rechazo silencioso
                                 await room_state["live_queue"].put({
-                                    "mime_type": "audio/pcm;rate=16000",
+                                    "mime_type": "audio/pcm;rate=16000;channels=1",
                                     "data": audio_bytes
                                 })
                             except Exception as e:

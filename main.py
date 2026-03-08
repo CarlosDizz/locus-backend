@@ -37,9 +37,10 @@ AUDIO_BYTES_PER_SAMPLE = 2
 AUDIO_CHANNELS = 1
 AUDIO_CHUNK_SIZE = int(
     AUDIO_SAMPLE_RATE * (AUDIO_CHUNK_MS / 1000) * AUDIO_BYTES_PER_SAMPLE * AUDIO_CHANNELS
-)  # 3200 bytes = 100 ms de PCM16 mono a 16 kHz
+)
 
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -56,6 +57,7 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
 
     try:
         query = urllib.parse.quote(consulta)
+
         url = (
             "https://maps.googleapis.com/maps/api/place/textsearch/json"
             f"?query={query}"
@@ -64,20 +66,27 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
             f"&key={MAPS_API_KEY}"
             f"&language=es"
         )
+
         req = urllib.request.Request(url)
+
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
+
             results = data.get("results", [])[:4]
 
             payload = []
+
             for r in results:
                 geometry = r.get("geometry", {}).get("location", {})
+
                 if "lat" in geometry and "lng" in geometry:
-                    payload.append({
-                        "name": r.get("name"),
-                        "lat": geometry["lat"],
-                        "lng": geometry["lng"],
-                    })
+                    payload.append(
+                        {
+                            "name": r.get("name"),
+                            "lat": geometry["lat"],
+                            "lng": geometry["lng"],
+                        }
+                    )
 
             return json.dumps(payload, ensure_ascii=False)
 
@@ -87,27 +96,37 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
 
 
 class RoomState:
+
     def __init__(self, room_id: str):
+
         self.room_id = room_id
 
         self.chat_session = client.chats.create(
             model=TEXT_MODEL,
             config=types.GenerateContentConfig(
                 tools=[buscar_nuevo_lugar],
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=False),
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    disable=False
+                ),
             ),
         )
 
         self.system_context_str = ""
+
         self.live_queue: asyncio.Queue = asyncio.Queue()
+
         self.live_task: Optional[asyncio.Task] = None
+
         self.live_ready = asyncio.Event()
+
         self.live_stop = asyncio.Event()
 
     async def enqueue(self, payload: dict):
+
         await self.live_queue.put(payload)
 
     async def stop(self):
+
         self.live_stop.set()
 
         try:
@@ -116,7 +135,9 @@ class RoomState:
             pass
 
         if self.live_task and not self.live_task.done():
+
             self.live_task.cancel()
+
             try:
                 await self.live_task
             except asyncio.CancelledError:
@@ -126,11 +147,15 @@ class RoomState:
 
 
 class ConnectionManager:
+
     def __init__(self):
+
         self.active_connections: dict[str, list[WebSocket]] = {}
+
         self.room_states: dict[str, RoomState] = {}
 
     async def connect(self, websocket: WebSocket, room_id: str):
+
         await websocket.accept()
 
         if room_id not in self.active_connections:
@@ -140,52 +165,53 @@ class ConnectionManager:
             self.room_states[room_id] = RoomState(room_id)
 
         self.active_connections[room_id].append(websocket)
-        logger.info(f"[{room_id}] Cliente conectado. Total={len(self.active_connections[room_id])}")
+
+        logger.info(
+            f"[{room_id}] Cliente conectado. Total={len(self.active_connections[room_id])}"
+        )
 
     async def disconnect(self, websocket: WebSocket, room_id: str):
-        if room_id in self.active_connections and websocket in self.active_connections[room_id]:
-            self.active_connections[room_id].remove(websocket)
+
+        if room_id in self.active_connections:
+
+            if websocket in self.active_connections[room_id]:
+
+                self.active_connections[room_id].remove(websocket)
 
         if room_id in self.active_connections and not self.active_connections[room_id]:
+
             logger.info(f"[{room_id}] Último cliente desconectado. Cerrando sala.")
+
             del self.active_connections[room_id]
 
             room_state = self.room_states.pop(room_id, None)
+
             if room_state:
+
                 await room_state.stop()
 
     async def broadcast_text(self, text: str, room_id: str):
+
         if room_id not in self.active_connections:
             return
 
-        stale = []
         for connection in self.active_connections[room_id]:
+
             try:
                 await connection.send_text(text)
             except Exception:
-                stale.append(connection)
-
-        for connection in stale:
-            try:
-                self.active_connections[room_id].remove(connection)
-            except ValueError:
                 pass
 
     async def broadcast_bytes(self, data: bytes, room_id: str):
+
         if room_id not in self.active_connections:
             return
 
-        stale = []
         for connection in self.active_connections[room_id]:
+
             try:
                 await connection.send_bytes(data)
             except Exception:
-                stale.append(connection)
-
-        for connection in stale:
-            try:
-                self.active_connections[room_id].remove(connection)
-            except ValueError:
                 pass
 
 
@@ -193,12 +219,16 @@ manager = ConnectionManager()
 
 
 def chunk_audio_bytes(audio_bytes: bytes, chunk_size: int = AUDIO_CHUNK_SIZE):
+
     for i in range(0, len(audio_bytes), chunk_size):
-        yield audio_bytes[i:i + chunk_size]
+
+        yield audio_bytes[i : i + chunk_size]
 
 
 async def ensure_live_session(room_id: str):
+
     room_state = manager.room_states.get(room_id)
+
     if not room_state:
         return
 
@@ -206,13 +236,18 @@ async def ensure_live_session(room_id: str):
         return
 
     room_state.live_ready.clear()
+
     room_state.live_stop.clear()
+
     room_state.live_task = asyncio.create_task(run_live_session(room_id))
+
     await room_state.live_ready.wait()
 
 
 async def run_live_session(room_id: str):
+
     room_state = manager.room_states.get(room_id)
+
     if not room_state:
         return
 
@@ -227,300 +262,236 @@ async def run_live_session(room_id: str):
     )
 
     logger.info(f"[{room_id}] Abriendo sesión Gemini Live con modelo {LIVE_MODEL}")
-    logger.info(f"[{room_id}] Live config OK: AUDIO + output_audio_transcription")
 
     try:
-        async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as session:
+
+        async with client.aio.live.connect(
+            model=LIVE_MODEL, config=live_config
+        ) as session:
+
             room_state.live_ready.set()
+
             logger.info(f"[{room_id}] Sesión Live lista")
 
             async def receive_from_gemini():
+
                 try:
+
                     async for response in session.receive():
+
                         sc = getattr(response, "server_content", None)
+
                         if sc is None:
-                            logger.info(f"[{room_id}] Evento Live sin server_content: {response}")
                             continue
 
-                        output_transcription = getattr(sc, "output_transcription", None)
-                        if output_transcription is not None:
-                            text = getattr(output_transcription, "text", "") or ""
-                            text = text.strip()
+                        if getattr(sc, "output_transcription", None):
+
+                            text = sc.output_transcription.text
+
                             if text:
-                                logger.info(f"[{room_id}] Gemini -> transcripción: {text[:120]}")
+
+                                logger.info(
+                                    f"[{room_id}] Gemini -> texto: {text[:120]}"
+                                )
+
                                 await manager.broadcast_text(text, room_id)
 
                         if sc.model_turn:
+
                             for part in sc.model_turn.parts:
-                                inline_data = getattr(part, "inline_data", None)
-                                if inline_data and inline_data.data:
-                                    data = inline_data.data
-                                    logger.info(f"[{room_id}] Gemini -> audio bytes: {len(data)}")
-                                    await manager.broadcast_bytes(data, room_id)
+
+                                if getattr(part, "inline_data", None):
+
+                                    data = part.inline_data.data
+
+                                    if data:
+
+                                        await manager.broadcast_bytes(data, room_id)
 
                         if sc.turn_complete:
+
                             logger.info(f"[{room_id}] Turno completado por Gemini")
 
                 except asyncio.CancelledError:
                     raise
+
                 except Exception as e:
+
                     logger.exception(f"[{room_id}] Error recibiendo de Gemini: {e}")
-                    await manager.broadcast_text(
-                        "Ahora mismo no puedo responder por voz. Prueba otra vez.",
-                        room_id
-                    )
 
             async def send_to_gemini():
+
                 try:
+
                     while not room_state.live_stop.is_set():
+
                         payload = await room_state.live_queue.get()
+
                         payload_type = payload.get("type")
 
                         if payload_type == "__close__":
-                            logger.info(f"[{room_id}] Cierre solicitado de sesión Live")
                             break
 
                         if payload_type == "text":
+
                             text = payload.get("text", "").strip()
+
                             if not text:
                                 continue
 
-                            logger.info(f"[{room_id}] -> Gemini texto: {text[:120]}")
                             await session.send(input=text, end_of_turn=True)
 
                         elif payload_type == "audio_chunk":
+
                             audio_bytes = payload.get("data", b"")
+
+                            is_last = payload.get("is_last", False)
+
                             if not audio_bytes:
                                 continue
 
-                            logger.info(f"[{room_id}] -> Gemini audio chunk: {len(audio_bytes)} bytes")
                             await session.send(
-                                input={"mime_type": AUDIO_MIME, "data": audio_bytes},
-                                end_of_turn=False,
+                                input={
+                                    "mime_type": AUDIO_MIME,
+                                    "data": audio_bytes,
+                                },
+                                end_of_turn=is_last,
                             )
 
-                        elif payload_type == "audio_end":
-                            logger.info(f"[{room_id}] -> Gemini fin de audio")
-                            await session.send(input="", end_of_turn=True)
-
                         elif payload_type == "image_turn":
+
                             image_bytes = payload.get("image_bytes", b"")
+
                             mime_type = payload.get("mime_type", "image/jpeg")
+
                             prompt = payload.get("prompt", "").strip()
 
                             if not image_bytes:
                                 continue
 
-                            logger.info(f"[{room_id}] -> Gemini imagen + texto en mismo turno")
                             await session.send(
                                 input=[
                                     {"mime_type": mime_type, "data": image_bytes},
-                                    prompt or "Describe lo más importante de esta imagen en una frase."
+                                    prompt
+                                    or "Describe lo más importante de esta imagen.",
                                 ],
                                 end_of_turn=True,
                             )
 
                 except asyncio.CancelledError:
                     raise
+
                 except Exception as e:
+
                     logger.exception(f"[{room_id}] Error enviando a Gemini: {e}")
-                    await manager.broadcast_text(
-                        "Se ha cortado la conversación de voz. Inténtalo otra vez.",
-                        room_id
-                    )
 
             await asyncio.gather(receive_from_gemini(), send_to_gemini())
 
-    except asyncio.CancelledError:
-        logger.info(f"[{room_id}] Sesión Live cancelada")
-        raise
     except Exception as e:
+
         logger.exception(f"[{room_id}] Error abriendo conexión Live: {e}")
-        await manager.broadcast_text(
-            "No he podido abrir la sesión de voz.",
-            room_id
-        )
+
     finally:
+
         room_state.live_ready.clear()
+
         logger.info(f"[{room_id}] Sesión Live cerrada")
 
 
 @app.websocket("/ws/{room_id}")
-async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str = Query(None)):
+
+async def websocket_endpoint(
+    websocket: WebSocket, room_id: str, deviceId: str = Query(None)
+):
+
     await manager.connect(websocket, room_id)
+
     room_state = manager.room_states[room_id]
 
     try:
+
         while True:
+
             msg = await websocket.receive()
 
             if "text" not in msg:
                 continue
 
             raw_data = msg["text"]
-            if not raw_data:
-                continue
 
             if raw_data.strip().startswith("{"):
-                try:
-                    payload = json.loads(raw_data)
-                    action = payload.get("action")
 
-                    if action == "setup_profile":
-                        user_ctx = payload.get("context", "")
-                        lat = float(payload.get("lat", 0.0))
-                        lng = float(payload.get("lng", 0.0))
-                        pois_data = buscar_nuevo_lugar("atracciones turisticas", lat, lng)
+                payload = json.loads(raw_data)
 
-                        room_state.system_context_str = f"""
-Eres Locus, un guía turístico experto, directo y conversacional.
-Perfil de los viajeros: {user_ctx}.
-Latitud actual: {lat}. Longitud actual: {lng}.
-Lugares iniciales: {pois_data}
+                action = payload.get("action")
 
-REGLAS CRÍTICAS DE COMPORTAMIENTO:
-1. Ultra Brevedad: Tus respuestas habladas deben tener un máximo de 2 o 3 frases cortas. Eres un acompañante, no una enciclopedia.
-2. Foco Espacial: Limita tus explicaciones ESTRICTAMENTE al lugar o monumento que el usuario está visitando en este momento.
-3. Cero Coletillas: Nunca uses frases como '¡Qué interesante!' o 'Buena pregunta'. Ve directo al dato.
-4. Voz y Acento: Eres una entidad masculina. Español de España por defecto.
-5. FORMATO OBLIGATORIO DE POIS PARA EL MAPA:
-<POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
-6. REGLA DE CONVERSACIÓN ADAPTATIVA:
-Da un dato breve y termina cediendo el control al usuario.
-""".strip()
+                if action == "start_voice_call":
 
-                        first_query = (
-                            f"{room_state.system_context_str}\n"
-                            f"Usuario: Hola, acabo de llegar. Preséntate y dime qué hay cerca."
-                        )
+                    await ensure_live_session(room_id)
 
-                        response = room_state.chat_session.send_message(first_query)
-                        await manager.broadcast_text(response.text, room_id)
-                        continue
-
-                    if action == "start_voice_call":
-                        await ensure_live_session(room_id)
-
-                        poi_name = payload.get("poi_name", "tu destino")
-                        user_text = (
-                            "INSTRUCCIONES DE COMPORTAMIENTO:\n"
-                            f"{room_state.system_context_str}\n\n"
-                            "SITUACIÓN ACTUAL:\n"
-                            f"El usuario acaba de iniciar la ruta en {poi_name}. "
-                            "En un máximo de 2 frases: dale la bienvenida a este lugar exacto, "
-                            "recomiéndale ponerse los auriculares para aislarse del ruido, "
-                            "y pregúntale hacia dónde está mirando."
-                        )
-
-                        await room_state.enqueue({
+                    await room_state.enqueue(
+                        {
                             "type": "text",
-                            "text": user_text,
-                        })
-                        continue
+                            "text": "Hola, soy tu guía Locus. ¿Qué estás viendo ahora mismo?",
+                        }
+                    )
 
-                    if action == "text_chat":
-                        await ensure_live_session(room_id)
+                elif action == "text_chat":
 
-                        user_text = payload.get("data", "").strip()
-                        if user_text:
-                            await room_state.enqueue({
-                                "type": "text",
-                                "text": user_text,
-                            })
-                        continue
+                    await ensure_live_session(room_id)
 
-                    if action == "audio_stream":
-                        await ensure_live_session(room_id)
+                    await room_state.enqueue(
+                        {"type": "text", "text": payload.get("data")}
+                    )
 
-                        try:
-                            audio_b64 = payload.get("data", "")
-                            audio_bytes = base64.b64decode(audio_b64)
-                            if audio_bytes:
-                                logger.info(f"[{room_id}] audio_stream bytes={len(audio_bytes)}")
-                                await room_state.enqueue({
-                                    "type": "audio_chunk",
-                                    "data": audio_bytes,
-                                })
-                        except Exception as e:
-                            logger.exception(f"[{room_id}] Error en audio_stream: {e}")
-                        continue
+                elif action == "audio_chat":
 
-                    if action == "audio_end":
-                        await ensure_live_session(room_id)
-                        await room_state.enqueue({"type": "audio_end"})
-                        continue
+                    await ensure_live_session(room_id)
 
-                    if action == "audio_chat":
-                        await ensure_live_session(room_id)
+                    audio_b64 = payload.get("data")
 
-                        try:
-                            audio_b64 = payload.get("data", "")
-                            audio_bytes = base64.b64decode(audio_b64)
+                    audio_bytes = base64.b64decode(audio_b64)
 
-                            if not audio_bytes:
-                                continue
+                    logger.info(
+                        f"[{room_id}] audio_chat bytes={len(audio_bytes)} | chunk_size={AUDIO_CHUNK_SIZE}"
+                    )
 
-                            logger.info(
-                                f"[{room_id}] audio_chat bytes={len(audio_bytes)} | chunk_size={AUDIO_CHUNK_SIZE}"
-                            )
+                    chunks = list(chunk_audio_bytes(audio_bytes))
 
-                            for chunk in chunk_audio_bytes(audio_bytes):
-                                await room_state.enqueue({
-                                    "type": "audio_chunk",
-                                    "data": chunk,
-                                })
+                    for i, chunk in enumerate(chunks):
 
-                            await room_state.enqueue({"type": "audio_end"})
+                        await room_state.enqueue(
+                            {
+                                "type": "audio_chunk",
+                                "data": chunk,
+                                "is_last": i == len(chunks) - 1,
+                            }
+                        )
 
-                        except Exception as e:
-                            logger.exception(f"[{room_id}] Error procesando audio_chat: {e}")
-                        continue
+                elif action == "image_context":
 
-                    if action == "image_context":
-                        await ensure_live_session(room_id)
+                    await ensure_live_session(room_id)
 
-                        try:
-                            img_b64 = payload.get("data", "")
-                            mime_type = payload.get("mime_type", "image/jpeg")
-                            img_bytes = base64.b64decode(img_b64)
+                    img_b64 = payload.get("data")
 
-                            prompt = (
-                                "El usuario acaba de sacar esta foto en su ubicación actual. "
-                                "Identifica el elemento arquitectónico, cuadro o detalle que domina "
-                                "la imagen y dispara directamente un dato curioso en una sola frase."
-                            )
+                    mime_type = payload.get("mime_type", "image/jpeg")
 
-                            await room_state.enqueue({
-                                "type": "image_turn",
-                                "image_bytes": img_bytes,
-                                "mime_type": mime_type,
-                                "prompt": prompt,
-                            })
+                    img_bytes = base64.b64decode(img_b64)
 
-                        except Exception as e:
-                            logger.exception(f"[{room_id}] Error procesando image_context: {e}")
-                        continue
-
-                except Exception as e:
-                    logger.exception(f"[{room_id}] Error procesando JSON: {e}")
-                    continue
-
-            try:
-                response = room_state.chat_session.send_message(raw_data)
-                await manager.broadcast_text(response.text, room_id)
-            except Exception as e:
-                logger.exception(f"[{room_id}] Error en chat_session: {e}")
-                await manager.broadcast_text(
-                    "No he podido procesar ese mensaje.",
-                    room_id
-                )
+                    await room_state.enqueue(
+                        {
+                            "type": "image_turn",
+                            "image_bytes": img_bytes,
+                            "mime_type": mime_type,
+                            "prompt": "El usuario acaba de sacar esta foto. Dile un dato curioso breve.",
+                        }
+                    )
 
     except WebSocketDisconnect:
-        await manager.disconnect(websocket, room_id)
-    except Exception as e:
-        logger.exception(f"[{room_id}] WebSocket Error: {e}")
+
         await manager.disconnect(websocket, room_id)
 
 
 if __name__ == "__main__":
+
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

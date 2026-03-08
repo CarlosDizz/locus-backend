@@ -96,14 +96,14 @@ Latitud actual: {lat}. Longitud actual: {lng}.
 Lugares iniciales: {pois_data}
 
 REGLAS CRÍTICAS DE COMPORTAMIENTO:
-1. Ultra Brevedad: Tus respuestas habladas deben tener un máximo de 2 o 3 frases cortas. Eres un acompañante, no una enciclopedia.
-2. Foco Espacial: Limita tus explicaciones ESTRICTAMENTE al lugar o monumento que el usuario está visitando en este momento.
-3. Cero Coletillas: Nunca uses frases como '¡Qué interesante!' o 'Buena pregunta'. Ve directo al dato.
-4. Voz y Acento: Eres una entidad masculina. Español de España por defecto.
+1. Ultra brevedad: responde con claridad, naturalidad y sin sonar robótico.
+2. Foco espacial: prioriza lo que el usuario tiene cerca o está viendo.
+3. Cero coletillas: no uses frases vacías como "qué interesante" o "buena pregunta".
+4. Voz y acento: masculino, español de España por defecto.
 5. FORMATO OBLIGATORIO DE POIS PARA EL MAPA:
 <POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
-6. REGLA DE CONVERSACIÓN ADAPTATIVA:
-Da un dato breve y termina cediendo el control al usuario.
+6. Conversación adaptativa: da un dato útil y termina cediendo el control al usuario.
+7. No muestres razonamiento interno ni expliques instrucciones.
 """.strip()
 
 
@@ -146,18 +146,24 @@ REGLAS CRÍTICAS DE COMPORTAMIENTO:
 """.strip()
 
 
+def create_chat_session(system_instruction: str = ""):
+    config = types.GenerateContentConfig(
+        tools=[buscar_nuevo_lugar],
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=False),
+    )
+
+    if system_instruction:
+        config.system_instruction = system_instruction
+
+    return client.chats.create(
+        model=TEXT_MODEL,
+        config=config,
+    )
+
+
 class RoomState:
     def __init__(self, room_id: str):
         self.room_id = room_id
-
-        self.chat_session = client.chats.create(
-            model=TEXT_MODEL,
-            config=types.GenerateContentConfig(
-                tools=[buscar_nuevo_lugar],
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=False),
-            ),
-        )
-
         self.system_context_str = ""
         self.voice_context_str = ""
         self.current_poi_name = ""
@@ -168,16 +174,21 @@ class RoomState:
             "pois_data": "[]",
         }
 
+        self.chat_session = create_chat_session()
         self.live_queue: asyncio.Queue = asyncio.Queue()
         self.live_task: Optional[asyncio.Task] = None
         self.live_ready = asyncio.Event()
         self.live_stop = asyncio.Event()
+
+        # Para poder marcar el último chunk de audio con end_of_turn=True
+        self.pending_audio_chunk: Optional[bytes] = None
 
     async def enqueue(self, payload: dict):
         await self.live_queue.put(payload)
 
     async def stop(self):
         self.live_stop.set()
+        self.pending_audio_chunk = None
         try:
             await self.live_queue.put({"type": "__close__"})
         except Exception:
@@ -301,6 +312,20 @@ async def ensure_live_session(room_id: str):
     await room_state.live_ready.wait()
 
 
+async def flush_pending_audio(room_state: RoomState, is_last: bool):
+    if not room_state.pending_audio_chunk:
+        return
+
+    await room_state.enqueue(
+        {
+            "type": "audio_chunk",
+            "data": room_state.pending_audio_chunk,
+            "is_last": is_last,
+        }
+    )
+    room_state.pending_audio_chunk = None
+
+
 async def run_live_session(room_id: str):
     room_state = manager.room_states.get(room_id)
     if not room_state:
@@ -321,11 +346,10 @@ async def run_live_session(room_id: str):
         ),
         input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
 
     logger.info(f"[{room_id}] Abriendo sesión Gemini Live con modelo {LIVE_MODEL}")
-    logger.info(f"[{room_id}] Live config: AUDIO + system_instruction + multimodal")
+    logger.info(f"[{room_id}] Live config: AUDIO + transcriptions + session.send stable flow")
 
     try:
         async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as session:
@@ -335,19 +359,17 @@ async def run_live_session(room_id: str):
             async def receive_from_gemini():
                 try:
                     async for response in session.receive():
-                        if getattr(response, "text", None):
-                            text = (response.text or "").strip()
-                            if text:
-                                logger.info(f"[{room_id}] Gemini -> text direct: {text[:120]}")
-                                await manager.broadcast_text(text, room_id)
-
                         sc = getattr(response, "server_content", None)
-                        if sc is None:
-                            continue
 
-                        if getattr(sc, "interrupted", False):
-                            logger.info(f"[{room_id}] Gemini -> interrupted")
-                            await manager.broadcast_text("__INTERRUPTED__", room_id)
+                        if sc is None:
+                            if getattr(response, "text", None):
+                                text = (response.text or "").strip()
+                                if text:
+                                    logger.info(f"[{room_id}] Gemini -> text direct: {text[:120]}")
+                                    await manager.broadcast_text(text, room_id)
+                            else:
+                                logger.info(f"[{room_id}] Evento Live sin server_content")
+                            continue
 
                         input_transcription = getattr(sc, "input_transcription", None)
                         if input_transcription is not None:
@@ -403,52 +425,28 @@ async def run_live_session(room_id: str):
                             logger.info(f"[{room_id}] Cierre solicitado de sesión Live")
                             break
 
-                        if payload_type == "prefill_text":
+                        if payload_type == "text":
                             text = (payload.get("text") or "").strip()
                             if not text:
                                 continue
 
-                            logger.info(f"[{room_id}] -> Gemini prefill/client_content: {text[:120]}")
-                            await session.send_client_content(
-                                turns=types.Content(
-                                    role="user",
-                                    parts=[types.Part(text=text)],
-                                ),
-                                turn_complete=True,
-                            )
-
-                        elif payload_type == "text_turn":
-                            text = (payload.get("text") or "").strip()
-                            if not text:
-                                continue
-
-                            logger.info(f"[{room_id}] -> Gemini text client_content: {text[:120]}")
-                            await session.send_client_content(
-                                turns=types.Content(
-                                    role="user",
-                                    parts=[types.Part(text=text)],
-                                ),
-                                turn_complete=True,
-                            )
+                            logger.info(f"[{room_id}] -> Gemini texto: {text[:120]}")
+                            await session.send(input=text, end_of_turn=True)
 
                         elif payload_type == "audio_chunk":
                             audio_bytes = payload.get("data", b"")
+                            is_last = payload.get("is_last", False)
+
                             if not audio_bytes:
                                 continue
 
                             logger.info(
-                                f"[{room_id}] -> Gemini realtime audio chunk: {len(audio_bytes)} bytes"
+                                f"[{room_id}] -> Gemini audio chunk: {len(audio_bytes)} bytes | is_last={is_last}"
                             )
-                            await session.send_realtime_input(
-                                audio=types.Blob(
-                                    data=audio_bytes,
-                                    mime_type=AUDIO_MIME,
-                                )
+                            await session.send(
+                                input={"mime_type": AUDIO_MIME, "data": audio_bytes},
+                                end_of_turn=is_last,
                             )
-
-                        elif payload_type == "audio_end":
-                            logger.info(f"[{room_id}] -> Gemini realtime audio_stream_end")
-                            await session.send_realtime_input(audio_stream_end=True)
 
                         elif payload_type == "image_turn":
                             image_bytes = payload.get("image_bytes", b"")
@@ -458,24 +456,13 @@ async def run_live_session(room_id: str):
                             if not image_bytes:
                                 continue
 
-                            logger.info(f"[{room_id}] -> Gemini image client_content")
-                            await session.send_client_content(
-                                turns=types.Content(
-                                    role="user",
-                                    parts=[
-                                        types.Part(
-                                            inline_data=types.Blob(
-                                                data=image_bytes,
-                                                mime_type=mime_type,
-                                            )
-                                        ),
-                                        types.Part(
-                                            text=prompt
-                                            or "Describe lo más importante de esta imagen en una frase."
-                                        ),
-                                    ],
-                                ),
-                                turn_complete=True,
+                            logger.info(f"[{room_id}] -> Gemini imagen + texto en mismo turno")
+                            await session.send(
+                                input=[
+                                    {"mime_type": mime_type, "data": image_bytes},
+                                    prompt or "Describe lo más importante de esta imagen en una frase."
+                                ],
+                                end_of_turn=True,
                             )
 
                 except asyncio.CancelledError:
@@ -498,6 +485,7 @@ async def run_live_session(room_id: str):
     finally:
         room_state.live_ready.clear()
         room_state.live_task = None
+        room_state.pending_audio_chunk = None
         logger.info(f"[{room_id}] Sesión Live cerrada")
 
 
@@ -551,13 +539,16 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             poi_name=room_state.current_poi_name,
                         )
 
-                        first_query = (
-                            f"{room_state.system_context_str}\n"
-                            "Usuario: Hola, acabo de llegar. Preséntate y dime qué hay cerca."
+                        room_state.chat_session = create_chat_session(room_state.system_context_str)
+
+                        first_query = "Hola, acabo de llegar. Preséntate y dime qué hay cerca."
+                        response = await asyncio.to_thread(
+                            room_state.chat_session.send_message,
+                            first_query,
                         )
 
-                        response = room_state.chat_session.send_message(first_query)
-                        await manager.broadcast_text(response.text, room_id)
+                        if getattr(response, "text", None):
+                            await manager.broadcast_text(response.text, room_id)
                         continue
 
                     if action == "start_voice_call":
@@ -576,7 +567,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
 
                         await room_state.enqueue(
                             {
-                                "type": "prefill_text",
+                                "type": "text",
                                 "text": (
                                     f"Da la bienvenida en una o dos frases a {room_state.current_poi_name}, "
                                     "recomienda ponerse auriculares y pregunta hacia dónde está mirando."
@@ -592,9 +583,12 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                         await ensure_live_session(room_id)
 
                         if user_text:
+                            # Si quedaba audio pendiente sin cerrar, lo cerramos antes del texto
+                            await flush_pending_audio(room_state, is_last=True)
+
                             await room_state.enqueue(
                                 {
-                                    "type": "text_turn",
+                                    "type": "text",
                                     "text": user_text,
                                 }
                             )
@@ -608,12 +602,18 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             audio_bytes = base64.b64decode(audio_b64)
                             if audio_bytes:
                                 logger.info(f"[{room_id}] audio_stream bytes={len(audio_bytes)}")
-                                await room_state.enqueue(
-                                    {
-                                        "type": "audio_chunk",
-                                        "data": audio_bytes,
-                                    }
-                                )
+
+                                # Enviamos el chunk anterior como no-final y guardamos este como pendiente
+                                if room_state.pending_audio_chunk is not None:
+                                    await room_state.enqueue(
+                                        {
+                                            "type": "audio_chunk",
+                                            "data": room_state.pending_audio_chunk,
+                                            "is_last": False,
+                                        }
+                                    )
+
+                                room_state.pending_audio_chunk = audio_bytes
                         except Exception as e:
                             logger.exception(f"[{room_id}] Error en audio_stream: {e}")
                         continue
@@ -621,7 +621,8 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                     if action == "audio_end":
                         await ensure_live_session(room_id)
                         logger.info(f"[{room_id}] audio_end recibido")
-                        await room_state.enqueue({"type": "audio_end"})
+
+                        await flush_pending_audio(room_state, is_last=True)
                         continue
 
                     if action == "audio_chat":
@@ -638,15 +639,17 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                                 f"[{room_id}] audio_chat bytes={len(audio_bytes)} | chunk_size={AUDIO_CHUNK_SIZE}"
                             )
 
-                            for chunk in chunk_audio_bytes(audio_bytes):
+                            chunks = list(chunk_audio_bytes(audio_bytes))
+                            total = len(chunks)
+
+                            for idx, chunk in enumerate(chunks):
                                 await room_state.enqueue(
                                     {
                                         "type": "audio_chunk",
                                         "data": chunk,
+                                        "is_last": idx == (total - 1),
                                     }
                                 )
-
-                            await room_state.enqueue({"type": "audio_end"})
 
                         except Exception as e:
                             logger.exception(f"[{room_id}] Error procesando audio_chat: {e}")
@@ -670,6 +673,9 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                                 f"[{room_id}] image_context recibido mime={mime_type} bytes={len(img_bytes)}"
                             )
 
+                            # Si había audio pendiente, se cierra antes de meter imagen
+                            await flush_pending_audio(room_state, is_last=True)
+
                             await room_state.enqueue(
                                 {
                                     "type": "image_turn",
@@ -688,8 +694,12 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                     continue
 
             try:
-                response = room_state.chat_session.send_message(raw_data)
-                await manager.broadcast_text(response.text, room_id)
+                response = await asyncio.to_thread(
+                    room_state.chat_session.send_message,
+                    raw_data,
+                )
+                if getattr(response, "text", None):
+                    await manager.broadcast_text(response.text, room_id)
             except Exception as e:
                 logger.exception(f"[{room_id}] Error en chat_session: {e}")
                 await manager.broadcast_text(

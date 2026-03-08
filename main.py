@@ -22,7 +22,7 @@ logger = logging.getLogger("LocusIA")
 MAPS_API_KEY = os.environ.get("MAPS_API_KEY")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o")
 OPENAI_TTS_MODEL = os.environ.get("OPENAI_TTS_MODEL", "tts-1")
 OPENAI_TTS_VOICE = os.environ.get("OPENAI_TTS_VOICE", "onyx")
 OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1")
@@ -108,45 +108,40 @@ LUGARES CERCANOS DETECTADOS:
 {pois_data}
 
 REGLAS:
-1. Habla siempre como guía turístico real, no como asistente genérico.
-2. Adapta tu idioma, energía y forma de hablar al perfil del viajero.
-3. Si el viajero acaba de llegar o pregunta qué hay cerca, debes incluir POIs.
-4. Cuando muestres POIs, díselo al usuario de forma natural para que mire el mapa.
+1. Habla como guía turístico real, no como asistente genérico.
+2. Adapta idioma, energía y forma de hablar al perfil del viajero.
+3. Si el viajero pregunta qué hay cerca o acaba de llegar, incluye POIs.
+4. Si incluyes POIs, dilo de forma natural para que mire el mapa.
 5. No inventes datos concretos.
-6. No des la razón por darla: di la verdad técnica.
-7. No des enlaces ni URLs.
-8. El formato de POIs es estrictamente este:
+6. No des enlaces ni URLs.
+7. El formato de POIs es estrictamente este:
 <POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
 """
 
 
 def build_voice_context(
     user_ctx: str,
-    lat: float,
-    lng: float,
     pois_data: str,
     poi_name: str,
     research: str,
     last_img: str
 ) -> str:
-    ubicacion_foco = f"ESTÁS FÍSICAMENTE EN: {poi_name}." if poi_name else "Caminando por la ciudad, sin destino fijo."
-
-    info = ""
-    if research:
-        info += f"\nTUS NOTAS DE EXPERTO (NO LAS LEAS LITERALMENTE, ÚSALAS PARA HABLAR MEJOR):\n{research}\n"
-    if last_img:
-        info += f"\nÚLTIMO DETALLE VISUAL DEL QUE ESTÁ HABLANDO EL USUARIO:\n{last_img}\n"
-
-    return f"""Eres Locus, un guía turístico presencial, carismático, observador y natural. Estás acompañando de verdad a estos viajeros durante la visita.
+    return f"""Eres Locus, un guía turístico presencial, masculino, natural, observador y con criterio. Estás acompañando de verdad a estos viajeros durante una visita real.
 
 PERFIL DE LOS VIAJEROS:
 {user_ctx}
 
-{ubicacion_foco}
+POI ACTUAL DE LA VISITA:
+{poi_name if poi_name else "NO DEFINIDO"}
 
-LUGARES CERCANOS:
+POIS CERCANOS:
 {pois_data}
-{info}
+
+NOTAS INTERNAS DE APOYO SOBRE EL POI ACTUAL:
+{research if research else "Aún no hay notas enriquecidas."}
+
+ÚLTIMO DETALLE VISUAL COMENTADO:
+{last_img if last_img else "Ninguno."}
 
 REGLA CRÍTICA ABSOLUTA:
 Habla SIEMPRE de forma directa con el usuario.
@@ -158,43 +153,57 @@ NO hables como asistente.
 Di únicamente el texto final que el usuario va a escuchar de tu voz.
 
 REGLA CRÍTICA DE FOCO:
-El POI actual de la visita es: {poi_name if poi_name else "NO DEFINIDO"}.
-Mientras el usuario no diga claramente que se ha movido a otro lugar, asume SIEMPRE que sigue en ese mismo sitio.
+El lugar actual de la visita es {poi_name if poi_name else "el POI actual"}.
+Mientras el usuario no diga claramente que se ha movido, asume SIEMPRE que sigue en ese mismo sitio.
 NO le preguntes otra vez en qué lugar está.
 NO cambies el foco a otros POIs cercanos.
 Si el usuario pregunta algo ambiguo, interprétalo siempre dentro del POI actual.
 
-REGLAS DE COMPORTAMIENTO:
-1. MEMORIA Y CONTINUIDAD: Si el usuario habla de un detalle concreto (una locomotora, una puerta, una estatua, una pintura), mantén el foco ahí. No vuelvas al contexto general salvo que sea necesario.
-2. PROFUNDIDAD: No repitas datos ya dichos. Si ya presentaste el lugar, baja al detalle: un secreto, una anécdota, un rasgo arquitectónico, un fallo curioso o una lectura más fina.
-3. ADAPTACIÓN: Ajusta idioma, energía, tono y acento al perfil del usuario. Nunca pidas confirmar en qué ciudad estáis.
-4. BREVEDAD: Responde en 2 o 3 frases como máximo, salvo que el usuario pida claramente más detalle.
-5. VERDAD: No inventes nada. Si no estás seguro, dilo con naturalidad.
-6. NATURALIDAD: Suena como un guía real, no como una app ni como un documental.
-7. CIERRE: Mantén viva la visita y termina de forma conversacional, preferiblemente devolviendo la atención a lo que están viendo.
+REGLA CRÍTICA DE VERACIDAD:
+Nunca inventes una identificación concreta de un objeto, obra, locomotora, estatua o elemento arquitectónico.
+Nunca uses “probablemente”, “quizá”, “seguramente” o suposiciones flojas como si fueran datos.
+Si no puedes identificar algo con seguridad, dilo claramente y pide el detalle mínimo útil para afinar, como una placa, una inscripción, un número, una foto más cercana o un ángulo mejor.
+
+ESTILO DE LOCUS:
+- Suenas como un guía bueno de verdad, no como un folleto ni como una IA blandita.
+- Tienes iniciativa.
+- Vas al detalle.
+- Si el usuario pide historia, curiosidades, modelo, contexto o profundidad, entras en modo experto y profundizas de verdad.
+- Si el usuario solo hace una pregunta breve, puedes responder breve.
+- No repitas el contexto general del lugar si ya estáis hablando de un objeto concreto.
+
+REGLAS DE RESPUESTA:
+1. Si el usuario señala un objeto concreto, habla de ese objeto, no del lugar en general.
+2. Si el usuario pide profundidad, detalle, historia, curiosidades o contexto técnico, responde con más sustancia y baja al detalle.
+3. Si ya has presentado el lugar, no vuelvas a presentarlo. Avanza.
+4. Si puedes sostener un dato con seguridad, dilo con convicción.
+5. Si no puedes sostenerlo, sé honesto.
+6. No cierres siempre con una pregunta vacía. Solo pregunta algo si de verdad ayuda a continuar la visita.
+7. No des enlaces ni menciones webs.
 """
 
 
 def build_poi_research_prompt(user_ctx: str, poi_name: str, lat: float, lng: float, pois_data: str) -> str:
     return f"""Eres el documentalista de un guía turístico experto.
 
-TU MISIÓN:
-Preparar notas internas muy útiles sobre este lugar: {poi_name}
+Tu misión es preparar notas internas útiles y fiables sobre este lugar:
+{poi_name}
 
-CONTEXTO:
-- Perfil de la audiencia: {user_ctx}
+Contexto:
+- Perfil del viajero: {user_ctx}
 - Coordenadas aproximadas: lat {lat}, lng {lng}
 - Zona cercana / POIs próximos: {pois_data}
 
-DEVUELVE SOLO NOTAS INTERNAS, EN VIÑETAS RÁPIDAS Y CONCRETAS:
-- Identificación fiable del lugar
-- Año o época de creación si se conoce con seguridad
-- Autor, impulsor o institución responsable si se conoce
-- 1 anécdota potente o dato poco obvio
-- 2 detalles visuales en los que fijarse in situ
-- 1 posible confusión habitual o error común que conviene no cometer
+Devuelve solo notas internas, en viñetas rápidas y concretas:
+- Qué es exactamente el lugar
+- Fecha, época o etapa histórica relevante si se conoce con seguridad
+- Autor, promotor o institución responsable si aplica
+- 2 o 3 datos históricos o culturales potentes
+- 2 detalles visuales útiles para una visita en persona
+- 1 confusión habitual o error común que conviene evitar
+- Si el lugar contiene un objeto emblemático conocido, menciónalo
 
-REGLAS:
+Reglas:
 - Sin relleno
 - Sin introducciones
 - Sin tono literario
@@ -203,19 +212,37 @@ REGLAS:
 """
 
 
+def build_history_text(chat_history: list[dict]) -> str:
+    lines = []
+    for msg in chat_history[-12:]:
+        role = "Usuario" if msg["role"] == "user" else "Locus"
+        lines.append(f"{role}: {msg['content']}")
+    return "\n".join(lines)
+
+
+def detect_depth_mode(user_message: str) -> bool:
+    text = (user_message or "").lower()
+    triggers = [
+        "más", "mas", "profund", "detalle", "detalles", "historia",
+        "curiosidad", "curiosidades", "modelo", "por qué", "porque",
+        "explícame", "explicame", "en profundidad", "más a fondo",
+        "cuéntame", "cuentame", "quiero saber más", "quiero saber mas",
+        "toda la historia", "contexto", "origen"
+    ]
+    return any(t in text for t in triggers)
+
+
 # ---------------------------------------------------------
 # OPENAI HELPERS
 # ---------------------------------------------------------
 
-def ask_openai_chat(system_context: str, user_message: str, history: list | None = None) -> str:
-    messages = [{"role": "system", "content": system_context}]
-    if history:
-        messages.extend(history)
-    messages.append({"role": "user", "content": user_message})
-
+def ask_openai_chat(system_context: str, user_message: str) -> str:
     response = openai_client.chat.completions.create(
         model=OPENAI_CHAT_MODEL,
-        messages=messages,
+        messages=[
+            {"role": "system", "content": system_context},
+            {"role": "user", "content": user_message},
+        ],
     )
     return (response.choices[0].message.content or "").strip()
 
@@ -224,25 +251,22 @@ def ask_openai_image(
     system_context: str,
     prompt: str,
     image_bytes: bytes,
-    mime_type: str,
-    history: list | None = None
+    mime_type: str
 ) -> str:
     image_data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}"
 
-    messages = [{"role": "system", "content": system_context}]
-    if history:
-        messages.extend(history)
-    messages.append({
-        "role": "user",
-        "content": [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": image_data_url}},
-        ],
-    })
-
     response = openai_client.chat.completions.create(
         model=OPENAI_CHAT_MODEL,
-        messages=messages,
+        messages=[
+            {"role": "system", "content": system_context},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            },
+        ],
     )
     return (response.choices[0].message.content or "").strip()
 
@@ -250,8 +274,7 @@ def ask_openai_image(
 def ask_openai_research(system_context: str, user_message: str) -> str:
     response = openai_client.responses.create(
         model=OPENAI_CHAT_MODEL,
-        tools=[{"type": "web_search"}],
-        tool_choice="auto",
+        tools=[{"type": "web_search_preview"}],
         input=[
             {
                 "role": "system",
@@ -321,7 +344,7 @@ def synthesize_speech_wav(text: str) -> bytes:
         voice=OPENAI_TTS_VOICE,
         input=text,
         response_format="wav",
-        speed=1.15,
+        speed=1.08,
     )
     return response.read()
 
@@ -336,12 +359,15 @@ def sanitize_for_voice(text: str) -> str:
     return sanitized
 
 
-def build_history_text(chat_history: list[dict]) -> str:
-    lines = []
-    for msg in chat_history[-10:]:
-        role = "Usuario" if msg["role"] == "user" else "Locus"
-        lines.append(f"{role}: {msg['content']}")
-    return "\n".join(lines)
+def infer_language_hint(user_ctx: str) -> Optional[str]:
+    lowered = (user_ctx or "").lower()
+    if "english" in lowered or "inglés" in lowered or "ingles" in lowered:
+        return "en"
+    if "italiano" in lowered or "italian" in lowered:
+        return "it"
+    if "francés" in lowered or "frances" in lowered or "french" in lowered:
+        return "fr"
+    return "es"
 
 
 # ---------------------------------------------------------
@@ -352,11 +378,6 @@ class RoomState:
     def __init__(self, room_id: str):
         self.room_id = room_id
         self.system_context_str = ""
-        self.current_poi_name = ""
-        self.poi_research_summary = ""
-        self.last_image_summary = ""
-        self.chat_history: list[dict] = []
-        self.poi_research_task: Optional[asyncio.Task] = None
 
         self.profile = {
             "user_ctx": "",
@@ -365,11 +386,18 @@ class RoomState:
             "pois_data": "[]",
         }
 
+        self.current_poi_name = ""
+        self.poi_research_summary = ""
+        self.last_image_summary = ""
+        self.chat_history: list[dict] = []
+
+        self.poi_research_task: Optional[asyncio.Task] = None
+
         self.turn_lock = asyncio.Lock()
         self.call_start_lock = asyncio.Lock()
+
         self.call_active = False
         self.poi_generation = 0
-        self.last_public_text = ""
         self.welcome_sent_for_generation = False
 
 
@@ -457,7 +485,7 @@ async def enrich_poi_context_in_background(room_state: RoomState, poi_generation
 
         summary = await asyncio.to_thread(
             ask_openai_research,
-            "Eres un documentalista de élite. Ve al grano. No inventes nada. No des enlaces ni URLs.",
+            "Eres un documentalista preciso. Ve al grano. No inventes nada. Sin enlaces.",
             prompt
         )
 
@@ -466,7 +494,7 @@ async def enrich_poi_context_in_background(room_state: RoomState, poi_generation
             return
 
         if room_state.current_poi_name != poi_name:
-            logger.info(f"[{room_state.room_id}] Research descartado: POI actual cambió")
+            logger.info(f"[{room_state.room_id}] Research descartado porque el POI cambió")
             return
 
         room_state.poi_research_summary = summary.strip()
@@ -480,7 +508,7 @@ async def enrich_poi_context_in_background(room_state: RoomState, poi_generation
 
 
 # ---------------------------------------------------------
-# SPEAK / ANSWERS
+# GENERACIÓN DE RESPUESTAS
 # ---------------------------------------------------------
 
 async def speak_text(room_state: RoomState, room_id: str, text: str):
@@ -488,7 +516,6 @@ async def speak_text(room_state: RoomState, room_id: str, text: str):
     if not clean_text:
         return
 
-    room_state.last_public_text = clean_text
     await manager.broadcast_text(clean_text, room_id)
 
     try:
@@ -505,29 +532,37 @@ async def speak_text(room_state: RoomState, room_id: str, text: str):
 async def generate_fast_answer(room_state: RoomState, user_message: str) -> str:
     system_context = build_voice_context(
         user_ctx=room_state.profile.get("user_ctx", ""),
-        lat=float(room_state.profile.get("lat", 0.0)),
-        lng=float(room_state.profile.get("lng", 0.0)),
         pois_data=room_state.profile.get("pois_data", "[]"),
         poi_name=room_state.current_poi_name,
         research=room_state.poi_research_summary,
-        last_img=room_state.last_image_summary
+        last_img=room_state.last_image_summary,
     )
 
     history_text = build_history_text(room_state.chat_history)
+    depth_mode = detect_depth_mode(user_message)
+
+    answer_style = (
+        "MODO EXPERTO: el usuario ha pedido más profundidad. Da una respuesta más rica, concreta y útil. "
+        "No te quedes en generalidades. Si hablas de un objeto concreto, entra en el detalle histórico o técnico real que puedas sostener."
+        if depth_mode
+        else
+        "MODO NORMAL: responde de forma natural, útil y directa."
+    )
 
     prompt = f"""HISTORIAL RECIENTE DE LA VISITA:
 {history_text}
 
-NUEVO MENSAJE DEL USUARIO:
+MENSAJE NUEVO DEL USUARIO:
 {user_message}
+
+{answer_style}
 
 RESPONDE COMO LOCUS:"""
 
     answer = await asyncio.to_thread(
         ask_openai_chat,
         system_context,
-        prompt,
-        None
+        prompt
     )
 
     room_state.chat_history.append({"role": "user", "content": user_message})
@@ -541,22 +576,18 @@ async def respond_in_call(room_state: RoomState, room_id: str, user_message: str
     async with room_state.turn_lock:
         answer = await generate_fast_answer(room_state, user_message)
         if not answer:
-            answer = "No te he escuchado bien, ¿qué decías exactamente de esto?"
+            answer = "No te he entendido bien. Dímelo otra vez y voy al grano."
         await speak_text(room_state, room_id, answer)
 
 
 async def respond_to_image_in_call(room_state: RoomState, room_id: str, image_bytes: bytes, mime_type: str):
     async with room_state.turn_lock:
-        poi_name = room_state.current_poi_name or "el lugar actual"
-
         system_context = build_voice_context(
             user_ctx=room_state.profile.get("user_ctx", ""),
-            lat=float(room_state.profile.get("lat", 0.0)),
-            lng=float(room_state.profile.get("lng", 0.0)),
             pois_data=room_state.profile.get("pois_data", "[]"),
-            poi_name=poi_name,
+            poi_name=room_state.current_poi_name,
             research=room_state.poi_research_summary,
-            last_img=""
+            last_img="",
         )
 
         history_text = build_history_text(room_state.chat_history)
@@ -564,10 +595,10 @@ async def respond_to_image_in_call(room_state: RoomState, room_id: str, image_by
         prompt = f"""HISTORIAL RECIENTE DE LA VISITA:
 {history_text}
 
-TE ESTOY ENSEÑANDO ESTO QUE ESTOY VIENDO AHORA MISMO EN {poi_name}.
-Tenlo en cuenta para la interacción y explícame qué es como mi guía turístico.
-Si puedes identificarlo con seguridad, dilo.
-Si no puedes identificarlo con seguridad, sé honesto y describe solo lo que sí puedes sostener.
+El usuario te está enseñando un detalle que tiene ahora mismo delante en {room_state.current_poi_name}.
+Identifica con seguridad lo que puedas.
+Si no puedes identificarlo con seguridad, dilo claramente y describe solo lo que sí puedes sostener.
+Habla como su guía turístico presencial, no como una herramienta de visión artificial.
 
 RESPONDE COMO LOCUS:"""
 
@@ -576,31 +607,18 @@ RESPONDE COMO LOCUS:"""
             system_context,
             prompt,
             image_bytes,
-            mime_type,
-            None
+            mime_type
         )
 
         if not answer:
-            answer = "No lo veo del todo claro así. Acércame un poco más el detalle o la placa y lo afinamos."
+            answer = "Así no lo veo del todo claro. Acércame un poco más el detalle o la placa y lo afinamos."
 
         room_state.last_image_summary = answer
-
-        room_state.chat_history.append({"role": "user", "content": "[El usuario me ha enseñado una imagen del detalle que tiene delante]"})
+        room_state.chat_history.append({"role": "user", "content": "[El usuario ha enseñado una imagen del detalle que tiene delante]"})
         room_state.chat_history.append({"role": "assistant", "content": answer})
         room_state.chat_history = room_state.chat_history[-12:]
 
         await speak_text(room_state, room_id, answer)
-
-
-def infer_language_hint(user_ctx: str) -> Optional[str]:
-    lowered = (user_ctx or "").lower()
-    if "english" in lowered or "inglés" in lowered or "ingles" in lowered:
-        return "en"
-    if "italiano" in lowered or "italian" in lowered:
-        return "it"
-    if "francés" in lowered or "frances" in lowered or "french" in lowered:
-        return "fr"
-    return "es"
 
 
 # ---------------------------------------------------------
@@ -689,7 +707,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                                 await respond_in_call(
                                     room_state,
                                     room_id,
-                                    f"El usuario acaba de iniciar la llamada y ha seleccionado {room_state.current_poi_name}. Salúdale por voz, recomienda cascos si hay ruido y pregúntale si empezamos."
+                                    f"El usuario acaba de iniciar la llamada y ha seleccionado {room_state.current_poi_name}. Saluda una sola vez, recomienda cascos si hay ruido y pregunta si empezamos."
                                 )
                         continue
 

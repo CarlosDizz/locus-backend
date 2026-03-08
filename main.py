@@ -37,8 +37,7 @@ AUDIO_BYTES_PER_SAMPLE = 2
 AUDIO_CHANNELS = 1
 AUDIO_CHUNK_SIZE = int(
     AUDIO_SAMPLE_RATE * (AUDIO_CHUNK_MS / 1000) * AUDIO_BYTES_PER_SAMPLE * AUDIO_CHANNELS
-)  # 3200 bytes para 100ms de PCM16 mono a 16kHz
-
+)  # 3200 bytes = 100 ms de PCM16 mono a 16 kHz
 
 app = FastAPI()
 app.add_middleware(
@@ -69,6 +68,7 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
         with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             results = data.get("results", [])[:4]
+
             payload = []
             for r in results:
                 geometry = r.get("geometry", {}).get("location", {})
@@ -78,7 +78,9 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
                         "lat": geometry["lat"],
                         "lng": geometry["lng"],
                     })
+
             return json.dumps(payload, ensure_ascii=False)
+
     except Exception as e:
         logger.exception(f"Error en Maps: {e}")
         return "[]"
@@ -107,6 +109,7 @@ class RoomState:
 
     async def stop(self):
         self.live_stop.set()
+
         try:
             await self.live_queue.put({"type": "__close__"})
         except Exception:
@@ -214,15 +217,17 @@ async def run_live_session(room_id: str):
         return
 
     live_config = types.LiveConnectConfig(
-        response_modalities=["TEXT", "AUDIO"],
+        response_modalities=["AUDIO"],
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
             )
         ),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
     )
 
     logger.info(f"[{room_id}] Abriendo sesión Gemini Live con modelo {LIVE_MODEL}")
+    logger.info(f"[{room_id}] Live config OK: AUDIO + output_audio_transcription")
 
     try:
         async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as session:
@@ -237,19 +242,21 @@ async def run_live_session(room_id: str):
                             logger.info(f"[{room_id}] Evento Live sin server_content: {response}")
                             continue
 
+                        output_transcription = getattr(sc, "output_transcription", None)
+                        if output_transcription is not None:
+                            text = getattr(output_transcription, "text", "") or ""
+                            text = text.strip()
+                            if text:
+                                logger.info(f"[{room_id}] Gemini -> transcripción: {text[:120]}")
+                                await manager.broadcast_text(text, room_id)
+
                         if sc.model_turn:
                             for part in sc.model_turn.parts:
-                                if getattr(part, "text", None):
-                                    text = part.text.strip()
-                                    if text:
-                                        logger.info(f"[{room_id}] Gemini -> texto: {text[:120]}")
-                                        await manager.broadcast_text(text, room_id)
-
-                                if getattr(part, "inline_data", None):
-                                    data = part.inline_data.data
-                                    if data:
-                                        logger.info(f"[{room_id}] Gemini -> audio bytes: {len(data)}")
-                                        await manager.broadcast_bytes(data, room_id)
+                                inline_data = getattr(part, "inline_data", None)
+                                if inline_data and inline_data.data:
+                                    data = inline_data.data
+                                    logger.info(f"[{room_id}] Gemini -> audio bytes: {len(data)}")
+                                    await manager.broadcast_bytes(data, room_id)
 
                         if sc.turn_complete:
                             logger.info(f"[{room_id}] Turno completado por Gemini")
@@ -429,6 +436,7 @@ Da un dato breve y termina cediendo el control al usuario.
                             audio_b64 = payload.get("data", "")
                             audio_bytes = base64.b64decode(audio_b64)
                             if audio_bytes:
+                                logger.info(f"[{room_id}] audio_stream bytes={len(audio_bytes)}")
                                 await room_state.enqueue({
                                     "type": "audio_chunk",
                                     "data": audio_bytes,
@@ -453,8 +461,7 @@ Da un dato breve y termina cediendo el control al usuario.
                                 continue
 
                             logger.info(
-                                f"[{room_id}] audio_chat recibido: {len(audio_bytes)} bytes. "
-                                f"Troceando en {AUDIO_CHUNK_SIZE} bytes"
+                                f"[{room_id}] audio_chat bytes={len(audio_bytes)} | chunk_size={AUDIO_CHUNK_SIZE}"
                             )
 
                             for chunk in chunk_audio_bytes(audio_bytes):
@@ -498,7 +505,6 @@ Da un dato breve y termina cediendo el control al usuario.
                     logger.exception(f"[{room_id}] Error procesando JSON: {e}")
                     continue
 
-            # fallback texto normal al chat no-live
             try:
                 response = room_state.chat_session.send_message(raw_data)
                 await manager.broadcast_text(response.text, room_id)

@@ -5,6 +5,7 @@ import urllib.request
 import logging
 import base64
 import asyncio
+import struct
 from google import genai
 from google.genai import types
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
@@ -111,12 +112,19 @@ async def run_live_session(room_id: str):
             async def receive_from_gemini():
                 try:
                     async for response in ephemeral_session.receive():
-                        if response.server_content and response.server_content.model_turn:
-                            for part in response.server_content.model_turn.parts:
-                                if part.text:
-                                    await manager.broadcast_text(part.text, room_id)
-                                if part.inline_data:
-                                    await manager.broadcast_bytes(part.inline_data.data, room_id)
+                        sc = response.server_content
+                        if sc is not None:
+                            if sc.model_turn:
+                                for part in sc.model_turn.parts:
+                                    if part.text:
+                                        logger.info(f"[{room_id}] IA responde con TEXTO.")
+                                        await manager.broadcast_text(part.text, room_id)
+                                    if part.inline_data:
+                                        await manager.broadcast_bytes(part.inline_data.data, room_id)
+                            if sc.turn_complete:
+                                logger.info(f"[{room_id}] <-- IA terminó de hablar/procesar su turno.")
+                except asyncio.CancelledError:
+                    pass
                 except Exception as e:
                     logger.error(f"[{room_id}] Error en recepción: {e}")
 
@@ -132,13 +140,18 @@ async def run_live_session(room_id: str):
                         elif "mime_type" in payload and "data" in payload:
                             media_input = {"mime_type": payload["mime_type"], "data": payload["data"]}
                             is_audio = payload["mime_type"].startswith("audio/")
-                            logger.info(f"[{room_id}] Inyectando BINARIO ({payload['mime_type']}) en túnel...")
 
+                            logger.info(f"[{room_id}] Inyectando {payload['mime_type']} en túnel...")
                             await ephemeral_session.send(input=media_input, end_of_turn=is_audio)
+
+                            if is_audio:
+                                logger.info(f"[{room_id}] Turno cerrado. Esperando respuesta de la IA...")
 
                         elif "text" in payload:
                             logger.info(f"[{room_id}] Inyectando TEXTO en túnel: {payload['text'][:50]}...")
                             await ephemeral_session.send(input=payload["text"], end_of_turn=True)
+                except asyncio.CancelledError:
+                    pass
                 except Exception as e:
                     logger.error(f"[{room_id}] Error en envío: {e}")
 
@@ -205,7 +218,14 @@ Nunca des explicaciones largas de golpe. Tu estructura obligatoria es:
                         if action == "audio_chat":
                             try:
                                 audio_bytes = base64.b64decode(payload.get("data"))
-                                logger.info(f"[{room_id}] Recibido PCM crudo ({len(audio_bytes)} bytes)")
+
+                                # OSCILOSCOPIO MATEMÁTICO: Calcular volumen máximo
+                                valid_length = (len(audio_bytes) // 2) * 2
+                                samples = struct.unpack(f"<{valid_length // 2}h", audio_bytes[:valid_length])
+                                max_amp = max(abs(s) for s in samples) if samples else 0
+                                is_silent = "SÍ (Microfono bloqueado/vacío)" if max_amp < 150 else "NO (Hay sonido)"
+
+                                logger.info(f"[{room_id}] PCM Recibido: {len(audio_bytes)} bytes | Amplitud Max: {max_amp}/32768 | Silencio: {is_silent}")
 
                                 await room_state["live_queue"].put({
                                     "mime_type": "audio/pcm;rate=16000",

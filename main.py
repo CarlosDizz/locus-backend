@@ -73,7 +73,7 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
                             "name": r.get("name"),
                             "lat": geometry["lat"],
                             "lng": geometry["lng"],
-                            "description": "POI cercano"
+                            "description": "Lugar cercano"
                         }
                     )
 
@@ -84,49 +84,55 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
         return "[]"
 
 def build_home_context(user_ctx: str, lat: float, lng: float, pois_data: str) -> str:
-    return f"""Eres Locus, un guía turístico experto y directo.
-Perfil de los viajeros: {user_ctx}
-Ubicación actual: Latitud {lat}, longitud {lng}
-Lugares cercanos: {pois_data}
+    return f"""Eres Locus, un guía turístico local empático, vibrante y muy cercano.
+Perfil de los viajeros a los que guías: {user_ctx}
+Coordenadas de tu posición: Latitud {lat}, longitud {lng}
+Lugares a tu alrededor: {pois_data}
 
-REGLAS OBLIGATORIAS:
-1. El formato para mostrar lugares en el mapa debe ser estrictamente:
+INSTRUCCIONES CLAVE:
+1. ADAPTACIÓN CAMALEÓNICA: Ajusta tu vocabulario, tono y energía para que encaje perfectamente con el perfil de tus viajeros. Sé su amigo local experto.
+2. Eres ágil y resolutivo. Nada de introducciones robóticas.
+3. El formato obligatorio para listar los lugares en el mapa es estrictamente este:
 <POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
-2. Preséntate rápido y usa el bloque <POIS>.
 """
 
 def build_voice_context(user_ctx: str, lat: float, lng: float, pois_data: str, poi_name: str) -> str:
-    ubicacion_foco = f"ATENCIÓN: Estás físicamente en {poi_name}." if poi_name else "Aún no hay un destino fijado."
+    ubicacion_foco = f"SITUACIÓN ABSOLUTA: Estás parado físicamente justo delante de {poi_name}." if poi_name else "SITUACIÓN: Caminando por la ciudad, sin destino fijo todavía."
     
-    return f"""Eres Locus, un guía turístico experto en arte e historia que acompaña presencialmente a los viajeros.
-Perfil de los viajeros: {user_ctx}
-Lugares cercanos (úsalo para deducir exactamente tu ciudad y contexto espacial): {pois_data}
-{ubicacion_foco}
+    return f"""Eres Locus, el guía turístico más carismático, empático y observador de la ciudad. Estás haciendo un tour presencial, caminando codo a codo con los viajeros.
 
-REGLAS DE ORO DEL GUÍA:
-1. PROHIBICIÓN ABSOLUTA: NUNCA pidas al usuario que confirme la ciudad, municipio, calle o ubicación. Eres el guía, asume el control.
-2. FOCO DE TÚNEL: Ignora el resto de lugares de la ciudad a menos que te pregunten expresamente por ellos. Limita tu explicación a {poi_name}.
-3. PROFUNDIDAD RADICAL: No des datos genéricos. Ofrece un solo detalle arquitectónico o anécdota histórica fascinante.
-4. EXTREMA BREVEDAD: Tu respuesta no puede superar las 2 o 3 frases cortas.
-5. ENGANCHE: Termina siempre tu intervención con una pregunta directa sobre lo que están viendo para mantener el flujo.
+QUIÉN TE ESCUCHA (TU AUDIENCIA): {user_ctx}
+{ubicacion_foco}
+ENTORNO (Solo para que tú sepas la zona): {pois_data}
+
+CÓMO DEBES COMPORTARTE SIEMPRE:
+1. CONEXIÓN HUMANA: Mimetízate con la audiencia. Si son expertos, usa lenguaje sofisticado; si es un tono casual o joven, sé divertido y coloquial. Habla como una persona real, con calidez.
+2. ANCLAJE FÍSICO INQUEBRANTABLE: Tú estás EN {poi_name}. Todo lo que digas debe referirse a lo que tienes delante. NUNCA pidas confirmación de dónde estás o en qué ciudad te encuentras. Tú lideras.
+3. STORYTELLING: No recites Wikipedia. Cuenta el cotilleo histórico, el detalle arquitectónico oculto o la leyenda apasionante de este lugar exacto.
+4. AGILIDAD EXTREMA: Habla en un máximo de 2 a 3 frases. 
+5. PASA EL MICRÓFONO: Termina siempre tu intervención con una pregunta directa y conversacional ("¿Te has fijado en ese balcón?", "¿Qué crees que pasó aquí?") para cederles el turno de forma natural.
 """
 
 def build_poi_research_prompt(user_ctx: str, poi_name: str, lat: float, lng: float, pois_data: str) -> str:
-    return f"""Extrae la información histórica y arquitectónica más profunda y precisa sobre: {poi_name}.
-Utiliza estos lugares cercanos como contexto absoluto para identificar la ciudad correcta sin equivocarte: {pois_data}.
-Formato: Viñetas cortas con el año, creador, estilo arquitectónico, un secreto del lugar y detalles visuales que el visitante pueda comprobar in situ."""
+    return f"""Busca en tu base de datos la historia viva, anécdotas y detalles arquitectónicos sobre: {poi_name} (Ubicado cerca de {pois_data}).
+Perfil de los viajeros: {user_ctx}.
+Devuelve viñetas muy breves con:
+- Año y creador.
+- El salseo histórico o la curiosidad más fascinante del lugar.
+- Un detalle visual específico en el que el visitante deba fijarse.
+Nada de texto de relleno, solo los datos clave para que el guía los use."""
 
 def build_turn_prompt(user_message: str, current_poi_name: str, poi_research_summary: str, last_image_summary: str = "") -> str:
-    ctx = f"SITUACIÓN: El visitante está observando {current_poi_name}.\n" if current_poi_name else ""
+    ctx = f"ESTÁIS PARADOS EN: {current_poi_name}.\n" if current_poi_name else ""
     if poi_research_summary:
-        ctx += f"TUS CONOCIMIENTOS DE FONDO:\n{poi_research_summary}\n"
+        ctx += f"TUS NOTAS MENTALES SOBRE ESTE LUGAR (Úsalas para inspirar tu respuesta, no las leas de forma literal):\n{poi_research_summary}\n"
     if last_image_summary:
-        ctx += f"ANÁLISIS DE LO QUE ACABA DE VER EL VISITANTE:\n{last_image_summary}\n"
+        ctx += f"LO QUE EL VIAJERO TE ACABA DE ENSEÑAR O SEÑALAR:\n{last_image_summary}\n"
 
     return f"""{ctx}
 Viajero: "{user_message}"
 
-Responde como Locus. Profundo pero en un máximo de 3 frases. Lanza una pregunta al final:"""
+Responde como Locus. Recuerda: máximo 3 frases, tono adaptado a su perfil, cálido, anclado al lugar, y termina con una pregunta natural:"""
 
 def ask_openai_chat(system_context: str, user_message: str, allow_web_search: bool = False) -> str:
     args = {
@@ -201,7 +207,7 @@ def synthesize_speech_wav(text: str) -> bytes:
         voice=OPENAI_TTS_VOICE,
         input=text,
         response_format="wav",
-        speed=1.07,
+        speed=1.15,  # Velocidad aumentada para inyectar dinamismo y reducir latencia
     )
     return response.read()
 
@@ -290,7 +296,7 @@ async def enrich_poi_context_in_background(room_state: RoomState):
         user_ctx = room_state.profile.get("user_ctx", "")
         pois_data = room_state.profile.get("pois_data", "[]")
 
-        system_context = "Eres un documentalista extrayendo datos puros, exactos y profundos."
+        system_context = "Eres un documentalista de élite. Tu objetivo es nutrir al guía con el contexto histórico más interesante."
         prompt = build_poi_research_prompt(user_ctx, poi_name, lat, lng, pois_data)
 
         summary = await asyncio.to_thread(
@@ -348,7 +354,7 @@ async def generate_fast_answer(room_state: RoomState, user_message: str) -> str:
 async def respond_in_call(room_state: RoomState, room_id: str, user_message: str):
     answer = await generate_fast_answer(room_state, user_message)
     if not answer:
-        answer = "Acércame un poco más a ese detalle y te cuento lo que es."
+        answer = "No te he escuchado bien, ¿qué decías de este lugar?"
     await speak_text(room_state, room_id, answer)
 
 async def respond_to_image_in_call(room_state: RoomState, room_id: str, image_bytes: bytes, mime_type: str):
@@ -362,7 +368,7 @@ async def respond_to_image_in_call(room_state: RoomState, room_id: str, image_by
         poi_name=poi_name,
     )
 
-    prompt = f"El visitante te enseña este detalle en {poi_name}. Desvela algo profundamente técnico o una anécdota fascinante sobre este elemento exacto en solo 2 frases."
+    prompt = f"El visitante te acaba de señalar este detalle exacto en {poi_name}. Reacciona con naturalidad y cuéntale qué es en 2 frases, revelando un secreto interesante."
 
     answer = await asyncio.to_thread(
         ask_openai_image,
@@ -374,7 +380,7 @@ async def respond_to_image_in_call(room_state: RoomState, room_id: str, image_by
     )
 
     if not answer:
-        answer = "La luz no me deja verlo bien, ¿qué parte concreta te llama la atención?"
+        answer = "La perspectiva no me deja verlo bien, ¿qué te llama la atención exactamente?"
 
     room_state.last_image_summary = answer
     await speak_text(room_state, room_id, answer)
@@ -428,7 +434,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                         response_text = await asyncio.to_thread(
                             ask_openai_chat,
                             room_state.system_context_str,
-                            "Hola. Preséntate de forma natural y dime qué hay cerca. Incluye el bloque POIS.",
+                            "Hola, acabamos de llegar. Da la bienvenida con entusiasmo, adáptate a nuestro perfil y dime qué hay cerca. Recuerda el bloque POIS.",
                             False,
                         )
                         await manager.broadcast_text(response_text, room_id)
@@ -448,7 +454,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                         await respond_in_call(
                             room_state,
                             room_id,
-                            f"Acabo de llegar a {room_state.current_poi_name}. Dame un solo dato fascinante de este lugar exacto y pregúntame qué estoy mirando."
+                            f"Acabamos de llegar justo frente a {room_state.current_poi_name}. Reacciona al entorno, arranca el tour con un dato intrigante y pregúntame qué opino."
                         )
                         continue
 

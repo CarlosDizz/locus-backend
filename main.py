@@ -227,10 +227,12 @@ async def run_live_session(room_id: str):
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
             )
         ),
+        input_audio_transcription=types.AudioTranscriptionConfig(),
         output_audio_transcription=types.AudioTranscriptionConfig(),
     )
 
     logger.info(f"[{room_id}] Abriendo sesión Gemini Live con modelo {LIVE_MODEL}")
+    logger.info(f"[{room_id}] Live config: AUDIO + input_audio_transcription + output_audio_transcription")
 
     try:
         async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as session:
@@ -242,15 +244,23 @@ async def run_live_session(room_id: str):
                     async for response in session.receive():
                         sc = getattr(response, "server_content", None)
                         if sc is None:
+                            logger.info(f"[{room_id}] Evento Live sin server_content: {response}")
                             continue
+
+                        input_transcription = getattr(sc, "input_transcription", None)
+                        if input_transcription is not None:
+                            input_text = getattr(input_transcription, "text", "") or ""
+                            input_text = input_text.strip()
+                            if input_text:
+                                logger.info(f"[{room_id}] Gemini entendió al usuario: {input_text[:120]}")
 
                         output_transcription = getattr(sc, "output_transcription", None)
                         if output_transcription is not None:
-                            text = getattr(output_transcription, "text", "") or ""
-                            text = text.strip()
-                            if text:
-                                logger.info(f"[{room_id}] Gemini -> transcripción: {text[:120]}")
-                                await manager.broadcast_text(text, room_id)
+                            output_text = getattr(output_transcription, "text", "") or ""
+                            output_text = output_text.strip()
+                            if output_text:
+                                logger.info(f"[{room_id}] Gemini -> transcripción: {output_text[:120]}")
+                                await manager.broadcast_text(output_text, room_id)
 
                         if sc.model_turn:
                             for part in sc.model_turn.parts:
@@ -259,6 +269,13 @@ async def run_live_session(room_id: str):
                                     data = inline_data.data
                                     logger.info(f"[{room_id}] Gemini -> audio bytes: {len(data)}")
                                     await manager.broadcast_bytes(data, room_id)
+
+                                text_part = getattr(part, "text", None)
+                                if text_part:
+                                    text_part = text_part.strip()
+                                    if text_part:
+                                        logger.info(f"[{room_id}] Gemini -> text part: {text_part[:120]}")
+                                        await manager.broadcast_text(text_part, room_id)
 
                         if sc.turn_complete:
                             logger.info(f"[{room_id}] Turno completado por Gemini")
@@ -446,7 +463,6 @@ Da un dato breve y termina cediendo el control al usuario.
                         continue
 
                     if action == "audio_end":
-                        # reservado para futuro streaming real
                         logger.info(f"[{room_id}] audio_end recibido (sin uso en v1)")
                         continue
 

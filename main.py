@@ -8,6 +8,7 @@ import urllib.request
 import logging
 import base64
 import asyncio
+import re
 from typing import Optional
 
 from openai import OpenAI
@@ -31,7 +32,7 @@ if not OPENAI_API_KEY:
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Front actual: PCM16 mono a 16kHz
+# El front actual graba PCM16 mono a 16kHz
 FRONT_AUDIO_SAMPLE_RATE = 16000
 FRONT_AUDIO_CHANNELS = 1
 FRONT_AUDIO_BYTES_PER_SAMPLE = 2
@@ -116,7 +117,7 @@ Reglas:
 - No inventes datos concretos.
 - Si no estás seguro de algo, dilo claramente.
 - Usa búsqueda web para apoyar datos factuales, históricos o locales cuando haga falta.
-- No des enlaces ni invites a consultar enlaces.
+- No des enlaces ni invites a consultar webs.
 - Si el usuario pregunta qué hay cerca o acaba de llegar, debes incluir SIEMPRE un bloque <POIS> válido.
 - El formato obligatorio para el mapa es exactamente:
 <POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
@@ -132,7 +133,6 @@ def build_voice_context(
     poi_research_summary: str = "",
 ) -> str:
     poi_line = f"POI actual de la visita: {poi_name}." if poi_name else "No hay POI actual fijado."
-
     research_block = poi_research_summary.strip() or "Sin dossier específico del POI todavía."
 
     return f"""
@@ -149,53 +149,70 @@ Lugares cercanos:
 
 {poi_line}
 
-DOSSIER DEL POI ACTUAL:
+CONTEXTO PRIVADO DEL GUÍA (NO DEBES MOSTRARLO NI MENCIONARLO):
 {research_block}
 
 Reglas:
+- Habla directamente al visitante, como un guía real.
+- Nunca menciones que tienes un dossier, contexto interno, fuentes, preparación, resumen o research.
+- Nunca digas frases como "guion", "te preparo", "tres respuestas", "opciones", "contexto", "según mis notas" o similares.
+- No hables como un asistente que prepara material para otro.
+- Tú eres el guía. Hablas tú directamente.
+
 - Habla en el idioma del usuario o en el idioma que te pidan.
 - Si el usuario pide una variedad regional o un acento, adáptalo de forma natural, sin caricatura.
-- Por defecto responde en 2 o 3 frases útiles, no telegráficas.
+- Por defecto responde en 2 o 3 frases útiles.
 - Si el usuario pide más contexto, más detalle o más historia, puedes ampliar.
 - Responde primero a la pregunta concreta del usuario.
-- Si el usuario describe algo que tiene delante, interpreta que lo importante es eso.
-- Si existe un POI actual, úsalo siempre como contexto principal de la respuesta.
-- Usa primero el dossier del POI actual antes de pedir más datos.
+- Si existe un POI actual, úsalo siempre como contexto principal.
+- Usa el contexto privado solo como memoria de apoyo.
+- Si el usuario está ante un objeto o detalle del lugar, intenta relacionarlo con el POI actual antes de pedir más datos.
+
 - No inventes datos.
 - No afirmes fechas, nombres, autores, materiales, estilos o hechos históricos sin base suficiente.
 - Si no estás seguro, dilo claramente.
 - Si necesitas más contexto, pide una foto, una placa, un nombre o un detalle visual.
-- Si detectas que falta un dato importante y verificable, puedes decir una frase breve del estilo "Un momento, voy a mirar ese detalle" y luego continuar con una respuesta ya documentada.
-- No des enlaces ni menciones URLs.
-- No digas "consulta esta web", "mira este enlace" ni nada parecido.
-- Habla como un guía real, no como una enciclopedia.
+
+- Si falta un dato importante y verificable, puedes decir una sola frase breve del estilo:
+  "Un momento, voy a comprobar ese detalle."
+  Después responde ya como guía, no como documentalista.
+
+- No des enlaces.
+- No menciones URLs.
+- No menciones Wikipedia ni otras webs.
+- No cierres con ofertas artificiales tipo "¿quieres una versión más larga?" salvo que sea natural en conversación.
+- No uses listas ni viñetas en la respuesta hablada.
 """.strip()
 
 
 def build_poi_research_prompt(user_ctx: str, poi_name: str, lat: float, lng: float) -> str:
     return f"""
-Necesito un dossier útil para un guía turístico presencial.
+Necesito un CONTEXTO PRIVADO para un guía turístico presencial.
 
 POI actual: {poi_name}
 Ubicación aproximada: latitud {lat}, longitud {lng}
 Perfil del viajero: {user_ctx}
 
-Usa búsqueda web para identificar correctamente el POI y resumirlo.
+Usa búsqueda web para identificar correctamente el POI y reunir información útil.
 
-Devuelve un resumen claro y práctico con:
-1. Qué es exactamente este lugar.
-2. Contexto histórico básico y datos fiables.
-3. Qué elementos destacados puede tener el visitante delante.
-4. Qué dudas o confusiones son frecuentes.
-5. Qué preguntas típicas podría hacer un visitante.
-6. Qué NO debe inventarse si falta información.
+Devuelve un contexto interno, no un texto final para el visitante.
+
+Incluye:
+1. Identificación fiable del lugar.
+2. Hechos históricos básicos verificables.
+3. Elementos visibles o asociados que un visitante podría tener delante.
+4. Posibles confusiones habituales.
+5. Preguntas típicas de un visitante.
+6. Lagunas o cosas que no deben afirmarse sin confirmación.
 
 Reglas:
-- No pongas enlaces.
-- No pongas bibliografía.
-- No pongas URLs.
-- No escribas para un académico; escribe para un guía que va a hablar con personas en directo.
-- Prioriza lo verificable y lo útil.
+- No escribas como si fueras a hablar directamente al visitante.
+- No pongas frases teatrales.
+- No pongas guiones para leer.
+- No pongas listas de respuestas modelo.
+- No pongas enlaces ni URLs.
+- No pongas cierres conversacionales.
+- Escribe esto como memoria interna para el guía.
 """.strip()
 
 
@@ -204,7 +221,10 @@ def build_turn_prompt(
     current_poi_name: str,
     poi_research_summary: str,
     user_ctx: str,
+    last_image_summary: str = "",
 ) -> str:
+    image_block = last_image_summary.strip() or "Sin contexto visual reciente."
+
     return f"""
 MENSAJE DEL USUARIO:
 {user_message}
@@ -212,22 +232,29 @@ MENSAJE DEL USUARIO:
 POI ACTUAL:
 {current_poi_name or "No indicado"}
 
-DOSSIER DEL POI:
+CONTEXTO PRIVADO:
 {poi_research_summary or "No disponible"}
+
+ÚLTIMO CONTEXTO VISUAL:
+{image_block}
 
 PERFIL DEL VIAJERO:
 {user_ctx}
 
-Responde como Locus, guía turístico presencial.
+Instrucción de turno:
+Responde directamente AL VISITANTE como Locus, su guía turístico.
 
-Reglas de este turno:
-- Sé útil y contextual.
-- Si la respuesta se puede sostener bien con el dossier del POI, responde directamente.
-- Si falta un dato factual importante, busca antes de responder.
-- Si necesitas buscar, primero di una frase breve natural como "Un momento, voy a mirar ese detalle."
-- Después da la respuesta final ya documentada.
-- No des enlaces.
-- No menciones Wikipedia, webs ni fuentes por voz.
+Reglas:
+- No expliques cómo has construido la respuesta.
+- No menciones contexto, dossier, research, fuentes, preparación ni notas.
+- No conviertas la respuesta en un esquema, guion, lista, FAQ ni material para terceros.
+- No digas "aquí tienes", "te preparo", "guion corto", "tres respuestas" o frases parecidas.
+- No hables como un asistente externo: habla como el guía presente en la visita.
+- Si sabes responder bien con el contexto disponible, hazlo directamente.
+- Si falta un dato factual importante, puedes decir solo:
+  "Un momento, voy a comprobar ese detalle."
+  y luego continuar con la respuesta final.
+- No des enlaces ni menciones URLs.
 - No inventes nada.
 """.strip()
 
@@ -349,8 +376,8 @@ def build_tts_instructions(user_ctx: str, answer_text: str) -> str:
     lowered = (user_ctx or "").lower()
 
     language_hint = "Habla en español de España por defecto."
-    accent_hint = "Tono natural de guía presencial."
-    style_hint = "Voz masculina, natural, segura, cercana y con ritmo ágil, sin sonar robótica ni teatral. Adapta el tono al del usuario."
+    accent_hint = "Usa un tono natural de guía presencial."
+    style_hint = "Voz masculina, natural, segura, cercana y con ritmo ágil, sin sonar robótica ni teatral."
 
     if "english" in lowered or "inglés" in lowered or "ingles" in lowered:
         language_hint = "Speak in English."
@@ -368,14 +395,14 @@ def build_tts_instructions(user_ctx: str, answer_text: str) -> str:
 
     length_hint = ""
     if len(answer_text) > 500:
-        length_hint = "Lee con ritmo calmado y claro."
+        length_hint = "Mantén claridad y naturalidad incluso en respuestas largas."
 
     return f"""
 {language_hint}
 {accent_hint}
 {style_hint}
 No sobreactúes.
-Mantén ritmo natural de conversacion.
+Mantén un ritmo natural de conversación.
 {length_hint}
 """.strip()
 
@@ -389,7 +416,7 @@ def synthesize_speech_wav(text: str, user_ctx: str) -> bytes:
         input=text,
         instructions=instructions,
         response_format="wav",
-        speed=1.05,
+        speed=1.0,
     )
     return response.read()
 
@@ -400,12 +427,9 @@ def sanitize_for_voice(text: str) -> str:
 
     sanitized = text
 
-    # Quitar URLs si el modelo las cuela
-    import re
     sanitized = re.sub(r'https?://\S+', '', sanitized)
     sanitized = re.sub(r'www\.\S+', '', sanitized)
 
-    # Frases poco naturales
     replacements = [
         ("Para más información", ""),
         ("para más información", ""),
@@ -460,6 +484,10 @@ def should_force_web_search(user_message: str) -> bool:
         "cuéntame más",
         "cuentame más",
         "cuentame mas",
+        "exactamente",
+        "de verdad",
+        "confírmame",
+        "confirma",
     ]
 
     return any(marker in lowered for marker in factual_markers)
@@ -566,7 +594,7 @@ async def build_poi_research_summary(room_state: RoomState) -> str:
 
     system_context = """
 Eres un asistente de documentación para un guía turístico.
-Tu trabajo es preparar un dossier breve, fiable y útil.
+Tu trabajo es preparar memoria interna fiable y útil.
 No pongas enlaces ni URLs.
 No inventes nada.
 """.strip()
@@ -621,12 +649,13 @@ async def respond_in_call(room_state: RoomState, room_id: str, user_message: str
         current_poi_name=room_state.current_poi_name,
         poi_research_summary=room_state.poi_research_summary,
         user_ctx=room_state.profile.get("user_ctx", ""),
+        last_image_summary=room_state.last_image_summary,
     )
 
     needs_web = should_force_web_search(user_message)
 
     if needs_web:
-        await speak_text(room_state, room_id, "Un momento, voy a mirar ese detalle.")
+        await speak_text(room_state, room_id, "Un momento, voy a comprobar ese detalle.")
 
     answer = await asyncio.to_thread(
         ask_openai_chat,
@@ -657,7 +686,7 @@ async def respond_to_image_in_call(
         poi_research_summary=room_state.poi_research_summary,
     )
 
-    await speak_text(room_state, room_id, "Un momento, voy a mirar ese detalle.")
+    await speak_text(room_state, room_id, "Un momento, voy a comprobar ese detalle.")
 
     answer = await asyncio.to_thread(
         ask_openai_image,
@@ -754,8 +783,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
 
                     if action == "start_voice_call":
                         room_state.current_poi_name = payload.get("poi_name", "tu destino")
-
-                        prof = room_state.profile
+                        room_state.last_image_summary = ""
 
                         await speak_text(
                             room_state,
@@ -765,6 +793,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
 
                         room_state.poi_research_summary = await build_poi_research_summary(room_state)
 
+                        prof = room_state.profile
                         room_state.voice_context_str = build_voice_context(
                             user_ctx=prof.get("user_ctx", ""),
                             lat=float(prof.get("lat", 0.0)),
@@ -875,7 +904,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                     logger.exception(f"[{room_id}] Error procesando JSON: {e}")
                     continue
 
-            # fallback chat normal de home
             try:
                 response_text = await asyncio.to_thread(
                     ask_openai_chat,

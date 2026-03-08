@@ -125,11 +125,19 @@ async def run_live_session(room_id: str):
                     payload = await room_state["live_queue"].get()
                     if payload is None: break
 
-                    if "mime_type" in payload and "data" in payload:
-                        logger.info(f"[{room_id}] Inyectando BINARIO en túnel Gemini...")
-                        part = types.Part.from_bytes(data=payload["data"], mime_type=payload["mime_type"])
+                    if "image_dict" in payload:
+                        await ephemeral_session.send(input=payload["image_dict"], end_of_turn=False)
+
+                    elif "mime_type" in payload and "data" in payload:
+                        # Diccionario crudo. Sin Part, sin inventos.
+                        media_input = {"mime_type": payload["mime_type"], "data": payload["data"]}
                         is_audio = payload["mime_type"].startswith("audio/")
-                        await ephemeral_session.send(input=part, end_of_turn=is_audio)
+                        logger.info(f"[{room_id}] Inyectando BINARIO ({payload['mime_type']}) en túnel Gemini...")
+
+                        # Inyectamos y cerramos el turno para obligarle a procesarlo
+                        await ephemeral_session.send(input=media_input, end_of_turn=is_audio)
+                        if is_audio:
+                            logger.info(f"[{room_id}] Turno cedido a la IA tras audio.")
 
                     elif "text" in payload:
                         logger.info(f"[{room_id}] Inyectando TEXTO en túnel Gemini: {payload['text'][:50]}...")
@@ -206,7 +214,9 @@ Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia
                                 pcm_data = audio_segment.raw_data
 
                                 logger.info(f"[{room_id}] Audio convertido a PCM 16kHz ({len(pcm_data)} bytes)")
-                                await room_state["live_queue"].put({"mime_type": "audio/pcm;rate=16000", "data": pcm_data})
+
+                                # MIME TYPE CORREGIDO ESTRICTAMENTE A "audio/pcm"
+                                await room_state["live_queue"].put({"mime_type": "audio/pcm", "data": pcm_data})
                             except Exception as e:
                                 logger.error(f"Error procesando audio: {e}")
                             continue

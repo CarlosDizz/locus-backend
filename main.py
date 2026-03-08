@@ -96,22 +96,24 @@ REGLAS OBLIGATORIAS:
 """
 
 def build_voice_context(user_ctx: str, lat: float, lng: float, pois_data: str, poi_name: str) -> str:
-    ubicacion_foco = f"ATENCIÓN CRÍTICA: Estás físicamente dentro o delante de {poi_name}. LIMITA toda tu explicación a este lugar exacto." if poi_name else "Aún no hay un destino fijado."
+    ubicacion_foco = f"ATENCIÓN: Estás físicamente en {poi_name}." if poi_name else "Aún no hay un destino fijado."
     
     return f"""Eres Locus, un guía turístico experto en arte e historia que acompaña presencialmente a los viajeros.
 Perfil de los viajeros: {user_ctx}
+Lugares cercanos (úsalo para deducir exactamente tu ciudad y contexto espacial): {pois_data}
 {ubicacion_foco}
 
 REGLAS DE ORO DEL GUÍA:
-1. FOCO DE TÚNEL: Ignora el resto de lugares de la ciudad (aunque los conozcas) a menos que el usuario pregunte expresamente por ellos.
-2. PROFUNDIDAD RADICAL: No des datos genéricos. Ofrece un solo detalle arquitectónico profundo, una anécdota histórica oscura o un dato de construcción fascinante.
-3. EXTREMA BREVEDAD: Tu respuesta no puede superar las 2 o 3 frases cortas.
-4. ENGANCHE: Termina siempre tu intervención con una pregunta directa sobre lo que están viendo para mantener el flujo ágil.
+1. PROHIBICIÓN ABSOLUTA: NUNCA pidas al usuario que confirme la ciudad, municipio, calle o ubicación. Eres el guía, asume el control.
+2. FOCO DE TÚNEL: Ignora el resto de lugares de la ciudad a menos que te pregunten expresamente por ellos. Limita tu explicación a {poi_name}.
+3. PROFUNDIDAD RADICAL: No des datos genéricos. Ofrece un solo detalle arquitectónico o anécdota histórica fascinante.
+4. EXTREMA BREVEDAD: Tu respuesta no puede superar las 2 o 3 frases cortas.
+5. ENGANCHE: Termina siempre tu intervención con una pregunta directa sobre lo que están viendo para mantener el flujo.
 """
 
-def build_poi_research_prompt(user_ctx: str, poi_name: str, lat: float, lng: float) -> str:
+def build_poi_research_prompt(user_ctx: str, poi_name: str, lat: float, lng: float, pois_data: str) -> str:
     return f"""Extrae la información histórica y arquitectónica más profunda y precisa sobre: {poi_name}.
-Ubicación: Lat {lat}, Lng {lng}.
+Utiliza estos lugares cercanos como contexto absoluto para identificar la ciudad correcta sin equivocarte: {pois_data}.
 Formato: Viñetas cortas con el año, creador, estilo arquitectónico, un secreto del lugar y detalles visuales que el visitante pueda comprobar in situ."""
 
 def build_turn_prompt(user_message: str, current_poi_name: str, poi_research_summary: str, last_image_summary: str = "") -> str:
@@ -286,9 +288,10 @@ async def enrich_poi_context_in_background(room_state: RoomState):
         lat = float(room_state.profile.get("lat", 0.0))
         lng = float(room_state.profile.get("lng", 0.0))
         user_ctx = room_state.profile.get("user_ctx", "")
+        pois_data = room_state.profile.get("pois_data", "[]")
 
         system_context = "Eres un documentalista extrayendo datos puros, exactos y profundos."
-        prompt = build_poi_research_prompt(user_ctx, poi_name, lat, lng)
+        prompt = build_poi_research_prompt(user_ctx, poi_name, lat, lng, pois_data)
 
         summary = await asyncio.to_thread(
             ask_openai_chat,

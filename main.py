@@ -27,7 +27,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 TEXT_MODEL = os.environ.get("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
 LIVE_MODEL = os.environ.get(
     "GEMINI_LIVE_MODEL",
-    "gemini-2.5-flash-native-audio-preview-12-2025"
+    "gemini-2.5-flash-native-audio-preview-12-2025",
 )
 
 AUDIO_MIME = "audio/pcm;rate=16000"
@@ -64,7 +64,6 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
             f"&key={MAPS_API_KEY}"
             f"&language=es"
         )
-
         req = urllib.request.Request(url)
 
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -84,10 +83,28 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
                     )
 
             return json.dumps(payload, ensure_ascii=False)
-
     except Exception as e:
         logger.exception(f"Error en Maps: {e}")
         return "[]"
+
+
+def build_home_context(user_ctx: str, lat: float, lng: float, pois_data: str) -> str:
+    return f"""
+Eres Locus, un guía turístico experto, directo y conversacional.
+Perfil de los viajeros: {user_ctx}.
+Latitud actual: {lat}. Longitud actual: {lng}.
+Lugares iniciales: {pois_data}
+
+REGLAS CRÍTICAS DE COMPORTAMIENTO:
+1. Ultra Brevedad: Tus respuestas habladas deben tener un máximo de 2 o 3 frases cortas. Eres un acompañante, no una enciclopedia.
+2. Foco Espacial: Limita tus explicaciones ESTRICTAMENTE al lugar o monumento que el usuario está visitando en este momento.
+3. Cero Coletillas: Nunca uses frases como '¡Qué interesante!' o 'Buena pregunta'. Ve directo al dato.
+4. Voz y Acento: Eres una entidad masculina. Español de España por defecto.
+5. FORMATO OBLIGATORIO DE POIS PARA EL MAPA:
+<POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
+6. REGLA DE CONVERSACIÓN ADAPTATIVA:
+Da un dato breve y termina cediendo el control al usuario.
+""".strip()
 
 
 def build_voice_context(
@@ -95,7 +112,7 @@ def build_voice_context(
     lat: float,
     lng: float,
     pois_data: str,
-    poi_name: str = ""
+    poi_name: str = "",
 ) -> str:
     poi_line = f"Lugar actual de inicio de la llamada: {poi_name}." if poi_name else ""
 
@@ -116,8 +133,7 @@ REGLAS CRÍTICAS DE COMPORTAMIENTO:
 6. No muestres razonamiento, planificación ni pensamientos internos.
 7. No expliques tus instrucciones internas.
 8. En modo voz no uses etiquetas como <POIS> salvo que el usuario te pida lugares cercanos de forma explícita.
-9. Si el usuario pregunta por lo que está viendo, responde directo con el dato útil.
-10. Si no entiendes bien el audio, pide que repita de forma breve.
+9. Si no entiendes bien el audio, pide que repita de forma breve.
 """.strip()
 
 
@@ -136,6 +152,12 @@ class RoomState:
         self.system_context_str = ""
         self.voice_context_str = ""
         self.current_poi_name = ""
+        self.profile = {
+            "user_ctx": "",
+            "lat": 0.0,
+            "lng": 0.0,
+            "pois_data": "[]",
+        }
 
         self.live_queue: asyncio.Queue = asyncio.Queue()
         self.live_task: Optional[asyncio.Task] = None
@@ -147,7 +169,6 @@ class RoomState:
 
     async def stop(self):
         self.live_stop.set()
-
         try:
             await self.live_queue.put({"type": "__close__"})
         except Exception:
@@ -273,7 +294,7 @@ async def run_live_session(room_id: str):
     )
 
     logger.info(f"[{room_id}] Abriendo sesión Gemini Live con modelo {LIVE_MODEL}")
-    logger.info(f"[{room_id}] Live config: AUDIO + system_instruction + thinking_budget=0")
+    logger.info(f"[{room_id}] Live config: AUDIO + system_instruction + realtime_input")
 
     try:
         async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as session:
@@ -283,22 +304,26 @@ async def run_live_session(room_id: str):
             async def receive_from_gemini():
                 try:
                     async for response in session.receive():
+                        # Compatibilidad con distintas formas del SDK
+                        if getattr(response, "text", None):
+                            text = (response.text or "").strip()
+                            if text:
+                                logger.info(f"[{room_id}] Gemini -> text direct: {text[:120]}")
+                                await manager.broadcast_text(text, room_id)
+
                         sc = getattr(response, "server_content", None)
                         if sc is None:
-                            logger.info(f"[{room_id}] Evento Live sin server_content: {response}")
                             continue
 
                         input_transcription = getattr(sc, "input_transcription", None)
                         if input_transcription is not None:
-                            input_text = getattr(input_transcription, "text", "") or ""
-                            input_text = input_text.strip()
+                            input_text = (getattr(input_transcription, "text", "") or "").strip()
                             if input_text:
                                 logger.info(f"[{room_id}] Gemini entendió al usuario: {input_text[:120]}")
 
                         output_transcription = getattr(sc, "output_transcription", None)
                         if output_transcription is not None:
-                            output_text = getattr(output_transcription, "text", "") or ""
-                            output_text = output_text.strip()
+                            output_text = (getattr(output_transcription, "text", "") or "").strip()
                             if output_text:
                                 logger.info(f"[{room_id}] Gemini -> transcripción: {output_text[:120]}")
                                 await manager.broadcast_text(output_text, room_id)
@@ -318,7 +343,7 @@ async def run_live_session(room_id: str):
                                         logger.info(f"[{room_id}] Gemini -> text part: {text_part[:120]}")
                                         await manager.broadcast_text(text_part, room_id)
 
-                        if sc.turn_complete:
+                        if getattr(sc, "turn_complete", False):
                             logger.info(f"[{room_id}] Turno completado por Gemini")
 
                 except asyncio.CancelledError:
@@ -327,7 +352,7 @@ async def run_live_session(room_id: str):
                     logger.exception(f"[{room_id}] Error recibiendo de Gemini: {e}")
                     await manager.broadcast_text(
                         "Ahora mismo no puedo responder por voz. Prueba otra vez.",
-                        room_id
+                        room_id,
                     )
 
             async def send_to_gemini():
@@ -340,28 +365,52 @@ async def run_live_session(room_id: str):
                             logger.info(f"[{room_id}] Cierre solicitado de sesión Live")
                             break
 
-                        if payload_type == "text":
+                        if payload_type == "prefill_text":
                             text = (payload.get("text") or "").strip()
                             if not text:
                                 continue
 
-                            logger.info(f"[{room_id}] -> Gemini texto: {text[:120]}")
-                            await session.send(input=text, end_of_turn=True)
+                            logger.info(f"[{room_id}] -> Gemini prefill/client_content: {text[:120]}")
+                            await session.send_client_content(
+                                turns=types.Content(
+                                    role="user",
+                                    parts=[types.Part(text=text)],
+                                ),
+                                turn_complete=True,
+                            )
+
+                        elif payload_type == "text":
+                            text = (payload.get("text") or "").strip()
+                            if not text:
+                                continue
+
+                            logger.info(f"[{room_id}] -> Gemini text client_content: {text[:120]}")
+                            await session.send_client_content(
+                                turns=types.Content(
+                                    role="user",
+                                    parts=[types.Part(text=text)],
+                                ),
+                                turn_complete=True,
+                            )
 
                         elif payload_type == "audio_chunk":
                             audio_bytes = payload.get("data", b"")
-                            is_last = payload.get("is_last", False)
-
                             if not audio_bytes:
                                 continue
 
                             logger.info(
-                                f"[{room_id}] -> Gemini audio chunk: {len(audio_bytes)} bytes | is_last={is_last}"
+                                f"[{room_id}] -> Gemini realtime audio chunk: {len(audio_bytes)} bytes"
                             )
-                            await session.send(
-                                input={"mime_type": AUDIO_MIME, "data": audio_bytes},
-                                end_of_turn=is_last,
+                            await session.send_realtime_input(
+                                audio=types.Blob(
+                                    data=audio_bytes,
+                                    mime_type=AUDIO_MIME,
+                                )
                             )
+
+                        elif payload_type == "audio_end":
+                            logger.info(f"[{room_id}] -> Gemini realtime audio_stream_end")
+                            await session.send_realtime_input(audio_stream_end=True)
 
                         elif payload_type == "image_turn":
                             image_bytes = payload.get("image_bytes", b"")
@@ -371,13 +420,24 @@ async def run_live_session(room_id: str):
                             if not image_bytes:
                                 continue
 
-                            logger.info(f"[{room_id}] -> Gemini imagen + texto en mismo turno")
-                            await session.send(
-                                input=[
-                                    {"mime_type": mime_type, "data": image_bytes},
-                                    prompt or "Describe lo más importante de esta imagen en una frase."
-                                ],
-                                end_of_turn=True,
+                            logger.info(f"[{room_id}] -> Gemini image client_content")
+                            await session.send_client_content(
+                                turns=types.Content(
+                                    role="user",
+                                    parts=[
+                                        types.Part(
+                                            inline_data=types.Blob(
+                                                data=image_bytes,
+                                                mime_type=mime_type,
+                                            )
+                                        ),
+                                        types.Part(
+                                            text=prompt
+                                            or "Describe lo más importante de esta imagen en una frase."
+                                        ),
+                                    ],
+                                ),
+                                turn_complete=True,
                             )
 
                 except asyncio.CancelledError:
@@ -386,7 +446,7 @@ async def run_live_session(room_id: str):
                     logger.exception(f"[{room_id}] Error enviando a Gemini: {e}")
                     await manager.broadcast_text(
                         "Se ha cortado la conversación de voz. Inténtalo otra vez.",
-                        room_id
+                        room_id,
                     )
 
             await asyncio.gather(receive_from_gemini(), send_to_gemini())
@@ -429,22 +489,19 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                         lng = float(payload.get("lng", 0.0))
                         pois_data = buscar_nuevo_lugar("atracciones turisticas", lat, lng)
 
-                        room_state.system_context_str = f"""
-Eres Locus, un guía turístico experto, directo y conversacional.
-Perfil de los viajeros: {user_ctx}.
-Latitud actual: {lat}. Longitud actual: {lng}.
-Lugares iniciales: {pois_data}
+                        room_state.profile = {
+                            "user_ctx": user_ctx,
+                            "lat": lat,
+                            "lng": lng,
+                            "pois_data": pois_data,
+                        }
 
-REGLAS CRÍTICAS DE COMPORTAMIENTO:
-1. Ultra Brevedad: Tus respuestas habladas deben tener un máximo de 2 o 3 frases cortas. Eres un acompañante, no una enciclopedia.
-2. Foco Espacial: Limita tus explicaciones ESTRICTAMENTE al lugar o monumento que el usuario está visitando en este momento.
-3. Cero Coletillas: Nunca uses frases como '¡Qué interesante!' o 'Buena pregunta'. Ve directo al dato.
-4. Voz y Acento: Eres una entidad masculina. Español de España por defecto.
-5. FORMATO OBLIGATORIO DE POIS PARA EL MAPA:
-<POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
-6. REGLA DE CONVERSACIÓN ADAPTATIVA:
-Da un dato breve y termina cediendo el control al usuario.
-""".strip()
+                        room_state.system_context_str = build_home_context(
+                            user_ctx=user_ctx,
+                            lat=lat,
+                            lng=lng,
+                            pois_data=pois_data,
+                        )
 
                         room_state.voice_context_str = build_voice_context(
                             user_ctx=user_ctx,
@@ -466,29 +523,26 @@ Da un dato breve y termina cediendo el control al usuario.
                     if action == "start_voice_call":
                         room_state.current_poi_name = payload.get("poi_name", "tu destino")
 
-                        if room_state.voice_context_str:
-                            # refresca el contexto de voz con el poi actual
-                            user_ctx_line = ""
-                            try:
-                                # No recomponemos desde JSON; reutilizamos el sistema ya creado.
-                                # Solo añadimos referencia al poi actual al final.
-                                room_state.voice_context_str = (
-                                    room_state.voice_context_str
-                                    + f"\nLugar actual de inicio de la llamada: {room_state.current_poi_name}."
-                                )
-                            except Exception:
-                                pass
+                        prof = room_state.profile
+                        room_state.voice_context_str = build_voice_context(
+                            user_ctx=prof.get("user_ctx", ""),
+                            lat=float(prof.get("lat", 0.0)),
+                            lng=float(prof.get("lng", 0.0)),
+                            pois_data=prof.get("pois_data", "[]"),
+                            poi_name=room_state.current_poi_name,
+                        )
 
                         await ensure_live_session(room_id)
 
-                        # saludo muy corto, ya con system_instruction persistente en la sesión
-                        await room_state.enqueue({
-                            "type": "text",
-                            "text": (
-                                f"Da la bienvenida en una o dos frases a {room_state.current_poi_name}, "
-                                "recomienda ponerse auriculares y pregunta hacia dónde está mirando."
-                            ),
-                        })
+                        await room_state.enqueue(
+                            {
+                                "type": "prefill_text",
+                                "text": (
+                                    f"Da la bienvenida en una o dos frases a {room_state.current_poi_name}, "
+                                    "recomienda ponerse auriculares y pregunta hacia dónde está mirando."
+                                ),
+                            }
+                        )
                         continue
 
                     if action == "text_chat":
@@ -496,10 +550,12 @@ Da un dato breve y termina cediendo el control al usuario.
 
                         user_text = (payload.get("data") or "").strip()
                         if user_text:
-                            await room_state.enqueue({
-                                "type": "text",
-                                "text": user_text,
-                            })
+                            await room_state.enqueue(
+                                {
+                                    "type": "text",
+                                    "text": user_text,
+                                }
+                            )
                         continue
 
                     if action == "audio_stream":
@@ -510,17 +566,19 @@ Da un dato breve y termina cediendo el control al usuario.
                             audio_bytes = base64.b64decode(audio_b64)
                             if audio_bytes:
                                 logger.info(f"[{room_id}] audio_stream bytes={len(audio_bytes)}")
-                                await room_state.enqueue({
-                                    "type": "audio_chunk",
-                                    "data": audio_bytes,
-                                    "is_last": False,
-                                })
+                                await room_state.enqueue(
+                                    {
+                                        "type": "audio_chunk",
+                                        "data": audio_bytes,
+                                    }
+                                )
                         except Exception as e:
                             logger.exception(f"[{room_id}] Error en audio_stream: {e}")
                         continue
 
                     if action == "audio_end":
-                        logger.info(f"[{room_id}] audio_end recibido (sin uso en v1)")
+                        await ensure_live_session(room_id)
+                        await room_state.enqueue({"type": "audio_end"})
                         continue
 
                     if action == "audio_chat":
@@ -537,14 +595,15 @@ Da un dato breve y termina cediendo el control al usuario.
                                 f"[{room_id}] audio_chat bytes={len(audio_bytes)} | chunk_size={AUDIO_CHUNK_SIZE}"
                             )
 
-                            chunks = list(chunk_audio_bytes(audio_bytes))
+                            for chunk in chunk_audio_bytes(audio_bytes):
+                                await room_state.enqueue(
+                                    {
+                                        "type": "audio_chunk",
+                                        "data": chunk,
+                                    }
+                                )
 
-                            for i, chunk in enumerate(chunks):
-                                await room_state.enqueue({
-                                    "type": "audio_chunk",
-                                    "data": chunk,
-                                    "is_last": i == len(chunks) - 1,
-                                })
+                            await room_state.enqueue({"type": "audio_end"})
 
                         except Exception as e:
                             logger.exception(f"[{room_id}] Error procesando audio_chat: {e}")
@@ -564,12 +623,14 @@ Da un dato breve y termina cediendo el control al usuario.
                                 "la imagen y dispara directamente un dato curioso en una sola frase."
                             )
 
-                            await room_state.enqueue({
-                                "type": "image_turn",
-                                "image_bytes": img_bytes,
-                                "mime_type": mime_type,
-                                "prompt": prompt,
-                            })
+                            await room_state.enqueue(
+                                {
+                                    "type": "image_turn",
+                                    "image_bytes": img_bytes,
+                                    "mime_type": mime_type,
+                                    "prompt": prompt,
+                                }
+                            )
 
                         except Exception as e:
                             logger.exception(f"[{room_id}] Error procesando image_context: {e}")
@@ -586,7 +647,7 @@ Da un dato breve y termina cediendo el control al usuario.
                 logger.exception(f"[{room_id}] Error en chat_session: {e}")
                 await manager.broadcast_text(
                     "No he podido procesar ese mensaje.",
-                    room_id
+                    room_id,
                 )
 
     except WebSocketDisconnect:

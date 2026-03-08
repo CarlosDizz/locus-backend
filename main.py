@@ -30,7 +30,7 @@ LIVE_MODEL = os.environ.get(
     "gemini-2.5-flash-native-audio-preview-12-2025"
 )
 
-AUDIO_MIME = "audio/pcm;rate=16000;channels=1"
+AUDIO_MIME = "audio/pcm;rate=16000"
 AUDIO_CHUNK_MS = 100
 AUDIO_SAMPLE_RATE = 16000
 AUDIO_BYTES_PER_SAMPLE = 2
@@ -38,7 +38,6 @@ AUDIO_CHANNELS = 1
 AUDIO_CHUNK_SIZE = int(
     AUDIO_SAMPLE_RATE * (AUDIO_CHUNK_MS / 1000) * AUDIO_BYTES_PER_SAMPLE * AUDIO_CHANNELS
 )
-
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,

@@ -125,13 +125,12 @@ async def run_live_session(room_id: str):
                     payload = await room_state["live_queue"].get()
                     if payload is None: break
 
-                    if "image_dict" in payload:
-                        await ephemeral_session.send(input=payload["image_dict"], end_of_turn=False)
-                    elif "mime_type" in payload and "data" in payload:
+                    if "mime_type" in payload and "data" in payload:
                         logger.info(f"[{room_id}] Inyectando BINARIO en túnel Gemini...")
-                        media_input = {"mime_type": payload["mime_type"], "data": payload["data"]}
+                        part = types.Part.from_bytes(data=payload["data"], mime_type=payload["mime_type"])
                         is_audio = payload["mime_type"].startswith("audio/")
-                        await ephemeral_session.send(input=media_input, end_of_turn=is_audio)
+                        await ephemeral_session.send(input=part, end_of_turn=is_audio)
+
                     elif "text" in payload:
                         logger.info(f"[{room_id}] Inyectando TEXTO en túnel Gemini: {payload['text'][:50]}...")
                         await ephemeral_session.send(input=payload["text"], end_of_turn=True)
@@ -214,17 +213,18 @@ Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia
 
                         if action == "image_context":
                             img_b64 = payload.get("data")
+                            mime_type = payload.get("mime_type", "image/jpeg")
+                            img_bytes = base64.b64decode(img_b64)
+                            user_text = "El usuario acaba de sacar esta foto en su ubicación actual. NO preguntes qué es ni de dónde es. Asume que pertenece al lugar que estáis visitando. Identifica el elemento arquitectónico, cuadro o detalle que domina la imagen y dispara directamente un dato curioso o histórico sobre ese elemento en una sola frase."
                             logger.info(f"[{room_id}] Recibida imagen. Enviando a Gemini...")
-                            safe_dict = {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
-                            await room_state["live_queue"].put({"image_dict": safe_dict})
-                            await room_state["live_queue"].put({"text": "Identifica este detalle y dame un dato curioso."})
+                            await room_state["live_queue"].put({"mime_type": mime_type, "data": img_bytes})
+                            await room_state["live_queue"].put({"text": user_text})
                             continue
 
                     except Exception as e:
                         logger.error(f"Error procesando JSON: {e}")
                         continue
 
-                # Fallback: Si no es JSON, es texto del mapa y va al modelo de texto (Flash Lite)
                 response = room_state["chat_session"].send_message(data)
                 await manager.broadcast_text(response.text, room_id)
 

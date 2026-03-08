@@ -111,41 +111,48 @@ async def run_live_session(room_id: str):
         logger.info(f"[{room_id}] Abriendo túnel Gemini Live...")
         async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as ephemeral_session:
             async def receive_from_gemini():
-                async for response in ephemeral_session.receive():
-                    if response.server_content and response.server_content.model_turn:
-                        for part in response.server_content.model_turn.parts:
-                            if part.text:
-                                await manager.broadcast_text(part.text, room_id)
-                            if part.inline_data:
-                                logger.info(f"[{room_id}] Gemini enviando audio ({len(part.inline_data.data)} bytes)")
-                                await manager.broadcast_bytes(part.inline_data.data, room_id)
+                try:
+                    async for response in ephemeral_session.receive():
+                        # LOG EXTREMO: Veremos si Google nos contesta algo (aunque sea un error interno)
+                        logger.info(f"[{room_id}] <-- RAW GEMINI: {response}")
+
+                        if response.server_content and response.server_content.model_turn:
+                            for part in response.server_content.model_turn.parts:
+                                if part.text:
+                                    await manager.broadcast_text(part.text, room_id)
+                                if part.inline_data:
+                                    logger.info(f"[{room_id}] Gemini enviando audio ({len(part.inline_data.data)} bytes)")
+                                    await manager.broadcast_bytes(part.inline_data.data, room_id)
+                except Exception as e:
+                    logger.error(f"[{room_id}] CRASH CRÍTICO en bucle de recepción: {e}")
 
             async def send_to_gemini():
-                while True:
-                    payload = await room_state["live_queue"].get()
-                    if payload is None: break
+                try:
+                    while True:
+                        payload = await room_state["live_queue"].get()
+                        if payload is None: break
 
-                    if "image_dict" in payload:
-                        await ephemeral_session.send(input=payload["image_dict"], end_of_turn=False)
+                        if "image_dict" in payload:
+                            await ephemeral_session.send(input=payload["image_dict"], end_of_turn=False)
 
-                    elif "mime_type" in payload and "data" in payload:
-                        # Diccionario crudo. Sin Part, sin inventos.
-                        media_input = {"mime_type": payload["mime_type"], "data": payload["data"]}
-                        is_audio = payload["mime_type"].startswith("audio/")
-                        logger.info(f"[{room_id}] Inyectando BINARIO ({payload['mime_type']}) en túnel Gemini...")
+                        elif "mime_type" in payload and "data" in payload:
+                            media_input = {"mime_type": payload["mime_type"], "data": payload["data"]}
+                            is_audio = payload["mime_type"].startswith("audio/")
+                            logger.info(f"[{room_id}] Inyectando BINARIO ({payload['mime_type']}) en túnel...")
 
-                        # Inyectamos y cerramos el turno para obligarle a procesarlo
-                        await ephemeral_session.send(input=media_input, end_of_turn=is_audio)
-                        if is_audio:
-                            logger.info(f"[{room_id}] Turno cedido a la IA tras audio.")
+                            await ephemeral_session.send(input=media_input, end_of_turn=is_audio)
+                            if is_audio:
+                                logger.info(f"[{room_id}] Turno cedido a la IA tras audio.")
 
-                    elif "text" in payload:
-                        logger.info(f"[{room_id}] Inyectando TEXTO en túnel Gemini: {payload['text'][:50]}...")
-                        await ephemeral_session.send(input=payload["text"], end_of_turn=True)
+                        elif "text" in payload:
+                            logger.info(f"[{room_id}] Inyectando TEXTO en túnel: {payload['text'][:50]}...")
+                            await ephemeral_session.send(input=payload["text"], end_of_turn=True)
+                except Exception as e:
+                    logger.error(f"[{room_id}] CRASH CRÍTICO en bucle de envío: {e}")
 
             await asyncio.gather(receive_from_gemini(), send_to_gemini())
     except Exception as e:
-        logger.error(f"[{room_id}] Error en túnel: {e}")
+        logger.error(f"[{room_id}] Error general en conexión Live: {e}")
 
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str = Query(None)):
@@ -184,7 +191,6 @@ REGLAS CRÍTICAS DE COMPORTAMIENTO:
 Nunca des explicaciones largas de golpe. Tu estructura obligatoria es:
 - Da un solo dato fascinante o la idea principal en 1 o 2 frases.
 - Termina SIEMPRE interpelando al usuario para cederle el control.
-Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia?", "¿Nos acercamos a ver la fachada o prefieres seguir caminando?".
 """
                             first_query = f"{room_state['system_context_str']}\nUsuario: Hola, acabo de llegar. Preséntate y dime qué hay cerca."
                             response = room_state["chat_session"].send_message(first_query)
@@ -215,8 +221,8 @@ Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia
 
                                 logger.info(f"[{room_id}] Audio convertido a PCM 16kHz ({len(pcm_data)} bytes)")
 
-                                # MIME TYPE CORREGIDO ESTRICTAMENTE A "audio/pcm"
-                                await room_state["live_queue"].put({"mime_type": "audio/pcm", "data": pcm_data})
+                                # VOLVEMOS A FORZAR EL RATE. Sin esto, la API Live hace oídos sordos.
+                                await room_state["live_queue"].put({"mime_type": "audio/pcm;rate=16000", "data": pcm_data})
                             except Exception as e:
                                 logger.error(f"Error procesando audio: {e}")
                             continue
@@ -225,7 +231,7 @@ Ejemplos de cierre: "¿Quieres que te cuente el detalle macabro de esta historia
                             img_b64 = payload.get("data")
                             mime_type = payload.get("mime_type", "image/jpeg")
                             img_bytes = base64.b64decode(img_b64)
-                            user_text = "El usuario acaba de sacar esta foto en su ubicación actual. NO preguntes qué es ni de dónde es. Asume que pertenece al lugar que estáis visitando. Identifica el elemento arquitectónico, cuadro o detalle que domina la imagen y dispara directamente un dato curioso o histórico sobre ese elemento en una sola frase."
+                            user_text = "El usuario acaba de sacar esta foto en su ubicación actual. Identifica el elemento arquitectónico, cuadro o detalle que domina la imagen y dispara directamente un dato curioso en una sola frase."
                             logger.info(f"[{room_id}] Recibida imagen. Enviando a Gemini...")
                             await room_state["live_queue"].put({"mime_type": mime_type, "data": img_bytes})
                             await room_state["live_queue"].put({"text": user_text})

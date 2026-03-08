@@ -157,6 +157,13 @@ NO generes monólogos internos.
 NO hables como asistente.
 Di únicamente el texto final que el usuario va a escuchar de tu voz.
 
+REGLA CRÍTICA DE FOCO:
+El POI actual de la visita es: {poi_name if poi_name else "NO DEFINIDO"}.
+Mientras el usuario no diga claramente que se ha movido a otro lugar, asume SIEMPRE que sigue en ese mismo sitio.
+NO le preguntes otra vez en qué lugar está.
+NO cambies el foco a otros POIs cercanos.
+Si el usuario pregunta algo ambiguo, interprétalo siempre dentro del POI actual.
+
 REGLAS DE COMPORTAMIENTO:
 1. MEMORIA Y CONTINUIDAD: Si el usuario habla de un detalle concreto (una locomotora, una puerta, una estatua, una pintura), mantén el foco ahí. No vuelvas al contexto general salvo que sea necesario.
 2. PROFUNDIDAD: No repitas datos ya dichos. Si ya presentaste el lugar, baja al detalle: un secreto, una anécdota, un rasgo arquitectónico, un fallo curioso o una lectura más fina.
@@ -359,9 +366,11 @@ class RoomState:
         }
 
         self.turn_lock = asyncio.Lock()
+        self.call_start_lock = asyncio.Lock()
         self.call_active = False
         self.poi_generation = 0
         self.last_public_text = ""
+        self.welcome_sent_for_generation = False
 
 
 # ---------------------------------------------------------
@@ -394,12 +403,6 @@ class ConnectionManager:
             room_state = self.room_states.pop(room_id, None)
             if room_state and room_state.poi_research_task and not room_state.poi_research_task.done():
                 room_state.poi_research_task.cancel()
-
-    async def send_text_to_one(self, websocket: WebSocket, text: str):
-        try:
-            await websocket.send_text(text)
-        except Exception:
-            pass
 
     async def broadcast_text(self, text: str, room_id: str):
         if room_id not in self.active_connections:
@@ -656,34 +659,38 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                     if action == "start_voice_call":
                         requested_poi = payload.get("poi_name", "tu destino").strip()
 
-                        if room_state.call_active and room_state.current_poi_name == requested_poi:
-                            logger.info(f"[{room_id}] start_voice_call duplicado ignorado para {requested_poi}")
-                            continue
+                        async with room_state.call_start_lock:
+                            if room_state.call_active and room_state.current_poi_name == requested_poi:
+                                logger.info(f"[{room_id}] start_voice_call duplicado ignorado para {requested_poi}")
+                                continue
 
-                        room_state.current_poi_name = requested_poi
-                        room_state.last_image_summary = ""
-                        room_state.chat_history = []
-                        room_state.poi_research_summary = ""
-                        room_state.call_active = True
-                        room_state.poi_generation += 1
-                        current_generation = room_state.poi_generation
+                            room_state.current_poi_name = requested_poi
+                            room_state.last_image_summary = ""
+                            room_state.chat_history = []
+                            room_state.poi_research_summary = ""
+                            room_state.call_active = True
+                            room_state.poi_generation += 1
+                            room_state.welcome_sent_for_generation = False
+                            current_generation = room_state.poi_generation
 
-                        if room_state.poi_research_task and not room_state.poi_research_task.done():
-                            room_state.poi_research_task.cancel()
+                            if room_state.poi_research_task and not room_state.poi_research_task.done():
+                                room_state.poi_research_task.cancel()
 
-                        room_state.poi_research_task = asyncio.create_task(
-                            enrich_poi_context_in_background(
-                                room_state,
-                                current_generation,
-                                requested_poi
+                            room_state.poi_research_task = asyncio.create_task(
+                                enrich_poi_context_in_background(
+                                    room_state,
+                                    current_generation,
+                                    requested_poi
+                                )
                             )
-                        )
 
-                        await respond_in_call(
-                            room_state,
-                            room_id,
-                            f"El usuario acaba de iniciar la llamada y ha seleccionado {room_state.current_poi_name}. Salúdale por voz, recomienda cascos si hay ruido y pregúntale si empezamos."
-                        )
+                            if not room_state.welcome_sent_for_generation:
+                                room_state.welcome_sent_for_generation = True
+                                await respond_in_call(
+                                    room_state,
+                                    room_id,
+                                    f"El usuario acaba de iniciar la llamada y ha seleccionado {room_state.current_poi_name}. Salúdale por voz, recomienda cascos si hay ruido y pregúntale si empezamos."
+                                )
                         continue
 
                     if action == "text_chat":

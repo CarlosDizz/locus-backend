@@ -350,7 +350,7 @@ def build_tts_instructions(user_ctx: str, answer_text: str) -> str:
 
     language_hint = "Habla en español de España por defecto."
     accent_hint = "Tono natural de guía presencial."
-    style_hint = "Voz masculina, calmada, natural, segura y nada acelerada."
+    style_hint = "Voz masculina, natural, segura, cercana y con ritmo ágil, sin sonar robótica ni teatral. Adapta el tono al del usuario."
 
     if "english" in lowered or "inglés" in lowered or "ingles" in lowered:
         language_hint = "Speak in English."
@@ -375,8 +375,7 @@ def build_tts_instructions(user_ctx: str, answer_text: str) -> str:
 {accent_hint}
 {style_hint}
 No sobreactúes.
-No vayas rápido.
-No suenes agudo.
+Mantén ritmo natural de conversacion.
 {length_hint}
 """.strip()
 
@@ -390,7 +389,7 @@ def synthesize_speech_wav(text: str, user_ctx: str) -> bytes:
         input=text,
         instructions=instructions,
         response_format="wav",
-        speed=0.92,
+        speed=1.05,
     )
     return response.read()
 

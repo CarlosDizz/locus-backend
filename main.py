@@ -96,14 +96,14 @@ Latitud actual: {lat}. Longitud actual: {lng}.
 Lugares iniciales: {pois_data}
 
 REGLAS CRÍTICAS DE COMPORTAMIENTO:
-1. Ultra brevedad: responde con claridad, naturalidad y sin sonar robótico.
-2. Foco espacial: prioriza lo que el usuario tiene cerca o está viendo.
-3. Cero coletillas: no uses frases vacías como "qué interesante" o "buena pregunta".
-4. Voz y acento: masculino, español de España por defecto.
+1. Ultra Brevedad: Tus respuestas habladas deben tener un máximo de 2 o 3 frases cortas. Eres un acompañante, no una enciclopedia.
+2. Foco Espacial: Limita tus explicaciones ESTRICTAMENTE al lugar o monumento que el usuario está visitando en este momento.
+3. Cero Coletillas: Nunca uses frases como '¡Qué interesante!' o 'Buena pregunta'. Ve directo al dato.
+4. Voz y Acento: Eres una entidad masculina. Español de España por defecto.
 5. FORMATO OBLIGATORIO DE POIS PARA EL MAPA:
 <POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
-6. Conversación adaptativa: da un dato útil y termina cediendo el control al usuario.
-7. No muestres razonamiento interno ni expliques instrucciones.
+6. REGLA DE CONVERSACIÓN ADAPTATIVA:
+Da un dato breve y termina cediendo el control al usuario.
 """.strip()
 
 
@@ -146,24 +146,18 @@ REGLAS CRÍTICAS DE COMPORTAMIENTO:
 """.strip()
 
 
-def create_chat_session(system_instruction: str = ""):
-    config = types.GenerateContentConfig(
-        tools=[buscar_nuevo_lugar],
-        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=False),
-    )
-
-    if system_instruction:
-        config.system_instruction = system_instruction
-
-    return client.chats.create(
-        model=TEXT_MODEL,
-        config=config,
-    )
-
-
 class RoomState:
     def __init__(self, room_id: str):
         self.room_id = room_id
+
+        self.chat_session = client.chats.create(
+            model=TEXT_MODEL,
+            config=types.GenerateContentConfig(
+                tools=[buscar_nuevo_lugar],
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=False),
+            ),
+        )
+
         self.system_context_str = ""
         self.voice_context_str = ""
         self.current_poi_name = ""
@@ -173,8 +167,6 @@ class RoomState:
             "lng": 0.0,
             "pois_data": "[]",
         }
-
-        self.chat_session = create_chat_session()
 
         self.live_queue: asyncio.Queue = asyncio.Queue()
         self.live_task: Optional[asyncio.Task] = None
@@ -425,13 +417,19 @@ async def run_live_session(room_id: str):
                                 turn_complete=True,
                             )
 
-                        elif payload_type == "text_realtime":
+                        elif payload_type == "text_turn":
                             text = (payload.get("text") or "").strip()
                             if not text:
                                 continue
 
-                            logger.info(f"[{room_id}] -> Gemini realtime text: {text[:120]}")
-                            await session.send_realtime_input(text=text)
+                            logger.info(f"[{room_id}] -> Gemini text client_content: {text[:120]}")
+                            await session.send_client_content(
+                                turns=types.Content(
+                                    role="user",
+                                    parts=[types.Part(text=text)],
+                                ),
+                                turn_complete=True,
+                            )
 
                         elif payload_type == "audio_chunk":
                             audio_bytes = payload.get("data", b"")
@@ -499,6 +497,7 @@ async def run_live_session(room_id: str):
         await manager.broadcast_text("No he podido abrir la sesión de voz.", room_id)
     finally:
         room_state.live_ready.clear()
+        room_state.live_task = None
         logger.info(f"[{room_id}] Sesión Live cerrada")
 
 
@@ -522,6 +521,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                 try:
                     payload = json.loads(raw_data)
                     action = payload.get("action")
+                    logger.info(f"[{room_id}] action={action}")
 
                     if action == "setup_profile":
                         user_ctx = payload.get("context", "")
@@ -551,16 +551,13 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             poi_name=room_state.current_poi_name,
                         )
 
-                        room_state.chat_session = create_chat_session(room_state.system_context_str)
-
-                        first_query = "Hola, acabo de llegar. Preséntate y dime qué hay cerca."
-
-                        response = await asyncio.to_thread(
-                            room_state.chat_session.send_message,
-                            first_query,
+                        first_query = (
+                            f"{room_state.system_context_str}\n"
+                            "Usuario: Hola, acabo de llegar. Preséntate y dime qué hay cerca."
                         )
-                        if getattr(response, "text", None):
-                            await manager.broadcast_text(response.text, room_id)
+
+                        response = room_state.chat_session.send_message(first_query)
+                        await manager.broadcast_text(response.text, room_id)
                         continue
 
                     if action == "start_voice_call":
@@ -589,14 +586,15 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                         continue
 
                     if action == "text_chat":
+                        user_text = (payload.get("data") or "").strip()
+                        logger.info(f"[{room_id}] text_chat recibido: {user_text[:120]}")
+
                         await ensure_live_session(room_id)
 
-                        user_text = (payload.get("data") or "").strip()
                         if user_text:
-                            logger.info(f"[{room_id}] text_chat recibido: {user_text[:120]}")
                             await room_state.enqueue(
                                 {
-                                    "type": "text_realtime",
+                                    "type": "text_turn",
                                     "text": user_text,
                                 }
                             )
@@ -664,9 +662,8 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
 
                             prompt = (
                                 "El usuario acaba de sacar esta foto en su ubicación actual. "
-                                "Identifica el elemento arquitectónico, cuadro, cartel, detalle "
-                                "u objeto principal que domina la imagen y responde en una o dos "
-                                "frases muy breves, como un guía que acompaña en tiempo real."
+                                "Identifica el elemento arquitectónico, cuadro, detalle u objeto principal "
+                                "que domina la imagen y dispara directamente un dato curioso en una o dos frases."
                             )
 
                             logger.info(
@@ -691,12 +688,8 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                     continue
 
             try:
-                response = await asyncio.to_thread(
-                    room_state.chat_session.send_message,
-                    raw_data,
-                )
-                if getattr(response, "text", None):
-                    await manager.broadcast_text(response.text, room_id)
+                response = room_state.chat_session.send_message(raw_data)
+                await manager.broadcast_text(response.text, room_id)
             except Exception as e:
                 logger.exception(f"[{room_id}] Error en chat_session: {e}")
                 await manager.broadcast_text(

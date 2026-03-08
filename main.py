@@ -32,7 +32,6 @@ if not OPENAI_API_KEY:
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# El front actual graba PCM16 mono a 16kHz
 FRONT_AUDIO_SAMPLE_RATE = 16000
 FRONT_AUDIO_CHANNELS = 1
 FRONT_AUDIO_BYTES_PER_SAMPLE = 2
@@ -66,7 +65,6 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
             f"&key={MAPS_API_KEY}"
             f"&language=es"
         )
-
         req = urllib.request.Request(url)
 
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -103,22 +101,21 @@ Eres Locus, un guía turístico experto, directo y conversacional.
 Perfil de los viajeros:
 {user_ctx}
 
-Ubicación actual aproximada:
+Ubicación aproximada:
 Latitud {lat}, longitud {lng}
 
-Lugares cercanos ya detectados:
+Lugares cercanos detectados:
 {pois_data}
 
 Reglas:
 - Habla en el idioma del usuario o en el idioma que te pidan.
 - Si el usuario pide una variedad regional o un acento, adáptalo de forma natural.
-- Responde de forma clara y útil.
+- Responde de forma clara, breve y útil.
 - No uses coletillas como "qué interesante" o "buena pregunta".
 - No inventes datos concretos.
 - Si no estás seguro de algo, dilo claramente.
-- Usa búsqueda web para apoyar datos factuales, históricos o locales cuando haga falta.
-- No des enlaces ni invites a consultar webs.
-- Si el usuario pregunta qué hay cerca o acaba de llegar, debes incluir SIEMPRE un bloque <POIS> válido.
+- No des enlaces ni menciones URLs.
+- Si el usuario pregunta qué hay cerca o acaba de llegar, incluye SIEMPRE un bloque <POIS> válido.
 - El formato obligatorio para el mapa es exactamente:
 <POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
 """.strip()
@@ -131,9 +128,11 @@ def build_voice_context(
     pois_data: str,
     poi_name: str = "",
     poi_research_summary: str = "",
+    last_image_summary: str = "",
 ) -> str:
     poi_line = f"POI actual de la visita: {poi_name}." if poi_name else "No hay POI actual fijado."
-    research_block = poi_research_summary.strip() or "Sin dossier específico del POI todavía."
+    research_block = poi_research_summary.strip() or "Sin dossier ampliado todavía."
+    image_block = last_image_summary.strip() or "Sin contexto visual reciente."
 
     return f"""
 Eres Locus, un guía turístico presencial que acompaña a los viajeros durante una visita real.
@@ -149,70 +148,64 @@ Lugares cercanos:
 
 {poi_line}
 
-CONTEXTO PRIVADO DEL GUÍA (NO DEBES MOSTRARLO NI MENCIONARLO):
+CONTEXTO PRIVADO DEL GUÍA (NO DEBES MENCIONARLO):
 {research_block}
 
+ÚLTIMO CONTEXTO VISUAL (NO DEBES MENCIONAR QUE LO TIENES COMO SISTEMA):
+{image_block}
+
 Reglas:
-- Habla directamente al visitante, como un guía real.
-- Nunca menciones que tienes un dossier, contexto interno, fuentes, preparación, resumen o research.
-- Nunca digas frases como "guion", "te preparo", "tres respuestas", "opciones", "contexto", "según mis notas" o similares.
+- Habla directamente al visitante como un guía real.
+- Nunca menciones dossier, notas, research, fuentes, contexto interno, preparación o guion.
 - No hables como un asistente que prepara material para otro.
-- Tú eres el guía. Hablas tú directamente.
+- Tú eres el guía.
 
 - Habla en el idioma del usuario o en el idioma que te pidan.
 - Si el usuario pide una variedad regional o un acento, adáptalo de forma natural, sin caricatura.
 - Por defecto responde en 2 o 3 frases útiles.
-- Si el usuario pide más contexto, más detalle o más historia, puedes ampliar.
+- Si el usuario pide más detalle, puedes ampliar.
 - Responde primero a la pregunta concreta del usuario.
 - Si existe un POI actual, úsalo siempre como contexto principal.
-- Usa el contexto privado solo como memoria de apoyo.
-- Si el usuario está ante un objeto o detalle del lugar, intenta relacionarlo con el POI actual antes de pedir más datos.
+- Si el usuario menciona algo que tiene delante, intenta conectarlo con el POI actual y con el contexto visual.
 
 - No inventes datos.
 - No afirmes fechas, nombres, autores, materiales, estilos o hechos históricos sin base suficiente.
 - Si no estás seguro, dilo claramente.
-- Si necesitas más contexto, pide una foto, una placa, un nombre o un detalle visual.
-
-- Si falta un dato importante y verificable, puedes decir una sola frase breve del estilo:
-  "Un momento, voy a comprobar ese detalle."
-  Después responde ya como guía, no como documentalista.
+- Si hace falta más contexto, pide foto, placa o detalle visual.
 
 - No des enlaces.
 - No menciones URLs.
 - No menciones Wikipedia ni otras webs.
-- No cierres con ofertas artificiales tipo "¿quieres una versión más larga?" salvo que sea natural en conversación.
-- No uses listas ni viñetas en la respuesta hablada.
+- No uses listas en la respuesta hablada.
+- No ofrezcas “versiones largas” ni cierres artificiales.
 """.strip()
 
 
 def build_poi_research_prompt(user_ctx: str, poi_name: str, lat: float, lng: float) -> str:
     return f"""
-Necesito un CONTEXTO PRIVADO para un guía turístico presencial.
+Necesito memoria interna para un guía turístico presencial.
 
 POI actual: {poi_name}
 Ubicación aproximada: latitud {lat}, longitud {lng}
 Perfil del viajero: {user_ctx}
 
-Usa búsqueda web para identificar correctamente el POI y reunir información útil.
+Usa búsqueda web para reunir contexto útil y fiable.
 
-Devuelve un contexto interno, no un texto final para el visitante.
+Devuelve memoria interna breve y práctica, no texto para leer al visitante.
 
 Incluye:
 1. Identificación fiable del lugar.
-2. Hechos históricos básicos verificables.
-3. Elementos visibles o asociados que un visitante podría tener delante.
+2. Contexto histórico o cultural básico verificable.
+3. Qué elementos visibles puede tener delante el visitante.
 4. Posibles confusiones habituales.
-5. Preguntas típicas de un visitante.
-6. Lagunas o cosas que no deben afirmarse sin confirmación.
+5. Preguntas típicas.
+6. Qué no debe afirmarse sin confirmación.
 
 Reglas:
-- No escribas como si fueras a hablar directamente al visitante.
-- No pongas frases teatrales.
-- No pongas guiones para leer.
-- No pongas listas de respuestas modelo.
-- No pongas enlaces ni URLs.
-- No pongas cierres conversacionales.
-- Escribe esto como memoria interna para el guía.
+- No des enlaces ni URLs.
+- No hagas un guion.
+- No escribas como si estuvieras hablando al visitante.
+- Sé concreto y útil.
 """.strip()
 
 
@@ -223,8 +216,6 @@ def build_turn_prompt(
     user_ctx: str,
     last_image_summary: str = "",
 ) -> str:
-    image_block = last_image_summary.strip() or "Sin contexto visual reciente."
-
     return f"""
 MENSAJE DEL USUARIO:
 {user_message}
@@ -232,29 +223,26 @@ MENSAJE DEL USUARIO:
 POI ACTUAL:
 {current_poi_name or "No indicado"}
 
-CONTEXTO PRIVADO:
+MEMORIA INTERNA DEL POI:
 {poi_research_summary or "No disponible"}
 
 ÚLTIMO CONTEXTO VISUAL:
-{image_block}
+{last_image_summary or "No disponible"}
 
 PERFIL DEL VIAJERO:
 {user_ctx}
 
-Instrucción de turno:
-Responde directamente AL VISITANTE como Locus, su guía turístico.
+Instrucción:
+Responde directamente al visitante como Locus, su guía turístico.
 
 Reglas:
-- No expliques cómo has construido la respuesta.
-- No menciones contexto, dossier, research, fuentes, preparación ni notas.
-- No conviertas la respuesta en un esquema, guion, lista, FAQ ni material para terceros.
-- No digas "aquí tienes", "te preparo", "guion corto", "tres respuestas" o frases parecidas.
-- No hables como un asistente externo: habla como el guía presente en la visita.
-- Si sabes responder bien con el contexto disponible, hazlo directamente.
-- Si falta un dato factual importante, puedes decir solo:
-  "Un momento, voy a comprobar ese detalle."
-  y luego continuar con la respuesta final.
-- No des enlaces ni menciones URLs.
+- No menciones el proceso interno.
+- No menciones contexto, research, fuentes ni notas.
+- No hables como asistente externo.
+- No conviertas la respuesta en esquema, FAQ o guion.
+- Si puedes responder bien con el contexto disponible, hazlo de inmediato.
+- Solo si falta un dato factual realmente importante, puedes verificarlo.
+- No des enlaces ni URLs.
 - No inventes nada.
 """.strip()
 
@@ -263,12 +251,8 @@ Reglas:
 # OPENAI HELPERS
 # ---------------------------------------------------------
 
-def ask_openai_chat(
-    system_context: str,
-    user_message: str,
-    allow_web_search: bool = False,
-) -> str:
-    request_args = {
+def ask_openai_chat(system_context: str, user_message: str, allow_web_search: bool = False) -> str:
+    args = {
         "model": OPENAI_CHAT_MODEL,
         "input": [
             {
@@ -283,10 +267,10 @@ def ask_openai_chat(
     }
 
     if allow_web_search:
-        request_args["tools"] = [{"type": "web_search"}]
-        request_args["tool_choice"] = "auto"
+        args["tools"] = [{"type": "web_search"}]
+        args["tool_choice"] = "auto"
 
-    response = openai_client.responses.create(**request_args)
+    response = openai_client.responses.create(**args)
     return (response.output_text or "").strip()
 
 
@@ -299,7 +283,7 @@ def ask_openai_image(
 ) -> str:
     image_data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}"
 
-    request_args = {
+    args = {
         "model": OPENAI_CHAT_MODEL,
         "input": [
             {
@@ -317,10 +301,10 @@ def ask_openai_image(
     }
 
     if allow_web_search:
-        request_args["tools"] = [{"type": "web_search"}]
-        request_args["tool_choice"] = "auto"
+        args["tools"] = [{"type": "web_search"}]
+        args["tool_choice"] = "auto"
 
-    response = openai_client.responses.create(**request_args)
+    response = openai_client.responses.create(**args)
     return (response.output_text or "").strip()
 
 
@@ -377,7 +361,7 @@ def build_tts_instructions(user_ctx: str, answer_text: str) -> str:
 
     language_hint = "Habla en español de España por defecto."
     accent_hint = "Usa un tono natural de guía presencial."
-    style_hint = "Voz masculina, natural, segura, cercana y con ritmo ágil, sin sonar robótica ni teatral."
+    style_hint = "Voz masculina, natural, segura, cercana y con ritmo ágil."
 
     if "english" in lowered or "inglés" in lowered or "ingles" in lowered:
         language_hint = "Speak in English."
@@ -388,14 +372,8 @@ def build_tts_instructions(user_ctx: str, answer_text: str) -> str:
 
     if "andaluz" in lowered:
         accent_hint = "Usa un color andaluz suave, natural, sin caricatura."
-    elif "español de españa" in lowered or "espana" in lowered or "españa" in lowered:
-        accent_hint = "Usa español de España natural."
     elif "latino" in lowered or "latam" in lowered:
         accent_hint = "Usa español latino neutro."
-
-    length_hint = ""
-    if len(answer_text) > 500:
-        length_hint = "Mantén claridad y naturalidad incluso en respuestas largas."
 
     return f"""
 {language_hint}
@@ -403,20 +381,17 @@ def build_tts_instructions(user_ctx: str, answer_text: str) -> str:
 {style_hint}
 No sobreactúes.
 Mantén un ritmo natural de conversación.
-{length_hint}
 """.strip()
 
 
 def synthesize_speech_wav(text: str, user_ctx: str) -> bytes:
-    instructions = build_tts_instructions(user_ctx, text)
-
     response = openai_client.audio.speech.create(
         model=OPENAI_TTS_MODEL,
         voice=OPENAI_TTS_VOICE,
         input=text,
-        instructions=instructions,
+        instructions=build_tts_instructions(user_ctx, text),
         response_format="wav",
-        speed=1.0,
+        speed=1.03,
     )
     return response.read()
 
@@ -425,9 +400,7 @@ def sanitize_for_voice(text: str) -> str:
     if not text:
         return text
 
-    sanitized = text
-
-    sanitized = re.sub(r'https?://\S+', '', sanitized)
+    sanitized = re.sub(r'https?://\S+', '', text)
     sanitized = re.sub(r'www\.\S+', '', sanitized)
 
     replacements = [
@@ -452,45 +425,27 @@ def sanitize_for_voice(text: str) -> str:
 def should_force_web_search(user_message: str) -> bool:
     lowered = (user_message or "").lower()
 
-    factual_markers = [
-        "qué es",
-        "que es",
-        "quién",
-        "quien",
-        "cuándo",
-        "cuando",
-        "historia",
-        "origen",
-        "autor",
-        "fecha",
-        "año",
-        "modelo",
-        "locomotora",
-        "fábrica",
-        "fabrica",
-        "molino",
-        "iglesia",
-        "museo",
-        "cuadro",
-        "pintura",
-        "obra",
-        "escultura",
-        "monumento",
-        "edificio",
-        "sala",
-        "detalles",
-        "más detalle",
-        "mas detalle",
-        "cuéntame más",
-        "cuentame más",
-        "cuentame mas",
-        "exactamente",
-        "de verdad",
+    strict_markers = [
+        "fecha exacta",
+        "año exacto",
+        "autor exacto",
+        "modelo exacto",
+        "quién lo hizo",
+        "quien lo hizo",
+        "cuándo fue",
+        "cuando fue",
+        "estás seguro",
+        "estas seguro",
+        "seguro?",
+        "compruébalo",
+        "compruebalo",
+        "confírmalo",
+        "confirmalo",
         "confírmame",
-        "confirma",
+        "confirmame",
     ]
 
-    return any(marker in lowered for marker in factual_markers)
+    return any(marker in lowered for marker in strict_markers)
 
 
 # ---------------------------------------------------------
@@ -501,10 +456,10 @@ class RoomState:
     def __init__(self, room_id: str):
         self.room_id = room_id
         self.system_context_str = ""
-        self.voice_context_str = ""
         self.current_poi_name = ""
         self.poi_research_summary = ""
         self.last_image_summary = ""
+        self.poi_research_task: Optional[asyncio.Task] = None
 
         self.profile = {
             "user_ctx": "",
@@ -542,7 +497,10 @@ class ConnectionManager:
         if room_id in self.active_connections and not self.active_connections[room_id]:
             logger.info(f"[{room_id}] Último cliente desconectado. Cerrando sala.")
             del self.active_connections[room_id]
-            self.room_states.pop(room_id, None)
+
+            room_state = self.room_states.pop(room_id, None)
+            if room_state and room_state.poi_research_task and not room_state.poi_research_task.done():
+                room_state.poi_research_task.cancel()
 
     async def broadcast_text(self, text: str, room_id: str):
         if room_id not in self.active_connections:
@@ -583,37 +541,48 @@ manager = ConnectionManager()
 
 
 # ---------------------------------------------------------
-# CALL LOGIC
+# BACKGROUND ENRICHMENT
 # ---------------------------------------------------------
 
-async def build_poi_research_summary(room_state: RoomState) -> str:
-    poi_name = room_state.current_poi_name or "el lugar actual"
-    lat = float(room_state.profile.get("lat", 0.0))
-    lng = float(room_state.profile.get("lng", 0.0))
-    user_ctx = room_state.profile.get("user_ctx", "")
+async def enrich_poi_context_in_background(room_state: RoomState):
+    try:
+        poi_name = room_state.current_poi_name or "el lugar actual"
+        lat = float(room_state.profile.get("lat", 0.0))
+        lng = float(room_state.profile.get("lng", 0.0))
+        user_ctx = room_state.profile.get("user_ctx", "")
 
-    system_context = """
+        system_context = """
 Eres un asistente de documentación para un guía turístico.
-Tu trabajo es preparar memoria interna fiable y útil.
+Tu trabajo es preparar memoria interna fiable y breve.
 No pongas enlaces ni URLs.
 No inventes nada.
 """.strip()
 
-    prompt = build_poi_research_prompt(user_ctx, poi_name, lat, lng)
+        prompt = build_poi_research_prompt(user_ctx, poi_name, lat, lng)
 
-    summary = await asyncio.to_thread(
-        ask_openai_chat,
-        system_context,
-        prompt,
-        True,
-    )
+        summary = await asyncio.to_thread(
+            ask_openai_chat,
+            system_context,
+            prompt,
+            True,
+        )
 
-    return summary.strip()
+        room_state.poi_research_summary = summary.strip()
+        logger.info(f"[{room_state.room_id}] Dossier del POI enriquecido")
 
+    except asyncio.CancelledError:
+        logger.info(f"[{room_state.room_id}] Enriquecimiento cancelado")
+        raise
+    except Exception as e:
+        logger.exception(f"[{room_state.room_id}] Error enriqueciendo POI: {e}")
+
+
+# ---------------------------------------------------------
+# CALL LOGIC
+# ---------------------------------------------------------
 
 async def speak_text(room_state: RoomState, room_id: str, text: str):
     clean_text = sanitize_for_voice(text)
-
     if not clean_text:
         return
 
@@ -626,25 +595,23 @@ async def speak_text(room_state: RoomState, room_id: str, text: str):
             room_state.profile.get("user_ctx", ""),
         )
         if audio_bytes:
-            logger.info(f"[{room_id}] TTS WAV bytes -> {len(audio_bytes)}")
             await manager.broadcast_bytes(audio_bytes, room_id)
     except Exception as e:
         logger.exception(f"[{room_id}] Error generando TTS: {e}")
 
 
-async def respond_in_call(room_state: RoomState, room_id: str, user_message: str):
-    logger.info(f"[{room_id}] Pregunta call -> {user_message[:180]}")
-
-    turn_system_context = build_voice_context(
+async def generate_fast_answer(room_state: RoomState, user_message: str) -> str:
+    system_context = build_voice_context(
         user_ctx=room_state.profile.get("user_ctx", ""),
         lat=float(room_state.profile.get("lat", 0.0)),
         lng=float(room_state.profile.get("lng", 0.0)),
         pois_data=room_state.profile.get("pois_data", "[]"),
         poi_name=room_state.current_poi_name,
         poi_research_summary=room_state.poi_research_summary,
+        last_image_summary=room_state.last_image_summary,
     )
 
-    turn_prompt = build_turn_prompt(
+    prompt = build_turn_prompt(
         user_message=user_message,
         current_poi_name=room_state.current_poi_name,
         poi_research_summary=room_state.poi_research_summary,
@@ -652,22 +619,64 @@ async def respond_in_call(room_state: RoomState, room_id: str, user_message: str
         last_image_summary=room_state.last_image_summary,
     )
 
-    needs_web = should_force_web_search(user_message)
-
-    if needs_web:
-        await speak_text(room_state, room_id, "Un momento, voy a comprobar ese detalle.")
-
-    answer = await asyncio.to_thread(
+    return await asyncio.to_thread(
         ask_openai_chat,
-        turn_system_context,
-        turn_prompt,
-        needs_web,
+        system_context,
+        prompt,
+        False,
     )
 
+
+async def generate_verified_answer(room_state: RoomState, user_message: str) -> str:
+    system_context = build_voice_context(
+        user_ctx=room_state.profile.get("user_ctx", ""),
+        lat=float(room_state.profile.get("lat", 0.0)),
+        lng=float(room_state.profile.get("lng", 0.0)),
+        pois_data=room_state.profile.get("pois_data", "[]"),
+        poi_name=room_state.current_poi_name,
+        poi_research_summary=room_state.poi_research_summary,
+        last_image_summary=room_state.last_image_summary,
+    )
+
+    prompt = build_turn_prompt(
+        user_message=user_message,
+        current_poi_name=room_state.current_poi_name,
+        poi_research_summary=room_state.poi_research_summary,
+        user_ctx=room_state.profile.get("user_ctx", ""),
+        last_image_summary=room_state.last_image_summary,
+    )
+
+    return await asyncio.to_thread(
+        ask_openai_chat,
+        system_context,
+        prompt,
+        True,
+    )
+
+
+async def respond_in_call(room_state: RoomState, room_id: str, user_message: str):
+    logger.info(f"[{room_id}] Pregunta call -> {user_message[:180]}")
+
+    answer = await generate_fast_answer(room_state, user_message)
+
     if not answer:
-        answer = "No he podido responder bien a eso."
+        answer = "No lo tengo claro del todo. Cuéntame qué ves exactamente y lo afinamos."
 
     await speak_text(room_state, room_id, answer)
+
+    if should_force_web_search(user_message):
+        async def refine_later():
+            try:
+                better_answer = await generate_verified_answer(room_state, user_message)
+                better_answer = sanitize_for_voice(better_answer)
+
+                if better_answer and better_answer != sanitize_for_voice(answer):
+                    logger.info(f"[{room_id}] Respuesta refinada disponible")
+                    await manager.broadcast_text(f"ℹ️ {better_answer}", room_id)
+            except Exception as e:
+                logger.exception(f"[{room_id}] Error refinando respuesta: {e}")
+
+        asyncio.create_task(refine_later())
 
 
 async def respond_to_image_in_call(
@@ -675,22 +684,33 @@ async def respond_to_image_in_call(
     room_id: str,
     image_bytes: bytes,
     mime_type: str,
-    prompt: str,
 ):
-    turn_system_context = build_voice_context(
+    poi_name = room_state.current_poi_name or "el lugar actual"
+
+    system_context = build_voice_context(
         user_ctx=room_state.profile.get("user_ctx", ""),
         lat=float(room_state.profile.get("lat", 0.0)),
         lng=float(room_state.profile.get("lng", 0.0)),
         pois_data=room_state.profile.get("pois_data", "[]"),
         poi_name=room_state.current_poi_name,
         poi_research_summary=room_state.poi_research_summary,
+        last_image_summary=room_state.last_image_summary,
     )
 
-    await speak_text(room_state, room_id, "Un momento, voy a comprobar ese detalle.")
+    prompt = (
+        f"El usuario está visitando {poi_name}. "
+        "Analiza esta imagen como si fueras su guía turístico. "
+        "Identifica la obra, sala, objeto o elemento principal si puedes hacerlo con base suficiente. "
+        "Usa búsqueda web si hace falta. "
+        "No inventes nada. "
+        "No des enlaces ni menciones URLs. "
+        "Si no puedes identificarlo con seguridad, dilo claramente y explica solo lo que puedas sostener. "
+        "Si puedes identificarlo, cuéntalo de forma útil para una visita real."
+    )
 
     answer = await asyncio.to_thread(
         ask_openai_image,
-        turn_system_context,
+        system_context,
         prompt,
         image_bytes,
         mime_type,
@@ -698,7 +718,7 @@ async def respond_to_image_in_call(
     )
 
     if not answer:
-        answer = "No he podido interpretar bien la imagen."
+        answer = "No consigo identificarlo con seguridad. Si quieres, acércame la placa o encuadra mejor el detalle principal."
 
     room_state.last_image_summary = answer
     await speak_text(room_state, room_id, answer)
@@ -762,20 +782,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             pois_data=pois_data,
                         )
 
-                        room_state.voice_context_str = build_voice_context(
-                            user_ctx=user_ctx,
-                            lat=lat,
-                            lng=lng,
-                            pois_data=pois_data,
-                            poi_name=room_state.current_poi_name,
-                            poi_research_summary=room_state.poi_research_summary,
-                        )
-
                         response_text = await asyncio.to_thread(
                             ask_openai_chat,
                             room_state.system_context_str,
                             "Hola, acabo de llegar. Preséntate como guía y dime qué hay cerca. Incluye los POIs en el formato obligatorio.",
-                            True,
+                            False,
                         )
 
                         await manager.broadcast_text(response_text, room_id)
@@ -785,22 +796,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                         room_state.current_poi_name = payload.get("poi_name", "tu destino")
                         room_state.last_image_summary = ""
 
-                        await speak_text(
-                            room_state,
-                            room_id,
-                            f"Un momento, preparo el contexto de {room_state.current_poi_name}.",
-                        )
+                        if room_state.poi_research_task and not room_state.poi_research_task.done():
+                            room_state.poi_research_task.cancel()
 
-                        room_state.poi_research_summary = await build_poi_research_summary(room_state)
-
-                        prof = room_state.profile
-                        room_state.voice_context_str = build_voice_context(
-                            user_ctx=prof.get("user_ctx", ""),
-                            lat=float(prof.get("lat", 0.0)),
-                            lng=float(prof.get("lng", 0.0)),
-                            pois_data=prof.get("pois_data", "[]"),
-                            poi_name=room_state.current_poi_name,
-                            poi_research_summary=room_state.poi_research_summary,
+                        room_state.poi_research_task = asyncio.create_task(
+                            enrich_poi_context_in_background(room_state)
                         )
 
                         await respond_in_call(
@@ -808,7 +808,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             room_id,
                             (
                                 f"El usuario acaba de iniciar la ruta en {room_state.current_poi_name}. "
-                                "Dale la bienvenida de forma breve, recomienda ponerse auriculares y pregunta hacia dónde está mirando."
+                                "Dale la bienvenida de forma breve, recomienda ponerse auriculares si hay ruido y pregunta qué tiene delante."
                             ),
                         )
                         continue
@@ -833,8 +833,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             if not audio_bytes:
                                 continue
 
-                            logger.info(f"[{room_id}] audio_chat bytes={len(audio_bytes)}")
-
                             language_hint = infer_language_hint(room_state.profile.get("user_ctx", ""))
 
                             transcript = await asyncio.to_thread(
@@ -851,7 +849,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                                 continue
 
                             logger.info(f"[{room_id}] Transcripción -> {transcript}")
-
                             await respond_in_call(room_state, room_id, transcript)
 
                         except Exception as e:
@@ -871,25 +868,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             if not img_bytes:
                                 continue
 
-                            poi_name = room_state.current_poi_name or "el lugar actual"
-
-                            prompt = (
-                                f"El usuario está visitando {poi_name}. "
-                                "Analiza esta imagen como si fueras su guía turístico. "
-                                "Identifica la obra, sala, objeto o elemento principal si puedes hacerlo con base suficiente. "
-                                "Usa búsqueda web si hace falta. "
-                                "No inventes nada. "
-                                "No des enlaces ni menciones URLs. "
-                                "Si no puedes identificarlo con seguridad, dilo claramente y explica solo lo que puedas sostener. "
-                                "Si puedes identificarlo, cuéntalo con detalle útil para una visita real."
-                            )
-
                             await respond_to_image_in_call(
                                 room_state,
                                 room_id,
                                 img_bytes,
                                 mime_type,
-                                prompt,
                             )
 
                         except Exception as e:
@@ -909,7 +892,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                     ask_openai_chat,
                     room_state.system_context_str,
                     raw_data,
-                    True,
+                    False,
                 )
                 await manager.broadcast_text(response_text, room_id)
             except Exception as e:

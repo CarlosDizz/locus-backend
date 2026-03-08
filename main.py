@@ -5,10 +5,11 @@ import urllib.request
 import logging
 import base64
 import asyncio
+import audioop
 from typing import Optional
 
-from google import genai
-from google.genai import types
+import websockets
+from openai import OpenAI
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -16,27 +17,33 @@ import uvicorn
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("LocusIA")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 MAPS_API_KEY = os.environ.get("MAPS_API_KEY")
 
-if not GEMINI_API_KEY:
-    raise RuntimeError("Falta GEMINI_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-5-mini")
+OPENAI_REALTIME_MODEL = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime-mini")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+if not OPENAI_API_KEY:
+    raise RuntimeError("Falta OPENAI_API_KEY")
 
-TEXT_MODEL = os.environ.get("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
-LIVE_MODEL = os.environ.get(
-    "GEMINI_LIVE_MODEL",
-    "gemini-2.5-flash-native-audio-preview-12-2025",
-)
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-AUDIO_MIME = "audio/pcm;rate=16000"
+# Front actual
+FRONT_AUDIO_SAMPLE_RATE = 16000
+FRONT_AUDIO_MIME = "audio/pcm;rate=16000"
+FRONT_AUDIO_BYTES_PER_SAMPLE = 2
+FRONT_AUDIO_CHANNELS = 1
+
+# OpenAI Realtime espera/reproduce pcm16 a 24 kHz
+REALTIME_AUDIO_SAMPLE_RATE = 24000
+REALTIME_AUDIO_MIME = "pcm16"
+
 AUDIO_CHUNK_MS = 100
-AUDIO_SAMPLE_RATE = 16000
-AUDIO_BYTES_PER_SAMPLE = 2
-AUDIO_CHANNELS = 1
 AUDIO_CHUNK_SIZE = int(
-    AUDIO_SAMPLE_RATE * (AUDIO_CHUNK_MS / 1000) * AUDIO_BYTES_PER_SAMPLE * AUDIO_CHANNELS
+    FRONT_AUDIO_SAMPLE_RATE
+    * (AUDIO_CHUNK_MS / 1000)
+    * FRONT_AUDIO_BYTES_PER_SAMPLE
+    * FRONT_AUDIO_CHANNELS
 )
 
 app = FastAPI()
@@ -83,9 +90,43 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
                     )
 
             return json.dumps(payload, ensure_ascii=False)
+
     except Exception as e:
         logger.exception(f"Error en Maps: {e}")
         return "[]"
+
+
+def chunk_audio_bytes(audio_bytes: bytes, chunk_size: int = AUDIO_CHUNK_SIZE):
+    for i in range(0, len(audio_bytes), chunk_size):
+        yield audio_bytes[i:i + chunk_size]
+
+
+def pcm16_16k_to_24k(audio_bytes: bytes) -> bytes:
+    if not audio_bytes:
+        return b""
+    converted, _ = audioop.ratecv(
+        audio_bytes,
+        2,
+        1,
+        FRONT_AUDIO_SAMPLE_RATE,
+        REALTIME_AUDIO_SAMPLE_RATE,
+        None,
+    )
+    return converted
+
+
+def pcm16_24k_to_16k(audio_bytes: bytes) -> bytes:
+    if not audio_bytes:
+        return b""
+    converted, _ = audioop.ratecv(
+        audio_bytes,
+        2,
+        1,
+        REALTIME_AUDIO_SAMPLE_RATE,
+        FRONT_AUDIO_SAMPLE_RATE,
+        None,
+    )
+    return converted
 
 
 def build_home_context(user_ctx: str, lat: float, lng: float, pois_data: str) -> str:
@@ -96,7 +137,7 @@ Latitud actual: {lat}. Longitud actual: {lng}.
 Lugares iniciales: {pois_data}
 
 REGLAS CRÍTICAS DE COMPORTAMIENTO:
-1. Ultra Brevedad: Tus respuestas habladas deben tener un máximo de 2 o 3 frases cortas. Eres un acompañante, no una enciclopedia.
+1. Ultra Brevedad: Tus respuestas deben tener un máximo de 2 o 3 frases cortas.
 2. Foco Espacial: Limita tus explicaciones ESTRICTAMENTE al lugar o monumento que el usuario está visitando en este momento.
 3. Cero Coletillas: Nunca uses frases como '¡Qué interesante!' o 'Buena pregunta'. Ve directo al dato.
 4. Voz y Acento: Eres una entidad masculina. Español de España por defecto.
@@ -107,13 +148,7 @@ Da un dato breve y termina cediendo el control al usuario.
 """.strip()
 
 
-def build_voice_context(
-    user_ctx: str,
-    lat: float,
-    lng: float,
-    pois_data: str,
-    poi_name: str = "",
-) -> str:
+def build_voice_context(user_ctx: str, lat: float, lng: float, pois_data: str, poi_name: str = "") -> str:
     poi_line = f"Lugar actual de inicio de la llamada: {poi_name}." if poi_name else ""
 
     return f"""
@@ -137,18 +172,47 @@ REGLAS CRÍTICAS DE COMPORTAMIENTO:
 """.strip()
 
 
+def ask_openai_chat(system_context: str, user_message: str) -> str:
+    response = openai_client.responses.create(
+        model=OPENAI_CHAT_MODEL,
+        input=[
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": system_context}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": user_message}],
+            },
+        ],
+    )
+    return (response.output_text or "").strip()
+
+
+def ask_openai_image(system_context: str, prompt: str, image_bytes: bytes, mime_type: str) -> str:
+    image_data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}"
+    response = openai_client.responses.create(
+        model=OPENAI_CHAT_MODEL,
+        input=[
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": system_context}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {"type": "input_image", "image_url": image_data_url},
+                ],
+            },
+        ],
+    )
+    return (response.output_text or "").strip()
+
+
 class RoomState:
     def __init__(self, room_id: str):
         self.room_id = room_id
-
-        self.chat_session = client.chats.create(
-            model=TEXT_MODEL,
-            config=types.GenerateContentConfig(
-                tools=[buscar_nuevo_lugar],
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=False),
-            ),
-        )
-
         self.system_context_str = ""
         self.voice_context_str = ""
         self.current_poi_name = ""
@@ -163,6 +227,7 @@ class RoomState:
         self.live_task: Optional[asyncio.Task] = None
         self.live_ready = asyncio.Event()
         self.live_stop = asyncio.Event()
+        self.realtime_ws = None
 
     async def enqueue(self, payload: dict):
         await self.live_queue.put(payload)
@@ -251,9 +316,8 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-def chunk_audio_bytes(audio_bytes: bytes, chunk_size: int = AUDIO_CHUNK_SIZE):
-    for i in range(0, len(audio_bytes), chunk_size):
-        yield audio_bytes[i:i + chunk_size]
+async def realtime_send(ws, event: dict):
+    await ws.send(json.dumps(event))
 
 
 async def ensure_live_session(room_id: str):
@@ -275,122 +339,137 @@ async def run_live_session(room_id: str):
     if not room_state:
         return
 
-    live_system_instruction = room_state.voice_context_str or (
-        "Eres Locus, un guía turístico directo y breve. "
-        "No muestres razonamiento ni planificación interna."
-    )
+    uri = f"wss://api.openai.com/v1/realtime?model={OPENAI_REALTIME_MODEL}"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "OpenAI-Beta": "realtime=v1",
+    }
 
-    live_config = types.LiveConnectConfig(
-        response_modalities=["AUDIO"],
-        system_instruction=live_system_instruction,
-        speech_config=types.SpeechConfig(
-            voice_config=types.VoiceConfig(
-                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
-            )
-        ),
-        input_audio_transcription=types.AudioTranscriptionConfig(),
-        output_audio_transcription=types.AudioTranscriptionConfig(),
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
-    )
-
-    logger.info(f"[{room_id}] Abriendo sesión Gemini Live con modelo {LIVE_MODEL}")
-    logger.info(f"[{room_id}] Live config: AUDIO + system_instruction + realtime_input")
+    logger.info(f"[{room_id}] Abriendo sesión OpenAI Realtime con modelo {OPENAI_REALTIME_MODEL}")
 
     try:
-        async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as session:
+        async with websockets.connect(uri, additional_headers=headers, max_size=None) as ws:
+            room_state.realtime_ws = ws
+
+            await realtime_send(
+                ws,
+                {
+                    "type": "session.update",
+                    "session": {
+                        "instructions": room_state.voice_context_str
+                        or "Eres Locus, un guía turístico directo y breve.",
+                        "voice": "alloy",
+                        "modalities": ["text", "audio"],
+                        "input_audio_format": REALTIME_AUDIO_MIME,
+                        "output_audio_format": REALTIME_AUDIO_MIME,
+                        "input_audio_transcription": {
+                            "model": "gpt-4o-mini-transcribe"
+                        },
+                        "turn_detection": None,
+                    },
+                },
+            )
+
             room_state.live_ready.set()
-            logger.info(f"[{room_id}] Sesión Live lista")
+            logger.info(f"[{room_id}] Sesión Realtime lista")
 
-            async def receive_from_gemini():
+            async def receive_from_openai():
                 try:
-                    async for response in session.receive():
-                        # Compatibilidad con distintas formas del SDK
-                        if getattr(response, "text", None):
-                            text = (response.text or "").strip()
-                            if text:
-                                logger.info(f"[{room_id}] Gemini -> text direct: {text[:120]}")
-                                await manager.broadcast_text(text, room_id)
-
-                        sc = getattr(response, "server_content", None)
-                        if sc is None:
+                    async for raw_msg in ws:
+                        try:
+                            event = json.loads(raw_msg)
+                        except Exception:
+                            logger.warning(f"[{room_id}] Evento Realtime no JSON")
                             continue
 
-                        input_transcription = getattr(sc, "input_transcription", None)
-                        if input_transcription is not None:
-                            input_text = (getattr(input_transcription, "text", "") or "").strip()
-                            if input_text:
-                                logger.info(f"[{room_id}] Gemini entendió al usuario: {input_text[:120]}")
+                        event_type = event.get("type", "")
 
-                        output_transcription = getattr(sc, "output_transcription", None)
-                        if output_transcription is not None:
-                            output_text = (getattr(output_transcription, "text", "") or "").strip()
-                            if output_text:
-                                logger.info(f"[{room_id}] Gemini -> transcripción: {output_text[:120]}")
-                                await manager.broadcast_text(output_text, room_id)
+                        if event_type == "error":
+                            logger.error(f"[{room_id}] Realtime error: {event}")
+                            await manager.broadcast_text(
+                                "La sesión de voz ha dado un error.",
+                                room_id,
+                            )
+                            continue
 
-                        if sc.model_turn:
-                            for part in sc.model_turn.parts:
-                                inline_data = getattr(part, "inline_data", None)
-                                if inline_data and inline_data.data:
-                                    data = inline_data.data
-                                    logger.info(f"[{room_id}] Gemini -> audio bytes: {len(data)}")
-                                    await manager.broadcast_bytes(data, room_id)
+                        if event_type == "conversation.item.input_audio_transcription.completed":
+                            transcript = (
+                                event.get("transcript")
+                                or event.get("item", {}).get("content", [{}])[0].get("transcript")
+                                or ""
+                            ).strip()
+                            if transcript:
+                                logger.info(f"[{room_id}] OpenAI entendió al usuario: {transcript[:120]}")
 
-                                text_part = getattr(part, "text", None)
-                                if text_part:
-                                    text_part = text_part.strip()
-                                    if text_part:
-                                        logger.info(f"[{room_id}] Gemini -> text part: {text_part[:120]}")
-                                        await manager.broadcast_text(text_part, room_id)
+                        if event_type == "response.audio_transcript.delta":
+                            delta = event.get("delta", "")
+                            if delta:
+                                await manager.broadcast_text(delta, room_id)
 
-                        if getattr(sc, "turn_complete", False):
-                            logger.info(f"[{room_id}] Turno completado por Gemini")
+                        if event_type == "response.audio.delta":
+                            delta_b64 = event.get("delta", "")
+                            if delta_b64:
+                                audio_24k = base64.b64decode(delta_b64)
+                                audio_16k = pcm16_24k_to_16k(audio_24k)
+                                logger.info(f"[{room_id}] OpenAI -> audio bytes 24k={len(audio_24k)} 16k={len(audio_16k)}")
+                                await manager.broadcast_bytes(audio_16k, room_id)
+
+                        if event_type == "response.text.delta":
+                            delta = event.get("delta", "")
+                            if delta:
+                                await manager.broadcast_text(delta, room_id)
+
+                        if event_type == "response.done":
+                            logger.info(f"[{room_id}] Respuesta Realtime completada")
 
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    logger.exception(f"[{room_id}] Error recibiendo de Gemini: {e}")
+                    logger.exception(f"[{room_id}] Error recibiendo de OpenAI Realtime: {e}")
                     await manager.broadcast_text(
                         "Ahora mismo no puedo responder por voz. Prueba otra vez.",
                         room_id,
                     )
 
-            async def send_to_gemini():
+            async def send_to_openai():
                 try:
                     while not room_state.live_stop.is_set():
                         payload = await room_state.live_queue.get()
                         payload_type = payload.get("type")
 
                         if payload_type == "__close__":
-                            logger.info(f"[{room_id}] Cierre solicitado de sesión Live")
+                            logger.info(f"[{room_id}] Cierre solicitado de sesión Realtime")
                             break
 
-                        if payload_type == "prefill_text":
+                        if payload_type == "text":
                             text = (payload.get("text") or "").strip()
                             if not text:
                                 continue
 
-                            logger.info(f"[{room_id}] -> Gemini prefill/client_content: {text[:120]}")
-                            await session.send_client_content(
-                                turns=types.Content(
-                                    role="user",
-                                    parts=[types.Part(text=text)],
-                                ),
-                                turn_complete=True,
+                            logger.info(f"[{room_id}] -> OpenAI texto: {text[:120]}")
+
+                            await realtime_send(
+                                ws,
+                                {
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [
+                                            {
+                                                "type": "input_text",
+                                                "text": text,
+                                            }
+                                        ],
+                                    },
+                                },
                             )
-
-                        elif payload_type == "text":
-                            text = (payload.get("text") or "").strip()
-                            if not text:
-                                continue
-
-                            logger.info(f"[{room_id}] -> Gemini text client_content: {text[:120]}")
-                            await session.send_client_content(
-                                turns=types.Content(
-                                    role="user",
-                                    parts=[types.Part(text=text)],
-                                ),
-                                turn_complete=True,
+                            await realtime_send(
+                                ws,
+                                {
+                                    "type": "response.create",
+                                    "response": {"modalities": ["audio", "text"]},
+                                },
                             )
 
                         elif payload_type == "audio_chunk":
@@ -398,19 +477,35 @@ async def run_live_session(room_id: str):
                             if not audio_bytes:
                                 continue
 
+                            audio_24k = pcm16_16k_to_24k(audio_bytes)
                             logger.info(
-                                f"[{room_id}] -> Gemini realtime audio chunk: {len(audio_bytes)} bytes"
+                                f"[{room_id}] -> OpenAI audio chunk 16k={len(audio_bytes)} 24k={len(audio_24k)}"
                             )
-                            await session.send_realtime_input(
-                                audio=types.Blob(
-                                    data=audio_bytes,
-                                    mime_type=AUDIO_MIME,
-                                )
+
+                            await realtime_send(
+                                ws,
+                                {
+                                    "type": "input_audio_buffer.append",
+                                    "audio": base64.b64encode(audio_24k).decode(),
+                                },
                             )
 
                         elif payload_type == "audio_end":
-                            logger.info(f"[{room_id}] -> Gemini realtime audio_stream_end")
-                            await session.send_realtime_input(audio_stream_end=True)
+                            logger.info(f"[{room_id}] -> OpenAI audio commit + response.create")
+
+                            await realtime_send(
+                                ws,
+                                {
+                                    "type": "input_audio_buffer.commit",
+                                },
+                            )
+                            await realtime_send(
+                                ws,
+                                {
+                                    "type": "response.create",
+                                    "response": {"modalities": ["audio", "text"]},
+                                },
+                            )
 
                         elif payload_type == "image_turn":
                             image_bytes = payload.get("image_bytes", b"")
@@ -420,46 +515,64 @@ async def run_live_session(room_id: str):
                             if not image_bytes:
                                 continue
 
-                            logger.info(f"[{room_id}] -> Gemini image client_content")
-                            await session.send_client_content(
-                                turns=types.Content(
-                                    role="user",
-                                    parts=[
-                                        types.Part(
-                                            inline_data=types.Blob(
-                                                data=image_bytes,
-                                                mime_type=mime_type,
-                                            )
-                                        ),
-                                        types.Part(
-                                            text=prompt
-                                            or "Describe lo más importante de esta imagen en una frase."
-                                        ),
-                                    ],
-                                ),
-                                turn_complete=True,
+                            logger.info(f"[{room_id}] -> OpenAI análisis de imagen por Responses API")
+                            image_answer = ask_openai_image(
+                                room_state.voice_context_str or room_state.system_context_str,
+                                prompt or "Explica brevemente lo que aparece en la imagen.",
+                                image_bytes,
+                                mime_type,
+                            )
+
+                            await manager.broadcast_text(image_answer, room_id)
+
+                            await realtime_send(
+                                ws,
+                                {
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [
+                                            {
+                                                "type": "input_text",
+                                                "text": (
+                                                    "Explica en voz alta esta información en 1 o 2 frases, "
+                                                    f"sin añadir razonamiento interno: {image_answer}"
+                                                ),
+                                            }
+                                        ],
+                                    },
+                                },
+                            )
+                            await realtime_send(
+                                ws,
+                                {
+                                    "type": "response.create",
+                                    "response": {"modalities": ["audio", "text"]},
+                                },
                             )
 
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
-                    logger.exception(f"[{room_id}] Error enviando a Gemini: {e}")
+                    logger.exception(f"[{room_id}] Error enviando a OpenAI Realtime: {e}")
                     await manager.broadcast_text(
                         "Se ha cortado la conversación de voz. Inténtalo otra vez.",
                         room_id,
                     )
 
-            await asyncio.gather(receive_from_gemini(), send_to_gemini())
+            await asyncio.gather(receive_from_openai(), send_to_openai())
 
     except asyncio.CancelledError:
-        logger.info(f"[{room_id}] Sesión Live cancelada")
+        logger.info(f"[{room_id}] Sesión Realtime cancelada")
         raise
     except Exception as e:
-        logger.exception(f"[{room_id}] Error abriendo conexión Live: {e}")
+        logger.exception(f"[{room_id}] Error abriendo conexión Realtime: {e}")
         await manager.broadcast_text("No he podido abrir la sesión de voz.", room_id)
     finally:
+        room_state.realtime_ws = None
         room_state.live_ready.clear()
-        logger.info(f"[{room_id}] Sesión Live cerrada")
+        logger.info(f"[{room_id}] Sesión Realtime cerrada")
 
 
 @app.websocket("/ws/{room_id}")
@@ -511,13 +624,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             poi_name=room_state.current_poi_name,
                         )
 
-                        first_query = (
-                            f"{room_state.system_context_str}\n"
-                            "Usuario: Hola, acabo de llegar. Preséntate y dime qué hay cerca."
+                        response_text = ask_openai_chat(
+                            room_state.system_context_str,
+                            "Hola, acabo de llegar. Preséntate y dime qué hay cerca.",
                         )
-
-                        response = room_state.chat_session.send_message(first_query)
-                        await manager.broadcast_text(response.text, room_id)
+                        await manager.broadcast_text(response_text, room_id)
                         continue
 
                     if action == "start_voice_call":
@@ -536,7 +647,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
 
                         await room_state.enqueue(
                             {
-                                "type": "prefill_text",
+                                "type": "text",
                                 "text": (
                                     f"Da la bienvenida en una o dos frases a {room_state.current_poi_name}, "
                                     "recomienda ponerse auriculares y pregunta hacia dónde está mirando."
@@ -641,10 +752,10 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                     continue
 
             try:
-                response = room_state.chat_session.send_message(raw_data)
-                await manager.broadcast_text(response.text, room_id)
+                response_text = ask_openai_chat(room_state.system_context_str, raw_data)
+                await manager.broadcast_text(response_text, room_id)
             except Exception as e:
-                logger.exception(f"[{room_id}] Error en chat_session: {e}")
+                logger.exception(f"[{room_id}] Error en chat OpenAI: {e}")
                 await manager.broadcast_text(
                     "No he podido procesar ese mensaje.",
                     room_id,

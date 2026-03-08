@@ -1,5 +1,6 @@
 fastapi
 uvicorn
-websockets
 google-genai
 pydub==0.25.1
+openai>=1.99.0
+websockets>=12.0

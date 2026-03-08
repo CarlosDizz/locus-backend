@@ -1,14 +1,15 @@
 import os
+import io
 import json
+import wave
+import tempfile
 import urllib.parse
 import urllib.request
 import logging
 import base64
 import asyncio
-import audioop
 from typing import Optional
 
-import websockets
 from openai import OpenAI
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,30 +22,19 @@ MAPS_API_KEY = os.environ.get("MAPS_API_KEY")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_CHAT_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-5-mini")
-OPENAI_REALTIME_MODEL = os.environ.get("OPENAI_REALTIME_MODEL", "gpt-realtime-mini")
+OPENAI_TTS_MODEL = os.environ.get("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+OPENAI_TTS_VOICE = os.environ.get("OPENAI_TTS_VOICE", "coral")
+OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 
 if not OPENAI_API_KEY:
     raise RuntimeError("Falta OPENAI_API_KEY")
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Audio actual del front
+# El front actual graba PCM16 mono a 16kHz
 FRONT_AUDIO_SAMPLE_RATE = 16000
-FRONT_AUDIO_MIME = "audio/pcm;rate=16000"
-
-# Realtime trabaja mejor a 24k PCM16
-REALTIME_AUDIO_SAMPLE_RATE = 24000
-REALTIME_AUDIO_FORMAT = "pcm16"
-
-AUDIO_CHUNK_MS = 100
-AUDIO_BYTES_PER_SAMPLE = 2
-AUDIO_CHANNELS = 1
-AUDIO_CHUNK_SIZE = int(
-    FRONT_AUDIO_SAMPLE_RATE
-    * (AUDIO_CHUNK_MS / 1000)
-    * AUDIO_BYTES_PER_SAMPLE
-    * AUDIO_CHANNELS
-)
+FRONT_AUDIO_CHANNELS = 1
+FRONT_AUDIO_BYTES_PER_SAMPLE = 2
 
 app = FastAPI()
 app.add_middleware(
@@ -102,105 +92,86 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
 
 
 # ---------------------------------------------------------
-# AUDIO HELPERS
-# ---------------------------------------------------------
-
-def chunk_audio_bytes(audio_bytes: bytes, chunk_size: int = AUDIO_CHUNK_SIZE):
-    for i in range(0, len(audio_bytes), chunk_size):
-        yield audio_bytes[i:i + chunk_size]
-
-
-def pcm16_16k_to_24k(audio_bytes: bytes) -> bytes:
-    if not audio_bytes:
-        return b""
-    converted, _ = audioop.ratecv(
-        audio_bytes,
-        2,
-        1,
-        FRONT_AUDIO_SAMPLE_RATE,
-        REALTIME_AUDIO_SAMPLE_RATE,
-        None,
-    )
-    return converted
-
-
-def pcm16_24k_to_16k(audio_bytes: bytes) -> bytes:
-    if not audio_bytes:
-        return b""
-    converted, _ = audioop.ratecv(
-        audio_bytes,
-        2,
-        1,
-        REALTIME_AUDIO_SAMPLE_RATE,
-        FRONT_AUDIO_SAMPLE_RATE,
-        None,
-    )
-    return converted
-
-
-# ---------------------------------------------------------
 # PROMPTS
 # ---------------------------------------------------------
 
 def build_home_context(user_ctx: str, lat: float, lng: float, pois_data: str) -> str:
     return f"""
 Eres Locus, un guía turístico experto, directo y conversacional.
-Perfil de los viajeros: {user_ctx}.
-Latitud actual: {lat}. Longitud actual: {lng}.
-Lugares iniciales: {pois_data}
 
-REGLAS CRÍTICAS DE COMPORTAMIENTO:
-1. Ultra brevedad: responde en 2 o 3 frases cortas.
-2. Foco espacial: habla solo del lugar actual o de lo que haya cerca.
-3. No uses coletillas como "qué interesante" o "buena pregunta".
-4. Español de España por defecto, salvo que el usuario pida otro idioma o estilo.
-5. FORMATO OBLIGATORIO DE POIS PARA EL MAPA:
+Perfil de los viajeros:
+{user_ctx}
+
+Ubicación actual aproximada:
+Latitud {lat}, longitud {lng}
+
+Lugares cercanos ya detectados:
+{pois_data}
+
+Reglas:
+- Habla en el idioma del usuario o en el idioma que te pidan.
+- Si el usuario pide una variedad regional o un acento, adáptalo de forma natural.
+- Responde de forma breve y clara.
+- No uses coletillas como "qué interesante" o "buena pregunta".
+- No inventes datos concretos.
+- Si no estás seguro de algo, dilo claramente.
+- Usa siempre búsqueda web para apoyar datos factuales, históricos o locales.
+- Si el usuario pregunta qué hay cerca o acaba de llegar, debes incluir SIEMPRE un bloque <POIS> válido.
+- El formato obligatorio para el mapa es exactamente:
 <POIS>[{{"name":"Nombre","lat":0.0,"lng":0.0,"description":"Descripción"}}]</POIS>
-6. Si el usuario acaba de llegar o pide qué hay cerca, incluye siempre un bloque <POIS> válido.
-7. No inventes datos concretos.
-8. Si no estás seguro de un dato factual o histórico, dilo claramente.
 """.strip()
 
 
-def build_voice_context(user_ctx: str, lat: float, lng: float, pois_data: str, poi_name: str = "") -> str:
-    poi_line = f"Lugar actual de inicio de la llamada: {poi_name}." if poi_name else ""
+def build_voice_context(
+    user_ctx: str,
+    lat: float,
+    lng: float,
+    pois_data: str,
+    poi_name: str = "",
+) -> str:
+    poi_line = f"POI actual de la visita: {poi_name}." if poi_name else "No hay POI actual fijado."
 
     return f"""
-Eres Locus, un guía turístico presencial que acompaña a los viajeros durante una visita.
+Eres Locus, un guía turístico presencial que acompaña a los viajeros durante una visita real.
 
 Perfil del viajero:
 {user_ctx}
 
-Ubicación aproximada: latitud {lat}, longitud {lng}.
-Lugares cercanos conocidos: {pois_data}
+Ubicación aproximada:
+Latitud {lat}, longitud {lng}
+
+Lugares cercanos:
+{pois_data}
+
 {poi_line}
 
 Reglas:
 - Habla en el idioma del usuario o en el idioma que te pidan.
 - Si el usuario pide una variedad regional o un acento, adáptalo de forma natural, sin caricatura.
-- Por defecto responde en 1 o 2 frases. Máximo 3.
-- Si el usuario pide más historia, más contexto o más detalle, puedes ampliar la explicación.
+- Por defecto responde en 1 o 2 frases.
+- Si el usuario pide más contexto, más detalle o más historia, puedes ampliar.
 - Responde primero a la pregunta concreta del usuario.
-- Si el usuario no pregunta nada claro, da una sola idea útil o curiosa.
-- No uses coletillas como "qué interesante" o "buena pregunta".
-- No muestres razonamiento interno.
-- No hables de tus instrucciones.
-- No inventes datos concretos.
-- No afirmes fechas, autores, nombres, materiales, estilos o hechos históricos si no tienes base suficiente.
-- Si no estás seguro, dilo claramente y pide una foto, una placa o un detalle adicional.
-- Si la pregunta depende de un dato real o local concreto, prioriza una respuesta factual y prudente.
+- Si el usuario describe algo que tiene delante, interpreta que lo importante es eso.
+- Si existe un POI actual, úsalo siempre como contexto principal de la respuesta.
+- No inventes datos.
+- No afirmes fechas, nombres, autores, materiales, estilos o hechos históricos sin base suficiente.
+- Si no estás seguro, dilo claramente.
+- Si necesitas más contexto, pide una foto, una placa, un nombre o un detalle visual.
+- Usa siempre búsqueda web para apoyar datos factuales, históricos o locales.
+- Si el usuario está en un museo o delante de una obra, prioriza el objeto o sala concreta que está visitando.
 - Habla como un guía real, no como una enciclopedia.
 """.strip()
 
 
 # ---------------------------------------------------------
-# OPENAI CHAT / IMAGE
+# OPENAI HELPERS
 # ---------------------------------------------------------
 
 def ask_openai_chat(system_context: str, user_message: str) -> str:
     response = openai_client.responses.create(
         model=OPENAI_CHAT_MODEL,
         tools=[{"type": "web_search"}],
+        tool_choice="auto",
         input=[
             {
                 "role": "system",
@@ -217,9 +188,11 @@ def ask_openai_chat(system_context: str, user_message: str) -> str:
 
 def ask_openai_image(system_context: str, prompt: str, image_bytes: bytes, mime_type: str) -> str:
     image_data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}"
+
     response = openai_client.responses.create(
         model=OPENAI_CHAT_MODEL,
         tools=[{"type": "web_search"}],
+        tool_choice="auto",
         input=[
             {
                 "role": "system",
@@ -237,6 +210,100 @@ def ask_openai_image(system_context: str, prompt: str, image_bytes: bytes, mime_
     return (response.output_text or "").strip()
 
 
+def pcm16_to_wav_bytes(
+    pcm_bytes: bytes,
+    sample_rate: int = FRONT_AUDIO_SAMPLE_RATE,
+    channels: int = FRONT_AUDIO_CHANNELS,
+    sample_width: int = FRONT_AUDIO_BYTES_PER_SAMPLE,
+) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm_bytes)
+    return buffer.getvalue()
+
+
+def transcribe_pcm16_audio(audio_bytes: bytes, language_hint: Optional[str] = None) -> str:
+    wav_bytes = pcm16_to_wav_bytes(audio_bytes)
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(wav_bytes)
+            tmp.flush()
+            tmp_path = tmp.name
+
+        with open(tmp_path, "rb") as audio_file:
+            kwargs = {
+                "model": OPENAI_TRANSCRIBE_MODEL,
+                "file": audio_file,
+                "response_format": "text",
+            }
+            if language_hint:
+                kwargs["language"] = language_hint
+
+            transcript = openai_client.audio.transcriptions.create(**kwargs)
+
+        if isinstance(transcript, str):
+            return transcript.strip()
+
+        return (getattr(transcript, "text", "") or "").strip()
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+def build_tts_instructions(user_ctx: str, answer_text: str) -> str:
+    lowered = (user_ctx or "").lower()
+
+    language_hint = "Habla en español de España por defecto."
+    accent_hint = "Tono natural de guía presencial."
+
+    if "english" in lowered or "inglés" in lowered or "ingles" in lowered:
+        language_hint = "Speak in English."
+    elif "italiano" in lowered or "italian" in lowered:
+        language_hint = "Parla in italiano."
+    elif "francés" in lowered or "frances" in lowered or "french" in lowered:
+        language_hint = "Parle en français."
+
+    if "andaluz" in lowered:
+        accent_hint = "Usa un color andaluz suave, natural, sin caricatura."
+    elif "español de españa" in lowered or "espana" in lowered or "españa" in lowered:
+        accent_hint = "Usa español de España natural."
+    elif "latino" in lowered or "latam" in lowered:
+        accent_hint = "Usa español latino neutro."
+
+    verbose_hint = ""
+    if len(answer_text) > 500:
+        verbose_hint = "Lee con ritmo calmado y claro."
+
+    return f"""
+{language_hint}
+{accent_hint}
+Voz natural, cercana y nada acelerada.
+No sobreactúes.
+{verbose_hint}
+""".strip()
+
+
+def synthesize_speech_wav(text: str, user_ctx: str) -> bytes:
+    instructions = build_tts_instructions(user_ctx, text)
+
+    response = openai_client.audio.speech.create(
+        model=OPENAI_TTS_MODEL,
+        voice=OPENAI_TTS_VOICE,
+        input=text,
+        instructions=instructions,
+        response_format="wav",
+    )
+    return response.read()
+
+
 # ---------------------------------------------------------
 # ROOM STATE
 # ---------------------------------------------------------
@@ -244,25 +311,16 @@ def ask_openai_image(system_context: str, prompt: str, image_bytes: bytes, mime_
 class RoomState:
     def __init__(self, room_id: str):
         self.room_id = room_id
-
         self.system_context_str = ""
         self.voice_context_str = ""
         self.current_poi_name = ""
+
         self.profile = {
             "user_ctx": "",
             "lat": 0.0,
             "lng": 0.0,
             "pois_data": "[]",
         }
-
-        self.live_queue: asyncio.Queue = asyncio.Queue()
-        self.live_task: Optional[asyncio.Task] = None
-        self.live_ready = asyncio.Event()
-        self.live_stop = asyncio.Event()
-        self.realtime_ws = None
-
-        # Buffer para no escupir palabra a palabra
-        self.live_output_buffer = ""
 
 
 # ---------------------------------------------------------
@@ -293,10 +351,7 @@ class ConnectionManager:
         if room_id in self.active_connections and not self.active_connections[room_id]:
             logger.info(f"[{room_id}] Último cliente desconectado. Cerrando sala.")
             del self.active_connections[room_id]
-
-            room_state = self.room_states.pop(room_id, None)
-            if room_state and room_state.live_task and not room_state.live_task.done():
-                room_state.live_task.cancel()
+            self.room_states.pop(room_id, None)
 
     async def broadcast_text(self, text: str, room_id: str):
         if room_id not in self.active_connections:
@@ -337,275 +392,79 @@ manager = ConnectionManager()
 
 
 # ---------------------------------------------------------
-# REALTIME HELPERS
+# CALL LOGIC
 # ---------------------------------------------------------
 
-async def realtime_send(ws, event: dict):
-    await ws.send(json.dumps(event))
+async def respond_in_call(room_state: RoomState, room_id: str, user_message: str):
+    logger.info(f"[{room_id}] Pregunta call -> {user_message[:180]}")
 
+    answer = await asyncio.to_thread(
+        ask_openai_chat,
+        room_state.voice_context_str,
+        user_message,
+    )
 
-async def ensure_live_session(room_id: str):
-    room_state = manager.room_states.get(room_id)
-    if not room_state:
-        return
+    if not answer:
+        answer = "No he podido responder bien a eso."
 
-    if room_state.live_task and not room_state.live_task.done():
-        return
-
-    room_state.live_ready.clear()
-    room_state.live_stop.clear()
-    room_state.live_task = asyncio.create_task(run_live_session(room_id))
-    await room_state.live_ready.wait()
-
-
-# ---------------------------------------------------------
-# REALTIME SESSION
-# ---------------------------------------------------------
-
-async def run_live_session(room_id: str):
-    room_state = manager.room_states.get(room_id)
-    if not room_state:
-        return
-
-    uri = f"wss://api.openai.com/v1/realtime?model={OPENAI_REALTIME_MODEL}"
-    headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "OpenAI-Beta": "realtime=v1",
-    }
-
-    logger.info(f"[{room_id}] Abriendo sesión OpenAI Realtime con modelo {OPENAI_REALTIME_MODEL}")
+    await manager.broadcast_text(answer, room_id)
 
     try:
-        async with websockets.connect(uri, additional_headers=headers, max_size=None) as ws:
-            room_state.realtime_ws = ws
-
-            await realtime_send(
-                ws,
-                {
-                    "type": "session.update",
-                    "session": {
-                        "instructions": room_state.voice_context_str or "Eres Locus, un guía turístico directo y breve.",
-                        "voice": "verse",
-                        "modalities": ["audio", "text"],
-                        "input_audio_format": REALTIME_AUDIO_FORMAT,
-                        "output_audio_format": REALTIME_AUDIO_FORMAT,
-                        "input_audio_transcription": {
-                            "model": "gpt-4o-mini-transcribe"
-                        },
-                        "turn_detection": None,
-                    },
-                },
-            )
-
-            room_state.live_ready.set()
-            logger.info(f"[{room_id}] Sesión Realtime lista")
-
-            async def receive_from_openai():
-                try:
-                    async for raw_msg in ws:
-                        try:
-                            event = json.loads(raw_msg)
-                        except Exception:
-                            logger.warning(f"[{room_id}] Evento Realtime no JSON")
-                            continue
-
-                        event_type = event.get("type", "")
-
-                        if event_type == "error":
-                            logger.error(f"[{room_id}] Realtime error: {event}")
-                            await manager.broadcast_text(
-                                "La sesión de voz ha dado un error.",
-                                room_id,
-                            )
-                            continue
-
-                        if event_type == "conversation.item.input_audio_transcription.completed":
-                            transcript = (
-                                event.get("transcript")
-                                or event.get("item", {}).get("content", [{}])[0].get("transcript")
-                                or ""
-                            ).strip()
-                            if transcript:
-                                logger.info(f"[{room_id}] OpenAI entendió al usuario: {transcript[:150]}")
-
-                        # Acumular texto, no emitir en vivo palabra a palabra
-                        if event_type == "response.audio_transcript.delta":
-                            delta = event.get("delta", "")
-                            if delta:
-                                room_state.live_output_buffer += delta
-
-                        if event_type == "response.text.delta":
-                            delta = event.get("delta", "")
-                            if delta:
-                                room_state.live_output_buffer += delta
-
-                        if event_type == "response.audio.delta":
-                            delta_b64 = event.get("delta", "")
-                            if delta_b64:
-                                audio_24k = base64.b64decode(delta_b64)
-                                audio_16k = pcm16_24k_to_16k(audio_24k)
-                                await manager.broadcast_bytes(audio_16k, room_id)
-
-                        if event_type == "response.done":
-                            final_text = room_state.live_output_buffer.strip()
-                            if final_text:
-                                logger.info(f"[{room_id}] Realtime texto final: {final_text[:200]}")
-                                await manager.broadcast_text(final_text, room_id)
-
-                            room_state.live_output_buffer = ""
-                            logger.info(f"[{room_id}] Respuesta Realtime completada")
-
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    logger.exception(f"[{room_id}] Error recibiendo de OpenAI Realtime: {e}")
-                    await manager.broadcast_text(
-                        "Ahora mismo no puedo responder por voz. Prueba otra vez.",
-                        room_id,
-                    )
-
-            async def send_to_openai():
-                try:
-                    while not room_state.live_stop.is_set():
-                        payload = await room_state.live_queue.get()
-                        payload_type = payload.get("type")
-
-                        if payload_type == "__close__":
-                            logger.info(f"[{room_id}] Cierre solicitado de sesión Realtime")
-                            break
-
-                        if payload_type == "text":
-                            text = (payload.get("text") or "").strip()
-                            if not text:
-                                continue
-
-                            room_state.live_output_buffer = ""
-                            logger.info(f"[{room_id}] -> OpenAI texto: {text[:150]}")
-
-                            await realtime_send(
-                                ws,
-                                {
-                                    "type": "conversation.item.create",
-                                    "item": {
-                                        "type": "message",
-                                        "role": "user",
-                                        "content": [
-                                            {
-                                                "type": "input_text",
-                                                "text": text,
-                                            }
-                                        ],
-                                    },
-                                },
-                            )
-
-                            await realtime_send(
-                                ws,
-                                {
-                                    "type": "response.create",
-                                    "response": {"modalities": ["audio", "text"]},
-                                },
-                            )
-
-                        elif payload_type == "audio_chunk":
-                            audio_bytes = payload.get("data", b"")
-                            if not audio_bytes:
-                                continue
-
-                            audio_24k = pcm16_16k_to_24k(audio_bytes)
-
-                            await realtime_send(
-                                ws,
-                                {
-                                    "type": "input_audio_buffer.append",
-                                    "audio": base64.b64encode(audio_24k).decode(),
-                                },
-                            )
-
-                        elif payload_type == "audio_end":
-                            room_state.live_output_buffer = ""
-
-                            await realtime_send(
-                                ws,
-                                {"type": "input_audio_buffer.commit"},
-                            )
-
-                            await realtime_send(
-                                ws,
-                                {
-                                    "type": "response.create",
-                                    "response": {"modalities": ["audio", "text"]},
-                                },
-                            )
-
-                        elif payload_type == "image_turn":
-                            image_bytes = payload.get("image_bytes", b"")
-                            mime_type = payload.get("mime_type", "image/jpeg")
-                            prompt = (payload.get("prompt") or "").strip()
-
-                            if not image_bytes:
-                                continue
-
-                            logger.info(f"[{room_id}] -> OpenAI análisis de imagen")
-
-                            image_answer = ask_openai_image(
-                                room_state.voice_context_str or room_state.system_context_str,
-                                prompt or "Explica brevemente lo que aparece en la imagen.",
-                                image_bytes,
-                                mime_type,
-                            )
-
-                            room_state.live_output_buffer = ""
-
-                            await realtime_send(
-                                ws,
-                                {
-                                    "type": "conversation.item.create",
-                                    "item": {
-                                        "type": "message",
-                                        "role": "user",
-                                        "content": [
-                                            {
-                                                "type": "input_text",
-                                                "text": (
-                                                    "Explica en voz alta esta información en 1 o 2 frases, "
-                                                    f"sin inventar nada y sin razonamiento interno: {image_answer}"
-                                                ),
-                                            }
-                                        ],
-                                    },
-                                },
-                            )
-
-                            await realtime_send(
-                                ws,
-                                {
-                                    "type": "response.create",
-                                    "response": {"modalities": ["audio", "text"]},
-                                },
-                            )
-
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    logger.exception(f"[{room_id}] Error enviando a OpenAI Realtime: {e}")
-                    await manager.broadcast_text(
-                        "Se ha cortado la conversación de voz. Inténtalo otra vez.",
-                        room_id,
-                    )
-
-            await asyncio.gather(receive_from_openai(), send_to_openai())
-
-    except asyncio.CancelledError:
-        logger.info(f"[{room_id}] Sesión Realtime cancelada")
-        raise
+        audio_bytes = await asyncio.to_thread(
+            synthesize_speech_wav,
+            answer,
+            room_state.profile.get("user_ctx", ""),
+        )
+        if audio_bytes:
+            logger.info(f"[{room_id}] TTS WAV bytes -> {len(audio_bytes)}")
+            await manager.broadcast_bytes(audio_bytes, room_id)
     except Exception as e:
-        logger.exception(f"[{room_id}] Error abriendo conexión Realtime: {e}")
-        await manager.broadcast_text("No he podido abrir la sesión de voz.", room_id)
-    finally:
-        room_state.realtime_ws = None
-        room_state.live_ready.clear()
-        logger.info(f"[{room_id}] Sesión Realtime cerrada")
+        logger.exception(f"[{room_id}] Error generando TTS: {e}")
+
+
+async def respond_to_image_in_call(
+    room_state: RoomState,
+    room_id: str,
+    image_bytes: bytes,
+    mime_type: str,
+    prompt: str,
+):
+    answer = await asyncio.to_thread(
+        ask_openai_image,
+        room_state.voice_context_str,
+        prompt,
+        image_bytes,
+        mime_type,
+    )
+
+    if not answer:
+        answer = "No he podido interpretar bien la imagen."
+
+    await manager.broadcast_text(answer, room_id)
+
+    try:
+        audio_bytes = await asyncio.to_thread(
+            synthesize_speech_wav,
+            answer,
+            room_state.profile.get("user_ctx", ""),
+        )
+        if audio_bytes:
+            await manager.broadcast_bytes(audio_bytes, room_id)
+    except Exception as e:
+        logger.exception(f"[{room_id}] Error generando TTS de imagen: {e}")
+
+
+def infer_language_hint(user_ctx: str) -> Optional[str]:
+    lowered = (user_ctx or "").lower()
+
+    if "english" in lowered or "inglés" in lowered or "ingles" in lowered:
+        return "en"
+    if "italiano" in lowered or "italian" in lowered:
+        return "it"
+    if "francés" in lowered or "frances" in lowered or "french" in lowered:
+        return "fr"
+
+    return "es"
 
 
 # ---------------------------------------------------------
@@ -661,10 +520,12 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             poi_name=room_state.current_poi_name,
                         )
 
-                        response_text = ask_openai_chat(
+                        response_text = await asyncio.to_thread(
+                            ask_openai_chat,
                             room_state.system_context_str,
-                            "Hola, acabo de llegar. Preséntate y dime qué hay cerca. Incluye los POIs en el formato obligatorio.",
+                            "Hola, acabo de llegar. Preséntate como guía y dime qué hay cerca. Incluye los POIs en el formato obligatorio.",
                         )
+
                         await manager.broadcast_text(response_text, room_id)
                         continue
 
@@ -680,57 +541,29 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             poi_name=room_state.current_poi_name,
                         )
 
-                        await ensure_live_session(room_id)
-
-                        await room_state.live_queue.put(
-                            {
-                                "type": "text",
-                                "text": (
-                                    f"Da la bienvenida en una o dos frases a {room_state.current_poi_name}, "
-                                    "recomienda ponerse auriculares y pregunta hacia dónde está mirando."
-                                ),
-                            }
+                        await respond_in_call(
+                            room_state,
+                            room_id,
+                            (
+                                f"El usuario acaba de iniciar la ruta en {room_state.current_poi_name}. "
+                                "Dale la bienvenida de forma breve, recomienda ponerse auriculares y pregunta hacia dónde está mirando."
+                            ),
                         )
                         continue
 
                     if action == "text_chat":
-                        await ensure_live_session(room_id)
-
                         user_text = (payload.get("data") or "").strip()
                         if user_text:
-                            await room_state.live_queue.put(
-                                {
-                                    "type": "text",
-                                    "text": user_text,
-                                }
-                            )
+                            await respond_in_call(room_state, room_id, user_text)
                         continue
 
                     if action == "audio_stream":
-                        await ensure_live_session(room_id)
-
-                        try:
-                            audio_b64 = payload.get("data", "")
-                            audio_bytes = base64.b64decode(audio_b64)
-                            if audio_bytes:
-                                await room_state.live_queue.put(
-                                    {
-                                        "type": "audio_chunk",
-                                        "data": audio_bytes,
-                                    }
-                                )
-                        except Exception as e:
-                            logger.exception(f"[{room_id}] Error en audio_stream: {e}")
                         continue
 
                     if action == "audio_end":
-                        await ensure_live_session(room_id)
-                        await room_state.live_queue.put({"type": "audio_end"})
                         continue
 
                     if action == "audio_chat":
-                        await ensure_live_session(room_id)
-
                         try:
                             audio_b64 = payload.get("data", "")
                             audio_bytes = base64.b64decode(audio_b64)
@@ -738,58 +571,82 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                             if not audio_bytes:
                                 continue
 
-                            logger.info(
-                                f"[{room_id}] audio_chat bytes={len(audio_bytes)} | chunk_size={AUDIO_CHUNK_SIZE}"
+                            logger.info(f"[{room_id}] audio_chat bytes={len(audio_bytes)}")
+
+                            language_hint = infer_language_hint(room_state.profile.get("user_ctx", ""))
+
+                            transcript = await asyncio.to_thread(
+                                transcribe_pcm16_audio,
+                                audio_bytes,
+                                language_hint,
                             )
 
-                            for chunk in chunk_audio_bytes(audio_bytes):
-                                await room_state.live_queue.put(
-                                    {
-                                        "type": "audio_chunk",
-                                        "data": chunk,
-                                    }
+                            if not transcript:
+                                await manager.broadcast_text(
+                                    "No te he entendido bien. Repite la pregunta si quieres.",
+                                    room_id,
                                 )
+                                continue
 
-                            await room_state.live_queue.put({"type": "audio_end"})
+                            logger.info(f"[{room_id}] Transcripción -> {transcript}")
+
+                            await respond_in_call(room_state, room_id, transcript)
 
                         except Exception as e:
                             logger.exception(f"[{room_id}] Error procesando audio_chat: {e}")
+                            await manager.broadcast_text(
+                                "Ha habido un problema procesando el audio.",
+                                room_id,
+                            )
                         continue
 
                     if action == "image_context":
-                        await ensure_live_session(room_id)
-
                         try:
                             img_b64 = payload.get("data", "")
                             mime_type = payload.get("mime_type", "image/jpeg")
                             img_bytes = base64.b64decode(img_b64)
 
+                            if not img_bytes:
+                                continue
+
+                            poi_name = room_state.current_poi_name or "el lugar actual"
+
                             prompt = (
-                                "El usuario acaba de sacar esta foto en su ubicación actual. "
-                                "Identifica lo que aparece y explica solo lo que puedas sostener con prudencia. "
-                                "Si no puedes identificarlo con seguridad, dilo claramente."
+                                f"El usuario está visitando {poi_name}. "
+                                "Analiza esta imagen como si fueras su guía turístico. "
+                                "Identifica la obra, sala, objeto o elemento principal si puedes hacerlo con base suficiente. "
+                                "Usa búsqueda web para apoyar datos factuales. "
+                                "No inventes nada. "
+                                "Si no puedes identificarlo con seguridad, dilo claramente y explica solo lo que puedas sostener. "
+                                "Si puedes identificarlo, cuéntalo con detalle útil para una visita real."
                             )
 
-                            await room_state.live_queue.put(
-                                {
-                                    "type": "image_turn",
-                                    "image_bytes": img_bytes,
-                                    "mime_type": mime_type,
-                                    "prompt": prompt,
-                                }
+                            await respond_to_image_in_call(
+                                room_state,
+                                room_id,
+                                img_bytes,
+                                mime_type,
+                                prompt,
                             )
 
                         except Exception as e:
                             logger.exception(f"[{room_id}] Error procesando image_context: {e}")
+                            await manager.broadcast_text(
+                                "Ha habido un problema procesando la imagen.",
+                                room_id,
+                            )
                         continue
 
                 except Exception as e:
                     logger.exception(f"[{room_id}] Error procesando JSON: {e}")
                     continue
 
-            # fallback chat normal de home
             try:
-                response_text = ask_openai_chat(room_state.system_context_str, raw_data)
+                response_text = await asyncio.to_thread(
+                    ask_openai_chat,
+                    room_state.system_context_str,
+                    raw_data,
+                )
                 await manager.broadcast_text(response_text, room_id)
             except Exception as e:
                 logger.exception(f"[{room_id}] Error en chat OpenAI: {e}")

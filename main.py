@@ -1,17 +1,15 @@
 import os
 import logging
-import asyncio
-from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli
-# EL FIX DEL ZASCA: Importamos la clase directamente desde el submódulo
-from livekit.agents.multimodal import MultimodalAgent
-from livekit.plugins import google
 from dotenv import load_dotenv
+
+from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
+from livekit.plugins import google
 
 load_dotenv()
 logger = logging.getLogger("LocusAgent")
 
 SYSTEM_PROMPT = """
-Eres Locus, un guía turístico experto, carismático y directo. Estás acompañando presencialmente a los viajeros.
+Eres Locus, un guía turístico experto, carismático y directo. Estás acompañando presencialmente a los viajeros en Albacete.
 
 REGLAS DE ORO:
 1. FOCO DE TÚNEL: Habla exclusivamente de lo que el usuario tiene delante.
@@ -23,25 +21,27 @@ REGLAS DE ORO:
 
 async def entrypoint(ctx: JobContext):
     logger.info(f"Conectando a la sala: {ctx.room.name}")
-    
-    # LÍNEA CRÍTICA NUEVA: El worker tiene que "entrar" físicamente a la sala
-    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+    await ctx.connect()
 
-    # Inicializamos el modelo de Google con nuestro cerebro nativo de audio
-    model = google.Gemini(
-        api_key=os.environ.get("GEMINI_API_KEY"),
-        instructions=SYSTEM_PROMPT,
-        model="gemini-2.5-flash-native-audio-preview-12-2025"
+    # En LiveKit 1.0+, AgentSession es el cerebro unificado
+    # Le pasamos nuestro modelo nativo intocable de Gemini
+    session = AgentSession(
+        llm=google.LLM(
+            api_key=os.environ.get("GEMINI_API_KEY"),
+            model="gemini-2.5-flash-native-audio-preview-12-2025"
+        )
     )
 
-    # Instanciamos el agente usando la clase importada correctamente
-    agent = MultimodalAgent(model=model)
+    # Definimos las instrucciones (el rol)
+    agent = Agent(instructions=SYSTEM_PROMPT)
 
-    # Arrancamos
-    agent.start(ctx.room)
-    
-    # Saludo inicial
-    await agent.say("Hola, soy Locus. Ya estoy operativo. ¿Qué estamos viendo?", allow_interruptions=True)
+    # Arrancamos el túnel WebRTC
+    await session.start(agent=agent, room=ctx.room)
+
+    # Saludo inicial para romper el hielo en cuanto se conecte el móvil
+    await session.generate_reply(
+        instructions="Hola, soy Locus. Ya estoy operativo. ¿Qué estamos viendo?"
+    )
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))

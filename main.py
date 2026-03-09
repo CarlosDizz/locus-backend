@@ -1,31 +1,21 @@
 import os
-import logging
 import google.generativeai as genai
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# Importaciones de LiveKit
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.plugins import google as livekit_google
 from livekit import api
 
 load_dotenv()
-logger = logging.getLogger("LocusSystem")
 
-# ==========================================
-# 0. CONFIGURACIÓN IA TEXTO (PARA EL HOME)
-# ==========================================
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 text_model = genai.GenerativeModel('gemini-2.5-flash')
 
-# Memoria temporal para el chat de texto del Home
 chat_histories = {}
 
-# ==========================================
-# 1. FASTAPI: EL SERVIDOR WEB (FRONTEND)
-# ==========================================
 app = FastAPI(title="Locus API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -40,9 +30,6 @@ class ChatRequest(BaseModel):
 
 @app.post("/home_chat")
 async def home_chat(req: ChatRequest):
-    """
-    Gestiona el chat de texto del Home y devuelve los POIs para el mapa.
-    """
     if req.roomId not in chat_histories:
         chat_histories[req.roomId] = []
 
@@ -71,11 +58,9 @@ async def home_chat(req: ChatRequest):
         """
         history.append({"role": "user", "parts": [prompt]})
 
-    # Llamamos a Gemini
     response = text_model.generate_content(history)
     bot_reply = response.text
 
-    # Guardamos la respuesta en memoria
     history.append({"role": "model", "parts": [bot_reply]})
 
     return {"reply": bot_reply}
@@ -87,26 +72,19 @@ class TokenRequest(BaseModel):
 
 @app.post("/get_token")
 async def get_token(req: TokenRequest):
-    """
-    Genera el pase VIP para que el móvil pueda entrar a la sala WebRTC de LiveKit.
-    """
     token = api.AccessToken(
         os.getenv("LIVEKIT_API_KEY"),
         os.getenv("LIVEKIT_API_SECRET")
     )
     token.with_identity(req.participant_name)
     token.with_name(req.participant_name)
-    token.with_metadata(req.poi_context) # Inyectamos datos
+    token.with_metadata(req.poi_context)
 
     grant = api.VideoGrant(room_join=True, room=req.room_name)
     token.with_grant(grant)
 
     return {"token": token.to_jwt(), "ws_url": os.getenv("LIVEKIT_URL")}
 
-
-# ==========================================
-# 2. LIVEKIT AGENT: EL CEREBRO DE VOZ (CALL)
-# ==========================================
 SYSTEM_PROMPT = """
 Eres Locus, un guía turístico experto, carismático y directo. Estás acompañando presencialmente a los viajeros.
 REGLAS:
@@ -117,9 +95,7 @@ REGLAS:
 
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
-    logger.info(f"🎙️ Locus conectado a la sala de voz: {ctx.room.name}")
 
-    # Rescatamos contexto si lo hay
     user_context = ""
     for _, participant in ctx.room.remote_participants.items():
         if participant.metadata:
@@ -131,13 +107,14 @@ async def entrypoint(ctx: JobContext):
         dynamic_prompt += f"\nATENCIÓN: El usuario está viendo actualmente: {user_context}."
 
     session = AgentSession(
-        llm=livekit_google.LLM(
-            api_key=os.environ.get("GEMINI_API_KEY"),
-            model="gemini-2.5-flash-native-audio-preview-12-2025"
+        llm=livekit_google.beta.realtime.RealtimeModel(
+            model="gemini-2.5-flash-native-audio-preview-12-2025",
+            instructions=dynamic_prompt,
+            voice="Puck"
         )
     )
 
-    agent = Agent(instructions=dynamic_prompt)
+    agent = Agent()
     await session.start(agent=agent, room=ctx.room)
 
     await session.generate_reply(

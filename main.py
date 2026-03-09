@@ -1,7 +1,9 @@
 import os
 import logging
 import asyncio
-from livekit.agents import JobContext, WorkerOptions, cli, multimodal
+from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli
+# EL FIX DEL ZASCA: Importamos la clase directamente desde el submódulo
+from livekit.agents.multimodal import MultimodalAgent
 from livekit.plugins import google
 from dotenv import load_dotenv
 
@@ -21,21 +23,24 @@ REGLAS DE ORO:
 
 async def entrypoint(ctx: JobContext):
     logger.info(f"Conectando a la sala: {ctx.room.name}")
+    
+    # LÍNEA CRÍTICA NUEVA: El worker tiene que "entrar" físicamente a la sala
+    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
-    # Inicializamos el modelo de Google con el brain que decidimos
+    # Inicializamos el modelo de Google con nuestro cerebro nativo de audio
     model = google.Gemini(
         api_key=os.environ.get("GEMINI_API_KEY"),
         instructions=SYSTEM_PROMPT,
         model="gemini-2.5-flash-native-audio-preview-12-2025"
     )
 
-    # El agente multimodal ahora se instancia así
-    agent = multimodal.MultimodalAgent(model=model)
+    # Instanciamos el agente usando la clase importada correctamente
+    agent = MultimodalAgent(model=model)
 
-    # Conectamos y arrancamos
+    # Arrancamos
     agent.start(ctx.room)
     
-    l
+    # Saludo inicial
     await agent.say("Hola, soy Locus. Ya estoy operativo. ¿Qué estamos viendo?", allow_interruptions=True)
 
 if __name__ == "__main__":

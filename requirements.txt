@@ -1,3 +1,6 @@
+fastapi
+uvicorn
 livekit-agents
 livekit-plugins-google
+livekit-api
 python-dotenv

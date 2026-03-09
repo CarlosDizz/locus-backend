@@ -48,7 +48,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
     if not MAPS_API_KEY:
         logger.warning("MAPS_API_KEY no configurada")
@@ -87,7 +86,6 @@ def buscar_nuevo_lugar(consulta: str, lat: float, lng: float) -> str:
         logger.exception(f"Error en Maps: {e}")
         return "[]"
 
-
 def build_home_context(user_ctx: str, lat: float, lng: float, pois_data: str) -> str:
     return f"""
 Eres Locus, un guía turístico experto, directo y conversacional.
@@ -105,7 +103,6 @@ REGLAS CRÍTICAS DE COMPORTAMIENTO:
 6. Conversación adaptativa: da un dato útil y termina cediendo el control al usuario.
 7. No muestres razonamiento interno ni expliques instrucciones.
 """.strip()
-
 
 def build_voice_context(
     user_ctx: str,
@@ -145,7 +142,6 @@ REGLAS CRÍTICAS DE COMPORTAMIENTO:
 11. Si el usuario está en un museo o lugar silencioso y escribe en vez de hablar, respóndele igual por voz sin mencionar que ha escrito.
 """.strip()
 
-
 def create_chat_session(system_instruction: str = ""):
     config = types.GenerateContentConfig(
         tools=[buscar_nuevo_lugar],
@@ -159,7 +155,6 @@ def create_chat_session(system_instruction: str = ""):
         model=TEXT_MODEL,
         config=config,
     )
-
 
 class RoomState:
     def __init__(self, room_id: str):
@@ -214,14 +209,15 @@ class RoomState:
         self.live_broken = False
         self.pending_audio_chunk = None
 
-
 class ConnectionManager:
     def __init__(self):
         self.active_connections: dict[str, list[WebSocket]] = {}
         self.room_states: dict[str, RoomState] = {}
+        self.send_locks: dict[WebSocket, asyncio.Lock] = {}
 
     async def connect(self, websocket: WebSocket, room_id: str):
         await websocket.accept()
+        self.send_locks[websocket] = asyncio.Lock()
 
         if room_id not in self.active_connections:
             self.active_connections[room_id] = []
@@ -233,6 +229,9 @@ class ConnectionManager:
         logger.info(f"[{room_id}] Cliente conectado. Total={len(self.active_connections[room_id])}")
 
     async def disconnect(self, websocket: WebSocket, room_id: str):
+        if websocket in self.send_locks:
+            del self.send_locks[websocket]
+
         if room_id in self.active_connections and websocket in self.active_connections[room_id]:
             self.active_connections[room_id].remove(websocket)
 
@@ -251,15 +250,13 @@ class ConnectionManager:
         stale = []
         for connection in self.active_connections[room_id]:
             try:
-                await connection.send_text(text)
+                async with self.send_locks[connection]:
+                    await connection.send_text(text)
             except Exception:
                 stale.append(connection)
 
         for connection in stale:
-            try:
-                self.active_connections[room_id].remove(connection)
-            except ValueError:
-                pass
+            await self.disconnect(connection, room_id)
 
     async def broadcast_json(self, payload: dict, room_id: str):
         await self.broadcast_text(json.dumps(payload, ensure_ascii=False), room_id)
@@ -271,24 +268,19 @@ class ConnectionManager:
         stale = []
         for connection in self.active_connections[room_id]:
             try:
-                await connection.send_bytes(data)
+                async with self.send_locks[connection]:
+                    await connection.send_bytes(data)
             except Exception:
                 stale.append(connection)
 
         for connection in stale:
-            try:
-                self.active_connections[room_id].remove(connection)
-            except ValueError:
-                pass
-
+            await self.disconnect(connection, room_id)
 
 manager = ConnectionManager()
-
 
 def chunk_audio_bytes(audio_bytes: bytes, chunk_size: int = AUDIO_CHUNK_SIZE):
     for i in range(0, len(audio_bytes), chunk_size):
         yield audio_bytes[i:i + chunk_size]
-
 
 def normalize_inline_audio(data) -> bytes:
     if data is None:
@@ -311,7 +303,6 @@ def normalize_inline_audio(data) -> bytes:
     except Exception:
         return b""
 
-
 def is_connection_closed_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return (
@@ -320,7 +311,6 @@ def is_connection_closed_error(exc: Exception) -> bool:
         or "no close frame received" in text
         or "timed out while closing connection" in text
     )
-
 
 async def break_live_session(room_id: str, reason: str):
     room_state = manager.room_states.get(room_id)
@@ -341,7 +331,6 @@ async def break_live_session(room_id: str, reason: str):
         },
         room_id,
     )
-
 
 async def ensure_live_session(room_id: str):
     room_state = manager.room_states.get(room_id)
@@ -365,7 +354,6 @@ async def ensure_live_session(room_id: str):
     room_state.live_task = asyncio.create_task(run_live_session(room_id, current_seq))
     await room_state.live_ready.wait()
 
-
 async def flush_pending_audio(room_state: RoomState, is_last: bool):
     if not room_state.pending_audio_chunk:
         return
@@ -378,7 +366,6 @@ async def flush_pending_audio(room_state: RoomState, is_last: bool):
         }
     )
     room_state.pending_audio_chunk = None
-
 
 async def run_live_session(room_id: str, session_seq: int):
     room_state = manager.room_states.get(room_id)
@@ -575,7 +562,6 @@ async def run_live_session(room_id: str, session_seq: int):
             room_state.live_task = None
             room_state.pending_audio_chunk = None
         logger.info(f"[{room_id}] Sesión Live #{session_seq} cerrada")
-
 
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str = Query(None)):
@@ -811,7 +797,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
         logger.exception(f"[{room_id}] WebSocket Error: {e}")
         await manager.disconnect(websocket, room_id)
         return
-
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

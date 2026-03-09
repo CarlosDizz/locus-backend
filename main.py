@@ -1,5 +1,6 @@
 import os
 import logging
+import google.generativeai as genai
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -7,11 +8,20 @@ from dotenv import load_dotenv
 
 # Importaciones de LiveKit
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
-from livekit.plugins import google
+from livekit.plugins import google as livekit_google
 from livekit import api
 
 load_dotenv()
 logger = logging.getLogger("LocusSystem")
+
+# ==========================================
+# 0. CONFIGURACIÓN IA TEXTO (PARA EL HOME)
+# ==========================================
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+text_model = genai.GenerativeModel('gemini-2.5-flash')
+
+# Memoria temporal para el chat de texto del Home
+chat_histories = {}
 
 # ==========================================
 # 1. FASTAPI: EL SERVIDOR WEB (FRONTEND)
@@ -19,31 +29,66 @@ logger = logging.getLogger("LocusSystem")
 app = FastAPI(title="Locus API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Tus POIs base para que el Home no casque
-POIS = [
-    {"id": "1", "name": "Catedral de San Juan Bautista", "description": "Catedral gótica con pinturas murales."},
-    {"id": "2", "name": "Pasaje de Lodares", "description": "Galería comercial modernista del siglo XX."},
-    {"id": "3", "name": "Recinto Ferial", "description": "Edificio conocido como 'La Sartén'."}
-]
+class ChatRequest(BaseModel):
+    action: str
+    roomId: str
+    deviceId: str
+    context: str = ""
+    text: str = ""
+    lat: float = None
+    lng: float = None
 
-@app.get("/pois")
-async def get_pois():
-    return POIS
+@app.post("/home_chat")
+async def home_chat(req: ChatRequest):
+    """
+    Gestiona el chat de texto del Home y devuelve los POIs para el mapa.
+    """
+    if req.roomId not in chat_histories:
+        chat_histories[req.roomId] = []
 
-@app.get("/chat/history")
-async def get_chat_history():
-    return [] # Aquí irá tu lógica de base de datos en el futuro
+    history = chat_histories[req.roomId]
+
+    if req.action == "setup_profile":
+        prompt = f"""
+        Eres Locus, un guía turístico experto en Albacete. El usuario está configurando su ruta.
+        Sus coordenadas son: latitud {req.lat}, longitud {req.lng}.
+        Su contexto/preferencias: '{req.context}'.
+
+        Salúdale amablemente y sugiérele 3 sitios (POIs) cercanos o relevantes.
+        IMPORTANTE: Tu respuesta debe terminar OBLIGATORIAMENTE con este bloque exacto (sin comillas invertidas extra):
+        <POIS>
+        [
+          {{"name": "Nombre del sitio", "lat": 38.99, "lng": -1.85, "description": "Breve descripción"}}
+        ]
+        </POIS>
+        """
+        history.append({"role": "user", "parts": [prompt]})
+    else:
+        prompt = f"""
+        El usuario dice: '{req.text}'.
+        Responde como Locus. Si en tu respuesta sugieres sitios nuevos, añade el bloque <POIS> al final.
+        Si no hay sitios nuevos, responde solo con texto.
+        """
+        history.append({"role": "user", "parts": [prompt]})
+
+    # Llamamos a Gemini
+    response = text_model.generate_content(history)
+    bot_reply = response.text
+
+    # Guardamos la respuesta en memoria
+    history.append({"role": "model", "parts": [bot_reply]})
+
+    return {"reply": bot_reply}
 
 class TokenRequest(BaseModel):
-    participant_name: str # ej: tu deviceId
-    room_name: str        # ej: Albacete_Centro
-    poi_context: str = "" # ej: "Está viendo el Pasaje de Lodares"
+    participant_name: str
+    room_name: str
+    poi_context: str = ""
 
 @app.post("/get_token")
 async def get_token(req: TokenRequest):
     """
-    Este endpoint es vital: Ionic lo llama antes de conectar.
-    Aquí le metemos las variables del perfil al token de LiveKit.
+    Genera el pase VIP para que el móvil pueda entrar a la sala WebRTC de LiveKit.
     """
     token = api.AccessToken(
         os.getenv("LIVEKIT_API_KEY"),
@@ -51,8 +96,7 @@ async def get_token(req: TokenRequest):
     )
     token.with_identity(req.participant_name)
     token.with_name(req.participant_name)
-    # INYECCIÓN DE VARIABLES: Guardamos el POI en los metadatos del usuario
-    token.with_metadata(req.poi_context)
+    token.with_metadata(req.poi_context) # Inyectamos datos
 
     grant = api.VideoGrant(room_join=True, room=req.room_name)
     token.with_grant(grant)
@@ -61,34 +105,33 @@ async def get_token(req: TokenRequest):
 
 
 # ==========================================
-# 2. LIVEKIT AGENT: EL CEREBRO DE VOZ
+# 2. LIVEKIT AGENT: EL CEREBRO DE VOZ (CALL)
 # ==========================================
 SYSTEM_PROMPT = """
-Eres Locus, un guía turístico experto, carismático y directo.
+Eres Locus, un guía turístico experto, carismático y directo. Estás acompañando presencialmente a los viajeros.
 REGLAS:
 1. FOCO DE TÚNEL: Habla exclusivamente de lo que el usuario tiene delante.
 2. BREVEDAD: Responde en un máximo de 2 o 3 frases.
-3. ENGANCHE: Termina con una pregunta directa.
+3. ENGANCHE: Termina con una pregunta directa sobre el monumento.
 """
 
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
-    logger.info(f"🎙️ Locus conectado a la sala: {ctx.room.name}")
+    logger.info(f"🎙️ Locus conectado a la sala de voz: {ctx.room.name}")
 
-    # MAGIA: Rescatamos las variables que FastAPI metió en el token
+    # Rescatamos contexto si lo hay
     user_context = ""
     for _, participant in ctx.room.remote_participants.items():
         if participant.metadata:
             user_context = participant.metadata
             break
 
-    # Adaptamos el cerebro de Gemini al POI actual
     dynamic_prompt = SYSTEM_PROMPT
     if user_context:
         dynamic_prompt += f"\nATENCIÓN: El usuario está viendo actualmente: {user_context}."
 
     session = AgentSession(
-        llm=google.LLM(
+        llm=livekit_google.LLM(
             api_key=os.environ.get("GEMINI_API_KEY"),
             model="gemini-2.5-flash-native-audio-preview-12-2025"
         )
@@ -98,9 +141,8 @@ async def entrypoint(ctx: JobContext):
     await session.start(agent=agent, room=ctx.room)
 
     await session.generate_reply(
-        instructions="Saluda de forma natural y pregúntale qué le parece lo que tiene delante."
+        instructions="El usuario acaba de entrar a la llamada de voz. Saluda de forma natural y pregúntale qué le parece lo que tiene delante."
     )
 
 if __name__ == "__main__":
-    # Si ejecutamos 'python main.py start', arranca el agente de voz
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))

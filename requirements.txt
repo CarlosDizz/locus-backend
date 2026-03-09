@@ -3,4 +3,5 @@ uvicorn
 livekit-agents
 livekit-plugins-google
 livekit-api
+google-generativeai
 python-dotenv

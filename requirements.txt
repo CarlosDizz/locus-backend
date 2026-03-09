@@ -1,5 +1,3 @@
-fastapi
-uvicorn
-websockets
-google-genai
-pydub==0.25.1
+livekit-agents
+livekit-plugins-gemini
+python-dotenv

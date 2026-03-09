@@ -1,13 +1,17 @@
 FROM python:3.11-slim
 
-# Instalamos ffmpeg en la capa de sistema
+# Mantenemos ffmpeg por si Gemini o LiveKit necesitan procesar flujos específicos
 RUN apt-get update && \
     apt-get install -y ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
 COPY . .
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Comando para arrancar el Agent Worker en modo producción
+# 'start' es el comando nativo del CLI de LiveKit Agents
+CMD ["python", "main.py", "start"]

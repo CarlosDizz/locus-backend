@@ -35,7 +35,7 @@ async def entrypoint(ctx: JobContext):
     # Conectamos y arrancamos
     agent.start(ctx.room)
     
-    # Saludo inicial
+    l
     await agent.say("Hola, soy Locus. Ya estoy operativo. ¿Qué estamos viendo?", allow_interruptions=True)
 
 if __name__ == "__main__":

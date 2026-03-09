@@ -180,6 +180,10 @@ class RoomState:
         self.live_ready = asyncio.Event()
         self.live_stop = asyncio.Event()
         self.pending_audio_chunk: Optional[bytes] = None
+        self.live_generation_in_progress: bool = False
+        self.live_generation_completed: bool = False
+        self.live_broken: bool = False
+        self.live_session_seq: int = 0
 
     async def enqueue(self, payload: dict):
         await self.live_queue.put(payload)
@@ -187,6 +191,9 @@ class RoomState:
     async def stop(self):
         self.live_stop.set()
         self.pending_audio_chunk = None
+        self.live_generation_in_progress = False
+        self.live_generation_completed = False
+        self.live_broken = True
         try:
             await self.live_queue.put({"type": "__close__"})
         except Exception:
@@ -200,6 +207,12 @@ class RoomState:
                 pass
             except Exception:
                 pass
+
+    def reset_live_flags(self):
+        self.live_generation_in_progress = False
+        self.live_generation_completed = False
+        self.live_broken = False
+        self.pending_audio_chunk = None
 
 
 class ConnectionManager:
@@ -299,17 +312,57 @@ def normalize_inline_audio(data) -> bytes:
         return b""
 
 
+def is_connection_closed_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "keepalive ping timeout" in text
+        or "connectionclosederror" in text
+        or "no close frame received" in text
+        or "timed out while closing connection" in text
+    )
+
+
+async def break_live_session(room_id: str, reason: str):
+    room_state = manager.room_states.get(room_id)
+    if not room_state:
+        return
+
+    logger.warning(f"[{room_id}] Marcando sesión Live como rota: {reason}")
+    room_state.live_broken = True
+    room_state.live_stop.set()
+    room_state.pending_audio_chunk = None
+    room_state.live_generation_in_progress = False
+    room_state.live_generation_completed = False
+
+    await manager.broadcast_json(
+        {
+            "type": "error",
+            "message": "La sesión de voz se ha cortado. Se recreará en el siguiente turno.",
+        },
+        room_id,
+    )
+
+
 async def ensure_live_session(room_id: str):
     room_state = manager.room_states.get(room_id)
     if not room_state:
         return
 
+    if room_state.live_broken:
+        logger.info(f"[{room_id}] Había una sesión rota. Se recrea.")
+        room_state.live_task = None
+        room_state.live_ready.clear()
+
     if room_state.live_task and not room_state.live_task.done():
         return
 
+    room_state.reset_live_flags()
     room_state.live_ready.clear()
     room_state.live_stop.clear()
-    room_state.live_task = asyncio.create_task(run_live_session(room_id))
+    room_state.live_session_seq += 1
+    current_seq = room_state.live_session_seq
+
+    room_state.live_task = asyncio.create_task(run_live_session(room_id, current_seq))
     await room_state.live_ready.wait()
 
 
@@ -327,7 +380,7 @@ async def flush_pending_audio(room_state: RoomState, is_last: bool):
     room_state.pending_audio_chunk = None
 
 
-async def run_live_session(room_id: str):
+async def run_live_session(room_id: str, session_seq: int):
     room_state = manager.room_states.get(room_id)
     if not room_state:
         return
@@ -349,13 +402,13 @@ async def run_live_session(room_id: str):
         output_audio_transcription=types.AudioTranscriptionConfig(),
     )
 
-    logger.info(f"[{room_id}] Abriendo sesión Gemini Live con modelo {LIVE_MODEL}")
-    logger.info(f"[{room_id}] Live config: AUDIO + transcriptions + stable send flow")
+    logger.info(f"[{room_id}] Abriendo sesión Gemini Live #{session_seq} con modelo {LIVE_MODEL}")
 
     try:
         async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as session:
             room_state.live_ready.set()
-            logger.info(f"[{room_id}] Sesión Live lista")
+            room_state.live_broken = False
+            logger.info(f"[{room_id}] Sesión Live #{session_seq} lista")
 
             async def receive_from_gemini():
                 try:
@@ -368,16 +421,12 @@ async def run_live_session(room_id: str):
                                 if text:
                                     logger.info(f"[{room_id}] Gemini -> text direct: {text[:120]}")
                                     await manager.broadcast_text(text, room_id)
-                            else:
-                                logger.info(f"[{room_id}] Evento Live sin server_content")
                             continue
 
                         if getattr(sc, "interrupted", False):
                             logger.info(f"[{room_id}] Gemini -> interrupted")
-                            await manager.broadcast_json(
-                                {"type": "interrupted"},
-                                room_id,
-                            )
+                            room_state.live_generation_in_progress = False
+                            await manager.broadcast_json({"type": "interrupted"}, room_id)
 
                         input_transcription = getattr(sc, "input_transcription", None)
                         if input_transcription is not None:
@@ -406,6 +455,7 @@ async def run_live_session(room_id: str):
                                     raw_audio = normalize_inline_audio(inline_data.data)
                                     if raw_audio:
                                         logger.info(f"[{room_id}] Gemini -> audio bytes: {len(raw_audio)}")
+                                        room_state.live_generation_in_progress = True
                                         await manager.broadcast_bytes(raw_audio, room_id)
 
                                 text_part = getattr(part, "text", None)
@@ -423,6 +473,7 @@ async def run_live_session(room_id: str):
 
                         if getattr(sc, "generation_complete", False):
                             logger.info(f"[{room_id}] Gemini -> generation_complete")
+                            room_state.live_generation_completed = True
                             await manager.broadcast_json(
                                 {"type": "generation_complete"},
                                 room_id,
@@ -430,6 +481,8 @@ async def run_live_session(room_id: str):
 
                         if getattr(sc, "turn_complete", False):
                             logger.info(f"[{room_id}] Turno completado por Gemini")
+                            room_state.live_generation_in_progress = False
+                            room_state.live_generation_completed = True
                             await manager.broadcast_json(
                                 {"type": "turn_complete"},
                                 room_id,
@@ -439,13 +492,7 @@ async def run_live_session(room_id: str):
                     raise
                 except Exception as e:
                     logger.exception(f"[{room_id}] Error recibiendo de Gemini: {e}")
-                    await manager.broadcast_json(
-                        {
-                            "type": "error",
-                            "message": "Ahora mismo no puedo responder por voz. Prueba otra vez.",
-                        },
-                        room_id,
-                    )
+                    await break_live_session(room_id, f"receive error: {e}")
 
             async def send_to_gemini():
                 try:
@@ -463,6 +510,8 @@ async def run_live_session(room_id: str):
                                 continue
 
                             logger.info(f"[{room_id}] -> Gemini texto: {text[:120]}")
+                            room_state.live_generation_in_progress = True
+                            room_state.live_generation_completed = False
                             await session.send(input=text, end_of_turn=True)
 
                         elif payload_type == "audio_chunk":
@@ -475,6 +524,10 @@ async def run_live_session(room_id: str):
                             logger.info(
                                 f"[{room_id}] -> Gemini audio chunk: {len(audio_bytes)} bytes | is_last={is_last}"
                             )
+                            if is_last:
+                                room_state.live_generation_in_progress = True
+                                room_state.live_generation_completed = False
+
                             await session.send(
                                 input={"mime_type": AUDIO_MIME, "data": audio_bytes},
                                 end_of_turn=is_last,
@@ -489,6 +542,8 @@ async def run_live_session(room_id: str):
                                 continue
 
                             logger.info(f"[{room_id}] -> Gemini imagen + texto en mismo turno")
+                            room_state.live_generation_in_progress = True
+                            room_state.live_generation_completed = False
                             await session.send(
                                 input=[
                                     {"mime_type": mime_type, "data": image_bytes},
@@ -501,33 +556,25 @@ async def run_live_session(room_id: str):
                     raise
                 except Exception as e:
                     logger.exception(f"[{room_id}] Error enviando a Gemini: {e}")
-                    await manager.broadcast_json(
-                        {
-                            "type": "error",
-                            "message": "Se ha cortado la conversación de voz. Inténtalo otra vez.",
-                        },
-                        room_id,
-                    )
+                    if is_connection_closed_error(e):
+                        await break_live_session(room_id, f"send connection closed: {e}")
+                    else:
+                        await break_live_session(room_id, f"send error: {e}")
 
             await asyncio.gather(receive_from_gemini(), send_to_gemini())
 
     except asyncio.CancelledError:
-        logger.info(f"[{room_id}] Sesión Live cancelada")
+        logger.info(f"[{room_id}] Sesión Live #{session_seq} cancelada")
         raise
     except Exception as e:
         logger.exception(f"[{room_id}] Error abriendo conexión Live: {e}")
-        await manager.broadcast_json(
-            {
-                "type": "error",
-                "message": "No he podido abrir la sesión de voz.",
-            },
-            room_id,
-        )
+        await break_live_session(room_id, f"open error: {e}")
     finally:
-        room_state.live_ready.clear()
-        room_state.live_task = None
-        room_state.pending_audio_chunk = None
-        logger.info(f"[{room_id}] Sesión Live cerrada")
+        if room_state.live_session_seq == session_seq:
+            room_state.live_ready.clear()
+            room_state.live_task = None
+            room_state.pending_audio_chunk = None
+        logger.info(f"[{room_id}] Sesión Live #{session_seq} cerrada")
 
 
 @app.websocket("/ws/{room_id}")
@@ -538,6 +585,11 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
     try:
         while True:
             msg = await websocket.receive()
+
+            if msg.get("type") == "websocket.disconnect":
+                logger.info(f"[{room_id}] Disconnect recibido desde cliente")
+                await manager.disconnect(websocket, room_id)
+                return
 
             if "text" not in msg:
                 continue
@@ -744,10 +796,21 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, deviceId: str =
                 )
 
     except WebSocketDisconnect:
+        logger.info(f"[{room_id}] WebSocketDisconnect")
         await manager.disconnect(websocket, room_id)
+        return
+    except RuntimeError as e:
+        if 'disconnect message has been received' in str(e):
+            logger.info(f"[{room_id}] WebSocket ya desconectado")
+            await manager.disconnect(websocket, room_id)
+            return
+        logger.exception(f"[{room_id}] RuntimeError en websocket: {e}")
+        await manager.disconnect(websocket, room_id)
+        return
     except Exception as e:
         logger.exception(f"[{room_id}] WebSocket Error: {e}")
         await manager.disconnect(websocket, room_id)
+        return
 
 
 if __name__ == "__main__":

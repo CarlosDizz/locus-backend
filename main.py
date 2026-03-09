@@ -1,13 +1,13 @@
 import os
 import logging
-from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli, multimodal
-from livekit.plugins import gemini
+import asyncio
+from livekit.agents import JobContext, WorkerOptions, cli, multimodal
+from livekit.plugins import google
 from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger("LocusAgent")
 
-# El System Prompt de Locus: su alma sigue siendo la misma
 SYSTEM_PROMPT = """
 Eres Locus, un guía turístico experto, carismático y directo. Estás acompañando presencialmente a los viajeros.
 
@@ -22,24 +22,21 @@ REGLAS DE ORO:
 async def entrypoint(ctx: JobContext):
     logger.info(f"Conectando a la sala: {ctx.room.name}")
 
-    # Inicializamos el modelo nativo de Gemini para LiveKit
-    # No usamos gemini-2.5-flash-native-audio aquí, el plugin usa gemini-2.0-flash-exp 
-    # que es el estándar actual para multimodal real-time en LiveKit.
-    model = gemini.MultimodalAgent(
-        model="gemini-2.0-flash-exp",
+    # Inicializamos el modelo de Google con el brain que decidimos
+    model = google.Gemini(
         api_key=os.environ.get("GEMINI_API_KEY"),
         instructions=SYSTEM_PROMPT,
+        model="gemini-2.5-flash-native-audio-preview-12-2025"
     )
 
-    # Creamos el agente multimodal (él maneja VAD, cancelación de eco e interrupciones)
+    # El agente multimodal ahora se instancia así
     agent = multimodal.MultimodalAgent(model=model)
 
-    # Arrancamos el agente en la sala
+    # Conectamos y arrancamos
     agent.start(ctx.room)
     
-    # Saludo inicial automático al entrar
-    await agent.say("Hola, soy Locus. Ya estoy aquí para acompañarte en tu visita. ¿Qué es lo primero que tienes delante?", allow_interruptions=True)
+    # Saludo inicial
+    await agent.say("Hola, soy Locus. Ya estoy operativo. ¿Qué estamos viendo?", allow_interruptions=True)
 
 if __name__ == "__main__":
-    # LiveKit Agents no usa uvicorn, usa su propio CLI
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))

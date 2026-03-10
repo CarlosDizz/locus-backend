@@ -165,11 +165,8 @@ REGLAS DE ORO:
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
 
-    user_context = ""
-    for _, participant in ctx.room.remote_participants.items():
-        if participant.metadata:
-            user_context = participant.metadata
-            break
+    participant = await ctx.wait_for_participant()
+    user_context = participant.metadata or ""
 
     dynamic_prompt = SYSTEM_PROMPT
     welcome_msg = "El usuario acaba de entrar a la llamada de voz. Saluda de forma natural."
@@ -190,13 +187,23 @@ async def entrypoint(ctx: JobContext):
     agent = Agent(instructions=dynamic_prompt)
     await session.start(agent=agent, room=ctx.room)
 
+    @ctx.room.on("participant_disconnected")
+    def on_participant_disconnected(p: rtc.RemoteParticipant):
+        if not ctx.room.remote_participants:
+            asyncio.create_task(ctx.room.disconnect())
+
     @ctx.room.on("data_received")
     def on_data_received(data_packet: rtc.DataPacket):
         try:
             payload = json.loads(data_packet.data.decode("utf-8"))
             if payload.get("action") == "text_chat":
-                instruccion = f"El usuario te dice por el chat de texto: {payload['data']}. Respóndele por voz."
-                asyncio.create_task(session.generate_reply(instructions=instruccion))
+                async def text_reply():
+                    try:
+                        instruccion = f"El usuario te dice por el chat de texto: {payload['data']}. Respóndele por voz."
+                        await session.generate_reply(instructions=instruccion)
+                    except Exception:
+                        pass
+                asyncio.create_task(text_reply())
             elif payload.get("action") == "image_context":
                 mime_type = payload.get("mime_type", "image/jpeg")
                 image_bytes = base64.b64decode(payload["data"])
@@ -223,15 +230,23 @@ async def entrypoint(ctx: JobContext):
             pass
 
     @ctx.room.on("participant_connected")
-    def on_participant_connected(participant: rtc.RemoteParticipant):
+    def on_participant_connected(p: rtc.RemoteParticipant):
         welcome_str = "Un nuevo usuario se ha unido a la llamada."
-        if participant.metadata:
-            welcome_str += f" Está viendo este lugar: {participant.metadata}. Dale la bienvenida a este monumento de forma natural."
-        asyncio.create_task(session.generate_reply(instructions=welcome_str))
+        if p.metadata:
+            welcome_str += f" Está viendo este lugar: {p.metadata}. Dale la bienvenida a este monumento de forma natural."
 
-    await session.generate_reply(
-        instructions=welcome_msg
-    )
+        async def send_welcome():
+            try:
+                await session.generate_reply(instructions=welcome_str)
+            except Exception:
+                pass
+
+        asyncio.create_task(send_welcome())
+
+    try:
+        await session.generate_reply(instructions=welcome_msg)
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))

@@ -142,7 +142,7 @@ async def entrypoint(ctx: JobContext):
         )
     )
     
-    agent = Agent()
+    agent = Agent(instructions=dynamic_prompt)
     await session.start(agent=agent, room=ctx.room)
     
     await session.generate_reply(

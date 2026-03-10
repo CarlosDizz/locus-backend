@@ -1,5 +1,8 @@
 import os
-import google.generativeai as genai
+import json
+import requests
+from google import genai
+from google.genai import types
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,8 +14,7 @@ from livekit import api
 
 load_dotenv()
 
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-text_model = genai.GenerativeModel('gemini-2.5-flash')
+gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 chat_histories = {}
 
@@ -28,39 +30,65 @@ class ChatRequest(BaseModel):
     lat: float = None
     lng: float = None
 
+def get_real_pois(query, lat, lng):
+    api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
+    if not api_key:
+        return []
+        
+    url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+    params = {
+        "query": query,
+        "key": api_key
+    }
+    if lat and lng:
+        params["location"] = f"{lat},{lng}"
+        params["radius"] = 2000
+
+    resp = requests.get(url, params=params)
+    if resp.status_code != 200:
+        return []
+        
+    results = resp.json().get("results", [])[:3]
+    pois = []
+    
+    for r in results:
+        pois.append({
+            "name": r.get("name"),
+            "lat": r["geometry"]["location"]["lat"],
+            "lng": r["geometry"]["location"]["lng"],
+            "description": r.get("formatted_address", "")
+        })
+    return pois
+
 @app.post("/home_chat")
 async def home_chat(req: ChatRequest):
     if req.roomId not in chat_histories:
         chat_histories[req.roomId] = []
+        
     history = chat_histories[req.roomId]
-
+    pois_block = ""
+    
     if req.action == "setup_profile":
-        prompt = f"""
-        Eres Locus, un guía turístico experto en Albacete. El usuario está configurando su ruta.
-        Sus coordenadas son: latitud {req.lat}, longitud {req.lng}.
-        Su contexto/preferencias: '{req.context}'.
-
-        Salúdale amablemente y sugiérele 3 sitios (POIs) cercanos o relevantes.
-        IMPORTANTE: Tu respuesta debe terminar OBLIGATORIAMENTE con este bloque exacto (sin comillas invertidas extra):
-        <POIS>
-        [
-          {{"name": "Nombre del sitio", "lat": 38.99, "lng": -1.85, "description": "Breve descripción"}}
-        ]
-        </POIS>
-        """
-        history.append({"role": "user", "parts": [prompt]})
+        prompt = f"Eres Locus, un guía experto. El usuario configura su ruta. Contexto: '{req.context}'. Salúdale de forma breve y amigable."
+        history.append(types.Content(role="user", parts=[types.Part.from_text(prompt)]))
+        
+        real_pois = get_real_pois(f"lugares turisticos {req.context}", req.lat, req.lng)
+        if real_pois:
+            pois_block = f"\n<POIS>\n{json.dumps(real_pois, ensure_ascii=False)}\n</POIS>"
     else:
-        prompt = f"""
-        El usuario dice: '{req.text}'.
-        Responde como Locus. Si en tu respuesta sugieres sitios nuevos, añade el bloque <POIS> al final.
-        Si no hay sitios nuevos, responde solo con texto.
-        """
-        history.append({"role": "user", "parts": [prompt]})
+        prompt = f"El usuario dice: '{req.text}'. Responde como Locus de forma concisa."
+        history.append(types.Content(role="user", parts=[types.Part.from_text(prompt)]))
 
-    response = text_model.generate_content(history)
+    response = gemini_client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=history
+    )
     bot_reply = response.text
-
-    history.append({"role": "model", "parts": [bot_reply]})
+    
+    if pois_block:
+        bot_reply += pois_block
+        
+    history.append(types.Content(role="model", parts=[types.Part.from_text(bot_reply)]))
 
     return {"reply": bot_reply}
 
@@ -78,10 +106,10 @@ async def get_token(req: TokenRequest):
     token.with_identity(req.participant_name)
     token.with_name(req.participant_name)
     token.with_metadata(req.poi_context)
-
+    
     grant = api.VideoGrant(room_join=True, room=req.room_name)
     token.with_grant(grant)
-
+    
     return {"token": token.to_jwt(), "ws_url": os.getenv("LIVEKIT_URL")}
 
 SYSTEM_PROMPT = """
@@ -94,7 +122,7 @@ REGLAS:
 
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
-
+    
     user_context = ""
     for _, participant in ctx.room.remote_participants.items():
         if participant.metadata:
@@ -107,15 +135,16 @@ async def entrypoint(ctx: JobContext):
 
     session = AgentSession(
         llm=livekit_google.beta.realtime.RealtimeModel(
+            api_key=os.environ.get("GEMINI_API_KEY"),
             model="gemini-2.5-flash-native-audio-preview-12-2025",
             instructions=dynamic_prompt,
             voice="Puck"
         )
     )
-
+    
     agent = Agent()
     await session.start(agent=agent, room=ctx.room)
-
+    
     await session.generate_reply(
         instructions="El usuario acaba de entrar a la llamada de voz. Saluda de forma natural y pregúntale qué le parece lo que tiene delante."
     )

@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli, llm
+from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.plugins import google as livekit_google
 from livekit import api, rtc
 
@@ -151,20 +151,6 @@ async def get_token(req: TokenRequest):
 
     return {"token": token.to_jwt(), "ws_url": os.getenv("LIVEKIT_URL")}
 
-class GuideTools(llm.FunctionContext):
-    @llm.ai_callable(description="Busca información histórica o arquitectónica exacta de un monumento si el usuario hace una pregunta que no sabes responder con seguridad.")
-    async def buscar_en_internet(self, monumento: str):
-        url = f"https://es.wikipedia.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(monumento)}&utf8=&format=json"
-        try:
-            resp = requests.get(url, timeout=3).json()
-            if resp.get("query", {}).get("search"):
-                snippet = resp["query"]["search"][0]["snippet"]
-                snippet_limpio = re.sub(r'<[^>]+>', '', snippet)
-                return f"Información verificada encontrada: {snippet_limpio}"
-        except:
-            pass
-        return "No se ha encontrado información adicional en las bases de datos externas."
-
 SYSTEM_PROMPT = """
 Eres Locus, un guía turístico experto, carismático y directo que acompaña presencialmente al usuario.
 
@@ -174,7 +160,6 @@ REGLAS DE ORO:
 3. ANCLAJE ESPACIAL: Habla SOLO del monumento en el que está el usuario ahora mismo.
 4. CONCISIÓN: Respuestas de 2 frases como máximo.
 5. ENGANCHE VISUAL: Termina con una pregunta breve sobre algún detalle físico.
-6. BÚSQUEDA EN VIVO (HERRAMIENTA): Tienes acceso a la herramienta 'buscar_en_internet'. Úsala SOLO si te preguntan un dato específico que no tienes en tu memoria ni en tu contexto. IMPORTANTE: Cuando decidas usar la herramienta, primero debes decirle en voz alta al usuario algo como "Dame un segundo que lo consulto..." o "Espera que reviso mis notas...", y seguidamente ejecutas la herramienta.
 """
 
 async def entrypoint(ctx: JobContext):
@@ -193,8 +178,6 @@ async def entrypoint(ctx: JobContext):
         dynamic_prompt += f"\nCONTEXTO DEL USUARIO: {user_context}."
         welcome_msg = f"El usuario acaba de llegar a este lugar: {user_context}. Dale una bienvenida específica a este sitio usando los DATOS HISTÓRICOS REALES si los hay en tu contexto, y pregúntale qué le parece visualmente."
 
-    fnc_ctx = GuideTools()
-
     session = AgentSession(
         llm=livekit_google.beta.realtime.RealtimeModel(
             api_key=os.environ.get("GEMINI_API_KEY"),
@@ -204,7 +187,7 @@ async def entrypoint(ctx: JobContext):
         )
     )
 
-    agent = Agent(instructions=dynamic_prompt, fnc_ctx=fnc_ctx)
+    agent = Agent(instructions=dynamic_prompt)
     await session.start(agent=agent, room=ctx.room)
 
     @ctx.room.on("data_received")
@@ -212,7 +195,8 @@ async def entrypoint(ctx: JobContext):
         try:
             payload = json.loads(data_packet.data.decode("utf-8"))
             if payload.get("action") == "text_chat":
-                asyncio.create_task(session.generate_reply(user_input=payload["data"]))
+                instruccion = f"El usuario te dice por el chat de texto: {payload['data']}. Respóndele por voz."
+                asyncio.create_task(session.generate_reply(instructions=instruccion))
             elif payload.get("action") == "image_context":
                 mime_type = payload.get("mime_type", "image/jpeg")
                 image_bytes = base64.b64decode(payload["data"])
@@ -229,7 +213,8 @@ async def entrypoint(ctx: JobContext):
                             ).text
 
                         descripcion = await asyncio.to_thread(fetch_desc)
-                        await session.generate_reply(instructions=f"El usuario te acaba de enseñar una foto por el chat. Esto es lo que se ve en ella: {descripcion}. Haz un comentario breve y natural sobre la foto como guía.")
+                        instruccion_foto = f"El usuario te acaba de enseñar una foto por el chat. Esto es lo que se ve en ella: {descripcion}. Haz un comentario breve y natural sobre la foto como guía."
+                        await session.generate_reply(instructions=instruccion_foto)
                     except Exception:
                         pass
 

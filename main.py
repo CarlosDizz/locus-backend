@@ -32,7 +32,6 @@ class ChatRequest(BaseModel):
 async def home_chat(req: ChatRequest):
     if req.roomId not in chat_histories:
         chat_histories[req.roomId] = []
-
     history = chat_histories[req.roomId]
 
     if req.action == "setup_profile":

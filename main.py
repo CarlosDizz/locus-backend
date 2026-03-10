@@ -2,6 +2,8 @@ import os
 import json
 import re
 import urllib.parse
+import base64
+import asyncio
 import requests
 from google import genai
 from google.genai import types
@@ -12,7 +14,7 @@ from dotenv import load_dotenv
 
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli, llm
 from livekit.plugins import google as livekit_google
-from livekit import api
+from livekit import api, rtc
 
 load_dotenv()
 
@@ -204,7 +206,44 @@ async def entrypoint(ctx: JobContext):
 
     agent = Agent(instructions=dynamic_prompt, fnc_ctx=fnc_ctx)
     await session.start(agent=agent, room=ctx.room)
-    
+
+    @ctx.room.on("data_received")
+    def on_data_received(data_packet: rtc.DataPacket):
+        try:
+            payload = json.loads(data_packet.data.decode("utf-8"))
+            if payload.get("action") == "text_chat":
+                asyncio.create_task(session.generate_reply(user_input=payload["data"]))
+            elif payload.get("action") == "image_context":
+                mime_type = payload.get("mime_type", "image/jpeg")
+                image_bytes = base64.b64decode(payload["data"])
+
+                async def process_image():
+                    try:
+                        def fetch_desc():
+                            return gemini_client.models.generate_content(
+                                model='gemini-2.5-flash',
+                                contents=[
+                                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                                    types.Part.from_text(text="Describe de forma concisa lo que se ve en esta imagen, centrándote en el aspecto arquitectónico o turístico si lo hay.")
+                                ]
+                            ).text
+
+                        descripcion = await asyncio.to_thread(fetch_desc)
+                        await session.generate_reply(instructions=f"El usuario te acaba de enseñar una foto por el chat. Esto es lo que se ve en ella: {descripcion}. Haz un comentario breve y natural sobre la foto como guía.")
+                    except Exception:
+                        pass
+
+                asyncio.create_task(process_image())
+        except Exception:
+            pass
+
+    @ctx.room.on("participant_connected")
+    def on_participant_connected(participant: rtc.RemoteParticipant):
+        welcome_str = "Un nuevo usuario se ha unido a la llamada."
+        if participant.metadata:
+            welcome_str += f" Está viendo este lugar: {participant.metadata}. Dale la bienvenida a este monumento de forma natural."
+        asyncio.create_task(session.generate_reply(instructions=welcome_str))
+
     await session.generate_reply(
         instructions=welcome_msg
     )

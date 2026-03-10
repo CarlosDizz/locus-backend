@@ -69,10 +69,12 @@ async def home_chat(req: ChatRequest):
     pois_block = ""
     
     if req.action == "setup_profile":
-        prompt = f"Eres Locus, un guía experto. El usuario configura su ruta. Contexto: '{req.context}'. Salúdale de forma breve y amigable."
+        real_pois = get_real_pois("lugares turísticos", req.lat, req.lng)
+        nombres_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else "lugares cercanos"
+        
+        prompt = f"Eres Locus, un guía experto. El usuario configura su ruta. Su contexto/petición es: '{req.context}'. IMPORTANTE: El usuario está físicamente en las coordenadas lat: {req.lat}, lng: {req.lng}. IGNORA cualquier ciudad en su contexto y recomiéndale ÚNICAMENTE estos lugares reales a su alrededor: {nombres_pois}. Salúdale asumiendo su rol/contexto, pero anclado a su ubicación real."
         history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
         
-        real_pois = get_real_pois(f"lugares turisticos {req.context}", req.lat, req.lng)
         if real_pois:
             pois_block = f"\n<POIS>\n{json.dumps(real_pois, ensure_ascii=False)}\n</POIS>"
     else:
@@ -133,8 +135,11 @@ async def entrypoint(ctx: JobContext):
             break
 
     dynamic_prompt = SYSTEM_PROMPT
+    welcome_msg = "El usuario acaba de entrar a la llamada de voz. Saluda de forma natural."
+    
     if user_context:
         dynamic_prompt += f"\nATENCIÓN: El usuario está viendo actualmente: {user_context}."
+        welcome_msg = f"El usuario acaba de llegar a este lugar: {user_context}. Dale una bienvenida específica a este sitio y pregúntale qué le parece."
 
     session = AgentSession(
         llm=livekit_google.beta.realtime.RealtimeModel(
@@ -149,7 +154,7 @@ async def entrypoint(ctx: JobContext):
     await session.start(agent=agent, room=ctx.room)
     
     await session.generate_reply(
-        instructions="El usuario acaba de entrar a la llamada de voz. Saluda de forma natural y pregúntale qué le parece lo que tiene delante."
+        instructions=welcome_msg
     )
 
 if __name__ == "__main__":

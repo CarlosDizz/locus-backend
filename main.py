@@ -31,7 +31,7 @@ class ChatRequest(BaseModel):
     lng: float = None
 
 def get_real_pois(query, lat, lng):
-    api_key = os.environ.get("GOOGLE_MAPS_API_KEY")
+    api_key = os.environ.get("MAPS_API_KEY")
     if not api_key:
         return []
         
@@ -70,14 +70,14 @@ async def home_chat(req: ChatRequest):
     
     if req.action == "setup_profile":
         prompt = f"Eres Locus, un guía experto. El usuario configura su ruta. Contexto: '{req.context}'. Salúdale de forma breve y amigable."
-        history.append(types.Content(role="user", parts=[types.Part.from_text(prompt)]))
+        history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
         
         real_pois = get_real_pois(f"lugares turisticos {req.context}", req.lat, req.lng)
         if real_pois:
             pois_block = f"\n<POIS>\n{json.dumps(real_pois, ensure_ascii=False)}\n</POIS>"
     else:
         prompt = f"El usuario dice: '{req.text}'. Responde como Locus de forma concisa."
-        history.append(types.Content(role="user", parts=[types.Part.from_text(prompt)]))
+        history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
     response = gemini_client.models.generate_content(
         model='gemini-2.5-flash',
@@ -88,7 +88,7 @@ async def home_chat(req: ChatRequest):
     if pois_block:
         bot_reply += pois_block
         
-    history.append(types.Content(role="model", parts=[types.Part.from_text(bot_reply)]))
+    history.append(types.Content(role="model", parts=[types.Part.from_text(text=bot_reply)]))
 
     return {"reply": bot_reply}
 

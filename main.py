@@ -63,22 +63,40 @@ def get_real_pois(query, lat, lng):
 @app.post("/home_chat")
 async def home_chat(req: ChatRequest):
     if req.roomId not in chat_histories:
-        chat_histories[req.roomId] = []
+        chat_histories[req.roomId] = {"history": [], "lat": None, "lng": None}
         
-    history = chat_histories[req.roomId]
+    room_data = chat_histories[req.roomId]
+    
+    if req.lat is not None and req.lng is not None:
+        room_data["lat"] = req.lat
+        room_data["lng"] = req.lng
+        
+    history = room_data["history"]
+    current_lat = room_data["lat"]
+    current_lng = room_data["lng"]
+    
     pois_block = ""
     
     if req.action == "setup_profile":
-        real_pois = get_real_pois("lugares turísticos", req.lat, req.lng)
+        real_pois = get_real_pois("lugares turísticos", current_lat, current_lng)
         nombres_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else "lugares cercanos"
         
-        prompt = f"Eres Locus, un guía experto. El usuario configura su ruta. Su contexto/petición es: '{req.context}'. IMPORTANTE: El usuario está físicamente en las coordenadas lat: {req.lat}, lng: {req.lng}. IGNORA cualquier ciudad en su contexto y recomiéndale ÚNICAMENTE estos lugares reales a su alrededor: {nombres_pois}. Salúdale asumiendo su rol/contexto, pero anclado a su ubicación real."
+        prompt = f"Eres Locus, un guía experto. El usuario configura su ruta. Su contexto/petición es: '{req.context}'. IGNORA cualquier ciudad en su contexto y recomiéndale ÚNICAMENTE estos lugares reales a su alrededor: {nombres_pois}. Salúdale asumiendo su rol, anclado a su ubicación."
         history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
         
         if real_pois:
             pois_block = f"\n<POIS>\n{json.dumps(real_pois, ensure_ascii=False)}\n</POIS>"
     else:
-        prompt = f"El usuario dice: '{req.text}'. Responde como Locus de forma concisa."
+        real_pois = get_real_pois(req.text, current_lat, current_lng)
+        nombres_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else ""
+        
+        prompt = f"El usuario dice: '{req.text}'."
+        if real_pois:
+            prompt += f" Lugares reales encontrados cerca: {nombres_pois}. Si tu respuesta sugiere lugares, debes incluir el bloque <POIS> exacto al final."
+            pois_block = f"\n<POIS>\n{json.dumps(real_pois, ensure_ascii=False)}\n</POIS>"
+        else:
+            prompt += " Responde como Locus de forma concisa."
+            
         history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
     response = gemini_client.models.generate_content(
@@ -87,7 +105,7 @@ async def home_chat(req: ChatRequest):
     )
     bot_reply = response.text
     
-    if pois_block:
+    if pois_block and "<POIS>" not in bot_reply:
         bot_reply += pois_block
         
     history.append(types.Content(role="model", parts=[types.Part.from_text(text=bot_reply)]))
@@ -118,10 +136,10 @@ SYSTEM_PROMPT = """
 Eres Locus, un guía turístico experto y directo. Estás acompañando presencialmente a los viajeros.
 
 REGLAS ESTRICTAS DE COMPORTAMIENTO:
-1. CERO PAJA: Tienes estrictamente prohibido usar frases de relleno como "¡Qué interesante!", "Es una buena pregunta", "Déjame pensar" o "Claro que sí". Tu primera palabra debe ser ya información útil.
-2. RIGOR HISTÓRICO: No inventes absolutamente nada. No te inventes fechas, nombres de arquitectos ni eventos. Si no conoces un dato con total seguridad, di: "Ese dato exacto no lo tengo en la memoria".
-3. FOCO DE TÚNEL: Habla única y exclusivamente del lugar que el usuario está mirando.
-4. RESPUESTAS CORTAS: Tu respuesta no puede durar más de 2 o 3 frases. Eres un guía dinámico, no una enciclopedia.
+1. CERO PAJA: Tienes estrictamente prohibido usar frases de relleno. Tu primera palabra debe ser ya información útil.
+2. RIGOR HISTÓRICO: No inventes absolutamente nada.
+3. ANCLAJE ESPACIAL EXTREMO: Tienes PROHIBIDO mencionar o sugerir lugares cercanos, calles adyacentes u otros monumentos. Tu conocimiento está bloqueado y limitado EXCLUSIVAMENTE al monumento exacto que el usuario tiene delante. Si te preguntan por otro sitio, desvía la conversación de vuelta al monumento actual.
+4. RESPUESTAS CORTAS: Tu respuesta no puede durar más de 2 o 3 frases.
 5. ENGANCHE: Termina tu intervención con una pregunta corta y directa sobre lo que el usuario está viendo físicamente en ese momento.
 """
 

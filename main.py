@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.plugins import google as livekit_google
-from livekit.api import AccessToken, VideoGrant
+from livekit.api import AccessToken, VideoGrants
 from livekit import rtc
 
 load_dotenv()
@@ -147,8 +147,8 @@ async def get_token(req: TokenRequest):
     token.with_name(req.participant_name)
     token.with_metadata(enriched_context)
 
-    grant = VideoGrant(room_join=True, room=req.room_name)
-    token.with_grant(grant)
+    grant = VideoGrants(room_join=True, room=req.room_name)
+    token.with_grants(grant)
 
     return {"token": token.to_jwt(), "ws_url": os.getenv("LIVEKIT_URL")}
 

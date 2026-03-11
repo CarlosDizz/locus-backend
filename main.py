@@ -191,7 +191,15 @@ async def entrypoint(ctx: JobContext):
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(p: rtc.RemoteParticipant):
         if not ctx.room.remote_participants:
-            asyncio.create_task(ctx.room.disconnect())
+            async def graceful_shutdown():
+                # TRUCO DE MAGIA: Le damos 3 segundos al agente para que se despida
+                # y cierre su WebSocket con Gemini de forma limpia antes de desenchufar la sala.
+                await asyncio.sleep(3)
+                try:
+                    await ctx.room.disconnect()
+                except Exception:
+                    pass
+            asyncio.create_task(graceful_shutdown())
 
     @ctx.room.on("data_received")
     def on_data_received(data_packet: rtc.DataPacket):

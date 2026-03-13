@@ -186,6 +186,7 @@ async def entrypoint(ctx: JobContext):
         )
     )
 
+
     agent = Agent(instructions=dynamic_prompt)
     await session.start(agent=agent, room=ctx.room)
 

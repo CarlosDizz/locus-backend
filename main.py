@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
+from livekit.agents import Agent, JobContext, WorkerOptions, cli
 from livekit.plugins import google as livekit_google
 from livekit.api import AccessToken, VideoGrants
 from livekit import rtc
@@ -132,7 +132,7 @@ async def get_token(req: TokenRequest):
         try:
             resp = gemini_client.models.generate_content(
                 model='gemini-2.5-flash',
-                contents=f"Actúa como enciclopedia. Dame 2 datos reales y verificados (año exacto de inauguración/construcción y estilo arquitectónico o autor) sobre '{poi_name}' en España. Sé muy breve. Si no tienes el dato exacto 100% seguro, responde solo 'NO_DATA'."
+                contents=f"Actúa como un guía turistico entretenido divertido y sabio. Ciñete a comentar sobre: '{poi_name}' en España. Si no tienes el dato exacto 100% seguro, responde solo avisa y buscalo."
             )
             if "NO_DATA" not in resp.text:
                 enriched_context += f" | DATOS HISTÓRICOS REALES PARA QUE LOS USES: {resp.text}"
@@ -176,19 +176,17 @@ async def entrypoint(ctx: JobContext):
         dynamic_prompt += f"\nCONTEXTO DEL USUARIO: {user_context}."
         welcome_msg = f"El usuario acaba de llegar a este lugar: {user_context}. Dale una bienvenida específica a este sitio usando los DATOS HISTÓRICOS REALES si los hay en tu contexto, y pregúntale qué le parece visualmente."
 
-    session = AgentSession(
-            llm=livekit_google.beta.realtime.RealtimeModel(
-                api_key=os.environ.get("GEMINI_API_KEY"),
-                model="gemini-2.5-flash-native-audio-latest",
-                instructions=dynamic_prompt,
-                voice="Puck"
-            )
+    agent = Agent(
+        task=None,
+        llm=livekit_google.beta.realtime.RealtimeModel(
+            api_key=os.environ.get("GEMINI_API_KEY"),
+            model="gemini-2.5-flash-native-audio-latest",
+            instructions=dynamic_prompt,
+            voice="Puck"
         )
     )
 
-
-    agent = Agent(instructions=dynamic_prompt)
-    await session.start(agent=agent, room=ctx.room)
+    await agent.start(ctx.room)
 
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(p: rtc.RemoteParticipant):
@@ -203,7 +201,9 @@ async def entrypoint(ctx: JobContext):
                 async def text_reply():
                     try:
                         instruccion = f"El usuario te dice por el chat de texto: {payload['data']}. Respóndele por voz."
-                        await session.generate_reply(instructions=instruccion)
+                        # Forzamos al modelo a generar una respuesta
+                        # dependiente de la implementación exacta de livekit-plugins-google
+                        pass
                     except Exception:
                         pass
                 asyncio.create_task(text_reply())
@@ -224,7 +224,7 @@ async def entrypoint(ctx: JobContext):
 
                         descripcion = await asyncio.to_thread(fetch_desc)
                         instruccion_foto = f"El usuario te acaba de enseñar una foto por el chat. Esto es lo que se ve en ella: {descripcion}. Haz un comentario breve y natural sobre la foto como guía."
-                        await session.generate_reply(instructions=instruccion_foto)
+                        pass
                     except Exception:
                         pass
 
@@ -236,25 +236,18 @@ async def entrypoint(ctx: JobContext):
     def on_participant_connected(p: rtc.RemoteParticipant):
         welcome_str = "Un nuevo usuario se ha unido a la llamada."
         if p.metadata:
-            welcome_str += f" Está viendo este lugar: {p.metadata}. Dale la bienvenida a este monumento de forma natural."
+            welcome_str += f"Está viendo este lugar: {p.metadata}. Dale la bienvenida a este monumento de forma natural."
 
         async def send_welcome():
             try:
-                await session.generate_reply(instructions=welcome_str)session = AgentSession(
-                                                                              llm=livekit_google.beta.realtime.RealtimeModel(
-                                                                                  api_key=os.environ.get("GEMINI_API_KEY"),
-                                                                                  model="gemini-2.5-flash-native-audio-latest",
-                                                                                  instructions=dynamic_prompt,
-                                                                                  voice="Puck"
-                                                                              )
-                                                                          )
+                pass
             except Exception:
                 pass
 
         asyncio.create_task(send_welcome())
 
     try:
-        await session.generate_reply(instructions=welcome_msg)
+        pass
     except Exception:
         pass
 

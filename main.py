@@ -177,13 +177,13 @@ async def entrypoint(ctx: JobContext):
         welcome_msg = f"El usuario acaba de llegar a este lugar: {user_context}. Dale una bienvenida específica a este sitio usando los DATOS HISTÓRICOS REALES si los hay en tu contexto, y pregúntale qué le parece visualmente."
 
     session = AgentSession(
-        llm=livekit_google.beta.realtime.RealtimeModel(
-            api_key=os.environ.get("GEMINI_API_KEY"),
-            model="gemini-2.5-flash-native-audio-preview-12-2025",
-            instructions=dynamic_prompt,
-            voice="Puck"
+            llm=livekit_google.beta.realtime.RealtimeModel(
+                api_key=os.environ.get("GEMINI_API_KEY"),
+                model="gemini-2.5-flash-native-audio-latest",
+                instructions=dynamic_prompt,
+                voice="Puck"
+            )
         )
-    )
 
     agent = Agent(instructions=dynamic_prompt)
     await session.start(agent=agent, room=ctx.room)
@@ -238,7 +238,14 @@ async def entrypoint(ctx: JobContext):
 
         async def send_welcome():
             try:
-                await session.generate_reply(instructions=welcome_str)
+                await session.generate_reply(instructions=welcome_str)session = AgentSession(
+                                                                              llm=livekit_google.beta.realtime.RealtimeModel(
+                                                                                  api_key=os.environ.get("GEMINI_API_KEY"),
+                                                                                  model="gemini-2.5-flash-native-audio-latest",
+                                                                                  instructions=dynamic_prompt,
+                                                                                  voice="Puck"
+                                                                              )
+                                                                          )
             except Exception:
                 pass
 

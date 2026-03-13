@@ -12,6 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
+import prompts
+
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.plugins import google as livekit_google
 from livekit.api import AccessToken, VideoGrants
@@ -86,7 +88,7 @@ async def home_chat(req: ChatRequest):
         real_pois = get_real_pois("lugares turísticos", current_lat, current_lng)
         nombres_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else "lugares cercanos"
 
-        prompt = f"Eres Locus, un guía experto. El usuario configura su ruta. Su contexto/petición es: '{req.context}'. IGNORA cualquier ciudad en su contexto y recomiéndale ÚNICAMENTE estos lugares reales a su alrededor: {nombres_pois}. Salúdale asumiendo su rol, anclado a su ubicación."
+        prompt = prompts.CHAT_SETUP_PROMPT.format(context=req.context, nombres_pois=nombres_pois)
         history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
         if real_pois:
@@ -95,12 +97,12 @@ async def home_chat(req: ChatRequest):
         real_pois = get_real_pois(req.text, current_lat, current_lng)
         nombres_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else ""
 
-        prompt = f"El usuario dice: '{req.text}'."
+        prompt = prompts.CHAT_TEXT_PROMPT.format(text=req.text)
         if real_pois:
-            prompt += f" Lugares reales encontrados cerca: {nombres_pois}. Si tu respuesta sugiere lugares, debes incluir el bloque <POIS> exacto al final."
+            prompt += prompts.CHAT_POIS_INSTRUCTION.format(nombres_pois=nombres_pois)
             pois_block = f"\n<POIS>\n{json.dumps(real_pois, ensure_ascii=False)}\n</POIS>"
         else:
-            prompt += " Responde como Locus de forma concisa."
+            prompt += prompts.CHAT_FALLBACK_INSTRUCTION
 
         history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
@@ -130,9 +132,10 @@ async def get_token(req: TokenRequest):
     if match:
         poi_name = match.group(1)
         try:
+            prompt_data = prompts.DATA_EXTRACTOR_PROMPT.format(poi_name=poi_name)
             resp = gemini_client.models.generate_content(
                 model='gemini-2.5-flash',
-                contents=f"Actúa como enciclopedia. Dame 2 datos reales y verificados (año exacto de inauguración/construcción y estilo arquitectónico o autor) sobre '{poi_name}' en España. Sé muy breve. Si no tienes el dato exacto 100% seguro, responde solo 'NO_DATA'."
+                contents=prompt_data
             )
             if "NO_DATA" not in resp.text:
                 enriched_context += f" | DATOS HISTÓRICOS REALES PARA QUE LOS USES: {resp.text}"
@@ -152,29 +155,18 @@ async def get_token(req: TokenRequest):
 
     return {"token": token.to_jwt(), "ws_url": os.getenv("LIVEKIT_URL")}
 
-SYSTEM_PROMPT = """
-Eres Locus, un guía turístico experto, carismático y directo que acompaña presencialmente al usuario.
-
-REGLAS DE ORO:
-1. CERO PAJA: Prohibido usar frases de relleno. Empieza directo con la información útil.
-2. RIGOR HISTÓRICO ABSOLUTO: NUNCA inventes fechas, siglos ni nombres.
-3. ANCLAJE ESPACIAL: Habla SOLO del monumento en el que está el usuario ahora mismo.
-4. CONCISIÓN: Respuestas de 2 frases como máximo.
-5. ENGANCHE VISUAL: Termina con una pregunta breve sobre algún detalle físico.
-"""
-
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
 
     participant = await ctx.wait_for_participant()
     user_context = participant.metadata or ""
 
-    dynamic_prompt = SYSTEM_PROMPT
-    welcome_msg = "El usuario acaba de entrar a la llamada de voz. Saluda de forma natural."
+    dynamic_prompt = prompts.VOICE_SYSTEM_PROMPT
+    welcome_msg = prompts.VOICE_WELCOME_BASE
 
     if user_context:
         dynamic_prompt += f"\nCONTEXTO DEL USUARIO: {user_context}."
-        welcome_msg = f"El usuario acaba de llegar a este lugar: {user_context}. Dale una bienvenida específica a este sitio usando los DATOS HISTÓRICOS REALES si los hay en tu contexto, y pregúntale qué le parece visualmente."
+        welcome_msg = prompts.VOICE_WELCOME_ENRICHED.format(user_context=user_context)
 
     session = AgentSession(
         llm=livekit_google.beta.realtime.RealtimeModel(
@@ -200,7 +192,7 @@ async def entrypoint(ctx: JobContext):
             if payload.get("action") == "text_chat":
                 async def text_reply():
                     try:
-                        instruccion = f"El usuario te dice por el chat de texto: {payload['data']}. Respóndele por voz."
+                        instruccion = prompts.VOICE_TEXT_CHAT.format(text=payload['data'])
                         await session.generate_reply(instructions=instruccion)
                     except Exception:
                         pass
@@ -216,12 +208,12 @@ async def entrypoint(ctx: JobContext):
                                 model='gemini-2.5-flash',
                                 contents=[
                                     types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                                    types.Part.from_text(text="Describe de forma concisa lo que se ve en esta imagen, centrándote en el aspecto arquitectónico o turístico si lo hay.")
+                                    types.Part.from_text(text=prompts.VOICE_IMAGE_DESCRIBE)
                                 ]
                             ).text
 
                         descripcion = await asyncio.to_thread(fetch_desc)
-                        instruccion_foto = f"El usuario te acaba de enseñar una foto por el chat. Esto es lo que se ve en ella: {descripcion}. Haz un comentario breve y natural sobre la foto como guía."
+                        instruccion_foto = prompts.VOICE_IMAGE_COMMENT.format(descripcion=descripcion)
                         await session.generate_reply(instructions=instruccion_foto)
                     except Exception:
                         pass
@@ -232,9 +224,9 @@ async def entrypoint(ctx: JobContext):
 
     @ctx.room.on("participant_connected")
     def on_participant_connected(p: rtc.RemoteParticipant):
-        welcome_str = "Un nuevo usuario se ha unido a la llamada."
+        welcome_str = prompts.VOICE_NEW_PARTICIPANT_BASE
         if p.metadata:
-            welcome_str += f" Está viendo este lugar: {p.metadata}. Dale la bienvenida a este monumento de forma natural."
+            welcome_str = prompts.VOICE_NEW_PARTICIPANT_ENRICHED.format(metadata=p.metadata)
 
         async def send_welcome():
             try:

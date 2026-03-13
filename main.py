@@ -110,9 +110,10 @@ async def home_chat(req: ChatRequest):
         model='gemini-2.5-flash',
         contents=history
     )
-    bot_reply = response.text
 
-    if pois_block and "<POIS>" not in bot_reply:
+    bot_reply = re.sub(r'<POIS>.*?</POIS>', '', response.text, flags=re.DOTALL)
+
+    if pois_block:
         bot_reply += pois_block
 
     history.append(types.Content(role="model", parts=[types.Part.from_text(text=bot_reply)]))

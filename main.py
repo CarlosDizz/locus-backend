@@ -19,8 +19,8 @@ import prompts
 
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.plugins import google as livekit_google
-from livekit.api import AccessToken, VideoGrants, RoomServiceClient, DeleteRoomRequest
-from livekit import rtc
+from livekit import rtc, api
+from livekit.api import AccessToken, VideoGrants
 
 load_dotenv()
 
@@ -92,6 +92,7 @@ def clean_text(text: str) -> str:
 def parse_json_loose(raw: str) -> dict:
     if not raw:
         return {}
+
     try:
         data = json.loads(raw)
         return data if isinstance(data, dict) else {}
@@ -105,6 +106,7 @@ def parse_json_loose(raw: str) -> dict:
             return data if isinstance(data, dict) else {}
         except Exception:
             return {}
+
     return {}
 
 
@@ -112,11 +114,13 @@ def recent_turns_to_text(turns: list[dict], limit: int = 10) -> str:
     selected = turns[-limit:]
     if not selected:
         return "(sin historial relevante)"
+
     lines = []
     for turn in selected:
         role = turn.get("role", "user")
         text = turn.get("text", "")
         lines.append(f"{role.upper()}: {text}")
+
     return "\n".join(lines)
 
 
@@ -124,7 +128,9 @@ def append_turn(turns: list[dict], role: str, text: str, max_turns: int = 20):
     text = clean_text(text)
     if not text:
         return
+
     turns.append({"role": role, "text": text})
+
     if len(turns) > max_turns:
         del turns[:-max_turns]
 
@@ -296,7 +302,14 @@ def analyze_turn(active_poi: str, base_context: str, verified_context: str, turn
     return data
 
 
-def answer_user(active_poi: str, base_context: str, verified_context: str, turns: list[dict], user_text: str, answer_goal: str) -> str:
+def answer_user(
+    active_poi: str,
+    base_context: str,
+    verified_context: str,
+    turns: list[dict],
+    user_text: str,
+    answer_goal: str
+) -> str:
     prompt = prompts.VOICE_DIRECT_ANSWER_PROMPT.format(
         active_poi=active_poi or "(sin POI activo)",
         base_context=base_context or "(sin contexto base)",
@@ -322,11 +335,11 @@ def ensure_room_state(room_id: str) -> dict:
     return chat_histories[room_id]
 
 
-def get_room_service_client() -> RoomServiceClient:
-    return RoomServiceClient(
-        LIVEKIT_URL,
-        LIVEKIT_API_KEY,
-        LIVEKIT_API_SECRET
+def get_livekit_api() -> api.LiveKitAPI:
+    return api.LiveKitAPI(
+        url=LIVEKIT_URL,
+        api_key=LIVEKIT_API_KEY,
+        api_secret=LIVEKIT_API_SECRET
     )
 
 
@@ -358,11 +371,11 @@ async def home_chat(req: ChatRequest):
         nearby_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else "lugares cercanos"
 
         if active_poi and not room["verified_context"]:
-          room["verified_context"] = await asyncio.to_thread(
-              build_verified_poi_context,
-              active_poi,
-              "Dar contexto inicial breve y fiable del POI activo."
-          )
+            room["verified_context"] = await asyncio.to_thread(
+                build_verified_poi_context,
+                active_poi,
+                "Dar contexto inicial breve y fiable del POI activo."
+            )
 
         prompt = prompts.CHAT_SETUP_PROMPT.format(
             user_context=req.context or "(sin contexto)",
@@ -464,14 +477,14 @@ async def end_room(req: EndRoomRequest):
     if not req.room_name:
         return {"ok": False, "error": "Falta room_name"}
 
-    room_service = get_room_service_client()
-
     try:
-        await room_service.delete_room(DeleteRoomRequest(room=req.room_name))
+        async with get_livekit_api() as lkapi:
+            await lkapi.room.delete_room(
+                api.proto_room.DeleteRoomRequest(room=req.room_name)
+            )
     except Exception as e:
         msg = str(e)
-
-        if "not found" not in msg.lower() and "room does not exist" not in msg.lower():
+        if "not found" not in msg.lower() and "does not exist" not in msg.lower():
             return {"ok": False, "error": msg}
 
     if req.room_name in chat_histories:

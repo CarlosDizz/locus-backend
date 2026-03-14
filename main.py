@@ -81,6 +81,10 @@ class LocusAgent(Agent):
         super().__init__(instructions=instructions)
 
 
+def log(message: str):
+    print(f"[LOCUS] {message}", flush=True)
+
+
 def clean_text(text: str) -> str:
     if not text:
         return ""
@@ -190,7 +194,8 @@ def get_real_pois(query: str, lat: Optional[float], lng: Optional[float]) -> lis
                 })
 
         return pois
-    except Exception:
+    except Exception as e:
+        log(f"get_real_pois error: {e}")
         return []
 
 
@@ -201,7 +206,8 @@ def generate_text(model: str, prompt_text: str) -> str:
             contents=prompt_text
         )
         return clean_text(response.text or "")
-    except Exception:
+    except Exception as e:
+        log(f"generate_text error [{model}]: {e}")
         return ""
 
 
@@ -215,7 +221,8 @@ def generate_json(model: str, prompt_text: str) -> dict:
             )
         )
         return parse_json_loose(response.text or "")
-    except Exception:
+    except Exception as e:
+        log(f"generate_json error [{model}]: {e}")
         return {}
 
 
@@ -253,10 +260,14 @@ def build_verified_poi_context(poi_name: str, answer_goal: str = "") -> str:
     cache_key = f"{poi_name}::{answer_goal}".strip()
 
     if cache_key in poi_context_cache:
+        log(f"build_verified_poi_context cache hit: {cache_key}")
         return poi_context_cache[cache_key]
+
+    log(f"build_verified_poi_context START poi={poi_name} goal={answer_goal}")
 
     raw_text = fetch_wikipedia_summary_es(poi_name)
     if not raw_text:
+        log(f"build_verified_poi_context NO_WIKI poi={poi_name}")
         return ""
 
     prompt = prompts.DATA_EXTRACTOR_PROMPT.format(
@@ -268,6 +279,9 @@ def build_verified_poi_context(poi_name: str, answer_goal: str = "") -> str:
     verified_context = generate_text(CONTENT_MODEL, prompt)
     if verified_context:
         poi_context_cache[cache_key] = verified_context
+        log(f"build_verified_poi_context END OK poi={poi_name}")
+    else:
+        log(f"build_verified_poi_context END EMPTY poi={poi_name}")
 
     return verified_context
 
@@ -375,8 +389,8 @@ async def publish_agent_message(ctx: JobContext, text: str):
             payload.encode("utf-8"),
             reliable=True
         )
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"publish_agent_message error: {e}")
 
 
 @app.get("/health")
@@ -579,12 +593,14 @@ async def entrypoint(ctx: JobContext):
             return
 
         async with speech_lock:
+            log(f"speak_text START text={text[:120]}")
             instructions = (
                 "Di exactamente el siguiente texto, sin añadir información nueva, "
                 "sin meter otros lugares y manteniendo un tono natural de guía turístico:\n\n"
                 f"{text}"
             )
             await session.generate_reply(instructions=instructions)
+            log("speak_text END")
 
     async def process_user_turn(
         user_text: str = "",
@@ -594,65 +610,107 @@ async def entrypoint(ctx: JobContext):
         publish_response: bool = True
     ):
         async with turn_lock:
-            user_turn = build_user_turn_text(
-                user_text=user_text,
-                image_description=image_description
-            )
+            try:
+                user_turn = build_user_turn_text(
+                    user_text=user_text,
+                    image_description=image_description
+                )
 
-            append_turn(state["history"], "user", user_turn)
+                log(f"TURN START source={source}")
+                log(f"TURN user_turn={user_turn[:300]}")
 
-            analysis = await asyncio.to_thread(
-                analyze_turn,
-                state["active_poi"],
-                state["base_context"],
-                state["verified_context"],
-                state["history"],
-                user_turn
-            )
+                append_turn(state["history"], "user", user_turn)
 
-            needs_retrieval = bool(analysis.get("needs_retrieval")) and bool(state["active_poi"])
-
-            if needs_retrieval:
-                retrieval_task = asyncio.create_task(
+                log("analyze_turn START")
+                analysis = await asyncio.wait_for(
                     asyncio.to_thread(
-                        build_verified_poi_context,
+                        analyze_turn,
                         state["active_poi"],
-                        analysis.get("answer_goal", user_text or image_description)
-                    )
+                        state["base_context"],
+                        state["verified_context"],
+                        state["history"],
+                        user_turn
+                    ),
+                    timeout=12
                 )
+                log(f"analyze_turn END analysis={analysis}")
 
-                bridge_phrase = clean_text(
-                    analysis.get("bridge_phrase") or prompts.VOICE_BRIDGE_FALLBACK
+                needs_retrieval = bool(analysis.get("needs_retrieval")) and bool(state["active_poi"])
+
+                if needs_retrieval:
+                    log("retrieval START")
+
+                    retrieval_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            build_verified_poi_context,
+                            state["active_poi"],
+                            analysis.get("answer_goal", user_text or image_description)
+                        )
+                    )
+
+                    bridge_phrase = clean_text(
+                        analysis.get("bridge_phrase") or prompts.VOICE_BRIDGE_FALLBACK
+                    )
+
+                    if publish_response:
+                        await publish_agent_message(ctx, bridge_phrase)
+                    if speak_response:
+                        await speak_text(bridge_phrase)
+
+                    verified_context = await asyncio.wait_for(retrieval_task, timeout=12)
+
+                    if verified_context:
+                        state["verified_context"] = verified_context
+                        log("retrieval END OK")
+                    else:
+                        log("retrieval END EMPTY")
+
+                log("answer_user START")
+                final_answer = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        answer_user,
+                        state["active_poi"],
+                        state["base_context"],
+                        state["verified_context"],
+                        state["history"],
+                        user_turn,
+                        analysis.get("answer_goal", "")
+                    ),
+                    timeout=15
                 )
+                log(f"answer_user END final_answer={final_answer[:250]}")
+
+                if not final_answer:
+                    final_answer = "No tengo ese dato confirmado con suficiente seguridad, pero puedo seguir ayudándote con este lugar."
+
+                append_turn(state["history"], "assistant", final_answer)
 
                 if publish_response:
-                    await publish_agent_message(ctx, bridge_phrase)
+                    await publish_agent_message(ctx, final_answer)
                 if speak_response:
-                    await speak_text(bridge_phrase)
+                    await speak_text(final_answer)
 
-                verified_context = await retrieval_task
-                if verified_context:
-                    state["verified_context"] = verified_context
+                log("TURN END OK")
 
-            final_answer = await asyncio.to_thread(
-                answer_user,
-                state["active_poi"],
-                state["base_context"],
-                state["verified_context"],
-                state["history"],
-                user_turn,
-                analysis.get("answer_goal", "")
-            )
+            except asyncio.TimeoutError:
+                log("TURN TIMEOUT")
+                fallback = "Estoy tardando demasiado en afinar esa respuesta. Prueba a preguntármelo de forma más concreta."
+                append_turn(state["history"], "assistant", fallback)
 
-            if not final_answer:
-                final_answer = "No tengo ese dato confirmado con suficiente seguridad, pero puedo seguir ayudándote con este lugar."
+                if publish_response:
+                    await publish_agent_message(ctx, fallback)
+                if speak_response:
+                    await speak_text(fallback)
 
-            append_turn(state["history"], "assistant", final_answer)
+            except Exception as e:
+                log(f"TURN ERROR {e}")
+                fallback = "Se me ha cruzado ese turno. Vuelve a decírmelo y te contesto."
+                append_turn(state["history"], "assistant", fallback)
 
-            if publish_response:
-                await publish_agent_message(ctx, final_answer)
-            if speak_response:
-                await speak_text(final_answer)
+                if publish_response:
+                    await publish_agent_message(ctx, fallback)
+                if speak_response:
+                    await speak_text(fallback)
 
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(p: rtc.RemoteParticipant):
@@ -663,25 +721,29 @@ async def entrypoint(ctx: JobContext):
     def on_data_received(data_packet: rtc.DataPacket):
         try:
             payload = json.loads(data_packet.data.decode("utf-8"))
+            log(f"data_received action={payload.get('action')}")
 
             if payload.get("action") == "text_chat":
                 async def handle_text_chat():
                     try:
+                        text = payload.get("data", "")
+                        log(f"TEXT_CHAT recibido text={text}")
                         await process_user_turn(
-                            user_text=payload.get("data", ""),
+                            user_text=text,
                             image_description="",
                             source="text",
                             speak_response=True,
                             publish_response=True
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log(f"handle_text_chat error: {e}")
 
                 asyncio.create_task(handle_text_chat())
 
             elif payload.get("action") == "guest_audio":
                 async def handle_guest_audio():
                     try:
+                        log("guest_audio START")
                         audio_bytes = base64.b64decode(payload["data"])
                         mime_type = payload.get("mime_type", "audio/webm")
 
@@ -701,7 +763,12 @@ async def entrypoint(ctx: JobContext):
                             )
                             return clean_text(resp.text or "")
 
-                        transcription = await asyncio.to_thread(transcribe)
+                        transcription = await asyncio.wait_for(
+                            asyncio.to_thread(transcribe),
+                            timeout=15
+                        )
+
+                        log(f"guest_audio transcription={transcription}")
 
                         if transcription:
                             chat_msg = json.dumps({
@@ -720,14 +787,15 @@ async def entrypoint(ctx: JobContext):
                                 speak_response=True,
                                 publish_response=True
                             )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log(f"handle_guest_audio error: {e}")
 
                 asyncio.create_task(handle_guest_audio())
 
             elif payload.get("action") == "image_context":
                 async def handle_image():
                     try:
+                        log("image_context START")
                         image_bytes = base64.b64decode(payload["data"])
                         mime_type = payload.get("mime_type", "image/jpeg")
                         text_hint = clean_text(payload.get("text", ""))
@@ -742,7 +810,12 @@ async def entrypoint(ctx: JobContext):
                             )
                             return clean_text(resp.text or "")
 
-                        image_description = await asyncio.to_thread(describe_image)
+                        image_description = await asyncio.wait_for(
+                            asyncio.to_thread(describe_image),
+                            timeout=15
+                        )
+
+                        log(f"image_context description={image_description[:250]}")
 
                         await process_user_turn(
                             user_text=text_hint,
@@ -751,8 +824,8 @@ async def entrypoint(ctx: JobContext):
                             speak_response=True,
                             publish_response=True
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log(f"handle_image error: {e}")
 
                 asyncio.create_task(handle_image())
 
@@ -763,24 +836,29 @@ async def entrypoint(ctx: JobContext):
                         if not new_context:
                             return
 
+                        log(f"update_poi_context START new_context={new_context[:250]}")
                         state["base_context"] = new_context
                         new_poi = extract_current_poi_name(new_context)
 
                         if new_poi and new_poi != state["active_poi"]:
                             state["active_poi"] = new_poi
-                            state["verified_context"] = await asyncio.to_thread(
-                                build_verified_poi_context,
-                                new_poi,
-                                "Actualizar contexto factual del nuevo POI activo."
+                            state["verified_context"] = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    build_verified_poi_context,
+                                    new_poi,
+                                    "Actualizar contexto factual del nuevo POI activo."
+                                ),
+                                timeout=12
                             )
                             state["history"] = []
-                    except Exception:
-                        pass
+                            log(f"update_poi_context END active_poi={new_poi}")
+                    except Exception as e:
+                        log(f"handle_update_poi_context error: {e}")
 
                 asyncio.create_task(handle_update_poi_context())
 
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"data_received parse error: {e}")
 
     try:
         welcome_prompt = prompts.VOICE_WELCOME_PROMPT
@@ -792,8 +870,8 @@ async def entrypoint(ctx: JobContext):
             append_turn(state["history"], "assistant", welcome_text)
             await publish_agent_message(ctx, welcome_text)
             await speak_text(welcome_text)
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"welcome error: {e}")
 
 
 if __name__ == "__main__":

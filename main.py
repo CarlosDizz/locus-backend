@@ -87,7 +87,7 @@ async def entrypoint(ctx: JobContext):
                 # Usamos generate_reply para que Gemini responda al texto
                 asyncio.create_task(session.generate_reply(instructions=payload['data']))
             elif payload.get("action") == "image_context":
-                image_bytes = base64.b64decode(payload["data"])
+      √          image_bytes = base64.b64decode(payload["data"])
                 async def process_image():
                     try:
                         desc_resp = gemini_client.models.generate_content(

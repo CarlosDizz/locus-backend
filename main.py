@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import urllib.parse
 import base64
 import asyncio
 import requests
@@ -20,10 +21,8 @@ from livekit import rtc
 
 load_dotenv()
 
-# Cliente de Gemini para chat de texto y descripción de imágenes
 gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# Memoria temporal para el chat de la home
 chat_histories = {}
 
 app = FastAPI(title="Locus API")
@@ -37,11 +36,6 @@ class ChatRequest(BaseModel):
     text: str = ""
     lat: float = None
     lng: float = None
-
-class TokenRequest(BaseModel):
-    participant_name: str
-    room_name: str
-    poi_context: str = ""
 
 def get_real_pois(query, lat, lng):
     api_key = os.environ.get("MAPS_API_KEY")
@@ -113,7 +107,7 @@ async def home_chat(req: ChatRequest):
         history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
     response = gemini_client.models.generate_content(
-        model='gemini-2.0-flash', # Texto usa flash normal por velocidad
+        model='gemini-2.5-flash',
         contents=history
     )
 
@@ -126,22 +120,38 @@ async def home_chat(req: ChatRequest):
 
     return {"reply": bot_reply}
 
+class TokenRequest(BaseModel):
+    participant_name: str
+    room_name: str
+    poi_context: str = ""
+
 @app.post("/get_token")
 async def get_token(req: TokenRequest):
+    enriched_context = req.poi_context
+    match = re.search(r'Viendo:\s*(.*?)\.\s*Detalles', req.poi_context)
+
+    if match:
+        poi_name = match.group(1)
+        try:
+            prompt_data = prompts.DATA_EXTRACTOR_PROMPT.format(poi_name=poi_name)
+            resp = gemini_client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt_data
+            )
+            if "NO_DATA" not in resp.text:
+                enriched_context += f" | DATOS HISTÓRICOS REALES PARA QUE LOS USES: {resp.text}"
+        except:
+            pass
+
     token = AccessToken(
         os.getenv("LIVEKIT_API_KEY"),
         os.getenv("LIVEKIT_API_SECRET")
     )
     token.with_identity(req.participant_name)
-    token.with_metadata(req.poi_context)
+    token.with_name(req.participant_name)
+    token.with_metadata(enriched_context)
 
-    grant = VideoGrants(
-        room_join=True,
-        room=req.room_name,
-        can_publish=True,
-        can_subscribe=True,
-        can_publish_data=True
-    )
+    grant = VideoGrants(room_join=True, room=req.room_name)
     token.with_grants(grant)
 
     return {"token": token.to_jwt(), "ws_url": os.getenv("LIVEKIT_URL")}
@@ -149,46 +159,88 @@ async def get_token(req: TokenRequest):
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
 
-    # Esperamos al humano para evitar el error 1008 de Policy Violation
     participant = await ctx.wait_for_participant()
+    user_context = participant.metadata or ""
 
-    # Usamos el modelo de AUDIO NATIVO LATEST que decidimos
+    dynamic_prompt = prompts.VOICE_SYSTEM_PROMPT
+    welcome_msg = prompts.VOICE_WELCOME_BASE
+
+    if user_context:
+        dynamic_prompt += f"\nCONTEXTO DEL USUARIO: {user_context}."
+        welcome_msg = prompts.VOICE_WELCOME_ENRICHED.format(user_context=user_context)
+
     session = AgentSession(
         llm=livekit_google.beta.realtime.RealtimeModel(
             api_key=os.environ.get("GEMINI_API_KEY"),
             model="gemini-2.5-flash-native-audio-latest",
-            instructions=prompts.VOICE_SYSTEM_PROMPT,
+            instructions=dynamic_prompt,
             voice="Puck"
         )
     )
 
-    agent = Agent(instructions=prompts.VOICE_SYSTEM_PROMPT)
+    agent = Agent(instructions=dynamic_prompt)
     await session.start(agent=agent, room=ctx.room)
+
+    @ctx.room.on("participant_disconnected")
+    def on_participant_disconnected(p: rtc.RemoteParticipant):
+        if not ctx.room.remote_participants:
+            asyncio.create_task(ctx.room.disconnect())
 
     @ctx.room.on("data_received")
     def on_data_received(data_packet: rtc.DataPacket):
         try:
             payload = json.loads(data_packet.data.decode("utf-8"))
             if payload.get("action") == "text_chat":
-                asyncio.create_task(session.generate_reply(instructions=payload['data']))
+                async def text_reply():
+                    try:
+                        instruccion = prompts.VOICE_TEXT_CHAT.format(text=payload['data'])
+                        await session.generate_reply(instructions=instruccion)
+                    except Exception:
+                        pass
+                asyncio.create_task(text_reply())
             elif payload.get("action") == "image_context":
+                mime_type = payload.get("mime_type", "image/jpeg")
                 image_bytes = base64.b64decode(payload["data"])
+
                 async def process_image():
                     try:
-                        desc = gemini_client.models.generate_content(
-                            model='gemini-2.0-flash',
-                            contents=[
-                                types.Part.from_bytes(data=image_bytes, mime_type=payload.get("mime_type", "image/jpeg")),
-                                types.Part.from_text(text=prompts.VOICE_IMAGE_DESCRIBE)
-                            ]
-                        ).text
-                        await session.generate_reply(instructions=prompts.VOICE_IMAGE_COMMENT.format(descripcion=desc))
-                    except: pass
-                asyncio.create_task(process_image())
-        except: pass
+                        def fetch_desc():
+                            return gemini_client.models.generate_content(
+                                model='gemini-2.5-flash',
+                                contents=[
+                                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                                    types.Part.from_text(text=prompts.VOICE_IMAGE_DESCRIBE)
+                                ]
+                            ).text
 
-    # Bienvenida inicial
-    await session.generate_reply(instructions=prompts.VOICE_WELCOME_BASE)
+                        descripcion = await asyncio.to_thread(fetch_desc)
+                        instruccion_foto = prompts.VOICE_IMAGE_COMMENT.format(descripcion=descripcion)
+                        await session.generate_reply(instructions=instruccion_foto)
+                    except Exception:
+                        pass
+
+                    asyncio.create_task(process_image())
+        except Exception:
+            pass
+
+    @ctx.room.on("participant_connected")
+    def on_participant_connected(p: rtc.RemoteParticipant):
+        welcome_str = prompts.VOICE_NEW_PARTICIPANT_BASE
+        if p.metadata:
+            welcome_str = prompts.VOICE_NEW_PARTICIPANT_ENRICHED.format(metadata=p.metadata)
+
+        async def send_welcome():
+            try:
+                await session.generate_reply(instructions=welcome_str)
+            except Exception:
+                pass
+
+        asyncio.create_task(send_welcome())
+
+    try:
+        await session.generate_reply(instructions=welcome_msg)
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))

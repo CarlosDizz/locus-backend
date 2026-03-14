@@ -253,6 +253,28 @@ def fetch_wikipedia_summary_es(query: str) -> str:
     return ""
 
 
+def build_verified_context_from_text(subject_name: str, raw_text: str, answer_goal: str = "") -> str:
+    if not subject_name or not raw_text:
+        return ""
+
+    cache_key = f"RAW::{subject_name}::{answer_goal}".strip()
+    if cache_key in poi_context_cache:
+        log(f"build_verified_context_from_text cache hit: {cache_key}")
+        return poi_context_cache[cache_key]
+
+    prompt = prompts.DATA_EXTRACTOR_PROMPT.format(
+        poi_name=subject_name,
+        answer_goal=answer_goal or "",
+        raw_text=raw_text
+    )
+
+    verified_context = generate_text(CONTENT_MODEL, prompt)
+    if verified_context:
+        poi_context_cache[cache_key] = verified_context
+
+    return verified_context
+
+
 def build_verified_poi_context(poi_name: str, answer_goal: str = "") -> str:
     if not poi_name:
         return ""
@@ -270,13 +292,12 @@ def build_verified_poi_context(poi_name: str, answer_goal: str = "") -> str:
         log(f"build_verified_poi_context NO_WIKI poi={poi_name}")
         return ""
 
-    prompt = prompts.DATA_EXTRACTOR_PROMPT.format(
-        poi_name=poi_name,
-        answer_goal=answer_goal or "",
-        raw_text=raw_text
+    verified_context = build_verified_context_from_text(
+        subject_name=poi_name,
+        raw_text=raw_text,
+        answer_goal=answer_goal
     )
 
-    verified_context = generate_text(CONTENT_MODEL, prompt)
     if verified_context:
         poi_context_cache[cache_key] = verified_context
         log(f"build_verified_poi_context END OK poi={poi_name}")
@@ -284,6 +305,75 @@ def build_verified_poi_context(poi_name: str, answer_goal: str = "") -> str:
         log(f"build_verified_poi_context END EMPTY poi={poi_name}")
 
     return verified_context
+
+
+def build_verified_context_from_query(query: str, fallback_name: str, answer_goal: str = "") -> str:
+    query = clean_text(query)
+    fallback_name = clean_text(fallback_name)
+
+    if not query:
+        return build_verified_poi_context(fallback_name, answer_goal)
+
+    cache_key = f"QUERY::{query}::{answer_goal}".strip()
+    if cache_key in poi_context_cache:
+        log(f"build_verified_context_from_query cache hit: {cache_key}")
+        return poi_context_cache[cache_key]
+
+    log(f"build_verified_context_from_query START query={query} fallback={fallback_name}")
+
+    raw_text = fetch_wikipedia_summary_es(query)
+
+    if not raw_text and fallback_name:
+        raw_text = fetch_wikipedia_summary_es(fallback_name)
+
+    if not raw_text:
+        log("build_verified_context_from_query NO_WIKI")
+        return ""
+
+    subject_name = query if len(query) <= 120 else fallback_name
+
+    verified_context = build_verified_context_from_text(
+        subject_name=subject_name or fallback_name or "contexto",
+        raw_text=raw_text,
+        answer_goal=answer_goal
+    )
+
+    if verified_context:
+        poi_context_cache[cache_key] = verified_context
+        log("build_verified_context_from_query END OK")
+    else:
+        log("build_verified_context_from_query END EMPTY")
+
+    return verified_context
+
+
+def infer_sub_poi(user_text: str) -> str:
+    text = clean_text(user_text).lower()
+    if not text:
+        return ""
+
+    patterns = [
+        r"estoy en (.+)",
+        r"estamos en (.+)",
+        r"veo (.+)",
+        r"tengo delante (.+)",
+        r"estoy junto a (.+)",
+        r"estoy al lado de (.+)",
+        r"quiero saber más del? (.+)",
+        r"háblame del? (.+)",
+        r"hablame del? (.+)",
+        r"sobre el? (.+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            value = clean_text(match.group(1))
+            value = re.sub(r"^(el|la|los|las|un|una)\s+", "", value, flags=re.IGNORECASE)
+            if value:
+                return value
+
+    return ""
 
 
 def build_user_turn_text(user_text: str = "", image_description: str = "") -> str:
@@ -441,9 +531,12 @@ async def home_chat(req: ChatRequest):
         user_turn
     )
 
-    if analysis.get("needs_retrieval") and active_poi:
+    retrieval_target = analysis.get("retrieval_query", "") or active_poi
+
+    if analysis.get("needs_retrieval") and retrieval_target:
         verified_context = await asyncio.to_thread(
-            build_verified_poi_context,
+            build_verified_context_from_query,
+            retrieval_target,
             active_poi,
             analysis.get("answer_goal", req.text or "")
         )
@@ -567,14 +660,20 @@ async def entrypoint(ctx: JobContext):
         "active_poi": active_poi,
         "verified_context": initial_verified_context,
         "history": [],
+        "welcome_token": 0,
+        "turn_counter": 0,
     }
 
-    async def speak_text(text: str):
+    async def speak_text(text: str, token: Optional[int] = None):
         text = clean_text(text)
         if not text:
             return
 
         async with speech_lock:
+            if token is not None and token != state["welcome_token"]:
+                log(f"speak_text SKIP stale token={token} current={state['welcome_token']}")
+                return
+
             log(f"speak_text START text={text[:120]}")
             instructions = (
                 "Di exactamente el siguiente texto, sin añadir información nueva, "
@@ -592,6 +691,16 @@ async def entrypoint(ctx: JobContext):
     ):
         async with turn_lock:
             try:
+                state["turn_counter"] += 1
+                state["welcome_token"] += 1
+
+                clean_user_text = clean_text(user_text)
+                sub_poi = infer_sub_poi(clean_user_text)
+                if sub_poi:
+                    log(f"SUB_POI detected={sub_poi}")
+                    state["base_context"] += f"\n\nSUBLUGAR ACTUAL DETECTADO EN ESTA VISITA:\n{sub_poi}"
+                    state["history"] = state["history"][-8:]
+
                 user_turn = build_user_turn_text(
                     user_text=user_text,
                     image_description=image_description
@@ -602,11 +711,15 @@ async def entrypoint(ctx: JobContext):
 
                 append_turn(state["history"], "user", user_turn)
 
+                effective_focus = state["active_poi"]
+                if sub_poi:
+                    effective_focus = f"{sub_poi} ({state['active_poi']})" if state["active_poi"] else sub_poi
+
                 log("analyze_turn START")
                 analysis = await asyncio.wait_for(
                     asyncio.to_thread(
                         analyze_turn,
-                        state["active_poi"],
+                        effective_focus,
                         state["base_context"],
                         state["verified_context"],
                         state["history"],
@@ -616,16 +729,21 @@ async def entrypoint(ctx: JobContext):
                 )
                 log(f"analyze_turn END analysis={analysis}")
 
-                needs_retrieval = bool(analysis.get("needs_retrieval")) and bool(state["active_poi"])
+                retrieval_target = clean_text(analysis.get("retrieval_query", ""))
+                if not retrieval_target:
+                    retrieval_target = sub_poi or state["active_poi"]
+
+                needs_retrieval = bool(analysis.get("needs_retrieval")) and bool(retrieval_target)
 
                 if needs_retrieval:
-                    log("retrieval START")
+                    log(f"retrieval START target={retrieval_target}")
 
                     retrieval_task = asyncio.create_task(
                         asyncio.to_thread(
-                            build_verified_poi_context,
+                            build_verified_context_from_query,
+                            retrieval_target,
                             state["active_poi"],
-                            analysis.get("answer_goal", user_text or image_description)
+                            analysis.get("answer_goal", clean_user_text or image_description)
                         )
                     )
 
@@ -648,7 +766,7 @@ async def entrypoint(ctx: JobContext):
                 final_answer = await asyncio.wait_for(
                     asyncio.to_thread(
                         answer_user,
-                        state["active_poi"],
+                        effective_focus,
                         state["base_context"],
                         state["verified_context"],
                         state["history"],
@@ -821,6 +939,7 @@ async def entrypoint(ctx: JobContext):
                                 timeout=12
                             )
                             state["history"] = []
+                            state["welcome_token"] += 1
                             log(f"update_poi_context END active_poi={new_poi}")
                     except Exception as e:
                         log(f"handle_update_poi_context error: {e}")
@@ -838,7 +957,8 @@ async def entrypoint(ctx: JobContext):
 
         if welcome_text:
             append_turn(state["history"], "assistant", welcome_text)
-            await speak_text(welcome_text)
+            current_token = state["welcome_token"]
+            asyncio.create_task(speak_text(welcome_text, token=current_token))
     except Exception as e:
         log(f"welcome error: {e}")
 

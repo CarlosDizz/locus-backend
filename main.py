@@ -161,6 +161,44 @@ def extract_current_poi_name(context_text: str) -> str:
     return ""
 
 
+def get_real_pois(query: str, lat: Optional[float], lng: Optional[float]) -> list[dict]:
+    if not MAPS_API_KEY:
+        return []
+
+    url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+    params = {
+        "query": query,
+        "key": MAPS_API_KEY,
+    }
+
+    if lat is not None and lng is not None:
+        params["location"] = f"{lat},{lng}"
+        params["radius"] = 2000
+
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code != 200:
+            return []
+
+        results = resp.json().get("results", [])[:3]
+        pois = []
+
+        for r in results:
+            geometry = r.get("geometry", {}).get("location", {})
+            if "lat" in geometry and "lng" in geometry:
+                pois.append({
+                    "name": r.get("name"),
+                    "lat": geometry["lat"],
+                    "lng": geometry["lng"],
+                    "description": r.get("formatted_address", "")
+                })
+
+        return pois
+    except Exception as e:
+        log(f"get_real_pois error: {e}")
+        return []
+
+
 def generate_text(model: str, prompt_text: str) -> str:
     try:
         response = gemini_client.models.generate_content(
@@ -450,18 +488,38 @@ async def home_chat(req: ChatRequest):
     history = room["history"]
 
     if req.action == "setup_profile":
+        real_pois = get_real_pois("lugares turísticos", room["lat"], room["lng"])
+        nearby_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else "lugares cercanos"
+
+        if active_poi and not room["verified_context"]:
+            room["verified_context"] = await asyncio.to_thread(
+                build_verified_poi_context,
+                active_poi,
+                "Dar contexto inicial breve y fiable del POI activo."
+            )
+
         prompt = prompts.CHAT_SETUP_PROMPT.format(
             user_context=req.context or "(sin contexto)",
             active_poi=active_poi or "(sin POI activo)",
-            nearby_pois="lugares cercanos"
+            nearby_pois=nearby_pois
         )
 
         reply = await asyncio.to_thread(generate_text, CONTENT_MODEL, prompt)
         append_turn(history, "assistant", reply)
-        return {"reply": reply}
+
+        pois_block = ""
+        if real_pois:
+            pois_block = f"\n<POIS>{json.dumps(real_pois, ensure_ascii=False)}</POIS>"
+
+        return {"reply": (reply + pois_block).strip()}
 
     user_turn = build_user_turn_text(user_text=req.text, image_description="")
     append_turn(history, "user", user_turn)
+
+    real_pois = get_real_pois(req.text or "", room["lat"], room["lng"])
+    pois_block = ""
+    if real_pois:
+        pois_block = f"\n<POIS>{json.dumps(real_pois, ensure_ascii=False)}</POIS>"
 
     analysis = await asyncio.to_thread(
         analyze_turn,
@@ -498,7 +556,7 @@ async def home_chat(req: ChatRequest):
         reply = "No tengo ese dato confirmado ahora mismo, pero puedo contarte lo que sí sé del lugar."
 
     append_turn(history, "assistant", reply)
-    return {"reply": reply}
+    return {"reply": (reply + pois_block).strip()}
 
 
 @app.post("/get_token")

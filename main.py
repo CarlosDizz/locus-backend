@@ -19,7 +19,7 @@ import prompts
 
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.plugins import google as livekit_google
-from livekit.api import AccessToken, VideoGrants
+from livekit.api import AccessToken, VideoGrants, RoomServiceClient, DeleteRoomRequest
 from livekit import rtc
 
 load_dotenv()
@@ -36,6 +36,9 @@ CONTENT_MODEL = os.environ.get("CONTENT_MODEL", "gemini-3-flash-preview")
 
 if not GEMINI_API_KEY:
     raise RuntimeError("Falta GEMINI_API_KEY")
+
+if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET or not LIVEKIT_URL:
+    raise RuntimeError("Faltan credenciales/config de LiveKit")
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -65,6 +68,12 @@ class TokenRequest(BaseModel):
     participant_name: str
     room_name: str
     poi_context: str = ""
+
+
+class EndRoomRequest(BaseModel):
+    room_name: str
+    requester_role: str
+    requester_id: str = ""
 
 
 class LocusAgent(Agent):
@@ -127,6 +136,7 @@ def extract_current_poi_name(context_text: str) -> str:
     patterns = [
         r"Viendo:\s*(.*?)\.\s*Detalles",
         r"Viendo:\s*(.*?)(?:\.|$)",
+        r"Lugar actual:\s*(.*?)(?:\.|$)",
         r"POI:\s*(.*?)(?:\.|$)",
         r"Lugar:\s*(.*?)(?:\.|$)",
     ]
@@ -210,9 +220,7 @@ def fetch_wikipedia_summary_es(query: str) -> str:
     wikipedia.set_lang("es")
 
     candidates = [query]
-    if query.lower().startswith("pasaje de "):
-        candidates.append(query)
-    else:
+    if not query.lower().startswith("pasaje de "):
         candidates.append(f"Pasaje de {query}")
 
     for candidate in candidates:
@@ -314,6 +322,14 @@ def ensure_room_state(room_id: str) -> dict:
     return chat_histories[room_id]
 
 
+def get_room_service_client() -> RoomServiceClient:
+    return RoomServiceClient(
+        LIVEKIT_URL,
+        LIVEKIT_API_KEY,
+        LIVEKIT_API_SECRET
+    )
+
+
 @app.get("/health")
 async def health():
     return {"ok": True}
@@ -342,11 +358,11 @@ async def home_chat(req: ChatRequest):
         nearby_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else "lugares cercanos"
 
         if active_poi and not room["verified_context"]:
-            room["verified_context"] = await asyncio.to_thread(
-                build_verified_poi_context,
-                active_poi,
-                "Dar contexto inicial breve y fiable del POI activo."
-            )
+          room["verified_context"] = await asyncio.to_thread(
+              build_verified_poi_context,
+              active_poi,
+              "Dar contexto inicial breve y fiable del POI activo."
+          )
 
         prompt = prompts.CHAT_SETUP_PROMPT.format(
             user_context=req.context or "(sin contexto)",
@@ -440,6 +456,30 @@ async def get_token(req: TokenRequest):
     }
 
 
+@app.post("/end_room")
+async def end_room(req: EndRoomRequest):
+    if req.requester_role != "anfitrion":
+        return {"ok": False, "error": "Solo el anfitrión puede cerrar la sala"}
+
+    if not req.room_name:
+        return {"ok": False, "error": "Falta room_name"}
+
+    room_service = get_room_service_client()
+
+    try:
+        await room_service.delete_room(DeleteRoomRequest(room=req.room_name))
+    except Exception as e:
+        msg = str(e)
+
+        if "not found" not in msg.lower() and "room does not exist" not in msg.lower():
+            return {"ok": False, "error": msg}
+
+    if req.room_name in chat_histories:
+        del chat_histories[req.room_name]
+
+    return {"ok": True, "room_name": req.room_name}
+
+
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
 
@@ -510,7 +550,6 @@ async def entrypoint(ctx: JobContext):
             user_text
         )
 
-        retrieval_task = None
         needs_retrieval = bool(analysis.get("needs_retrieval")) and bool(state["active_poi"])
 
         if needs_retrieval:

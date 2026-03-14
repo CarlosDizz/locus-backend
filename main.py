@@ -10,7 +10,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+
 import prompts
+
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.plugins import google as livekit_google
 from livekit.api import AccessToken, VideoGrants
@@ -43,6 +45,7 @@ def get_real_pois(query, lat, lng):
     api_key = os.environ.get("MAPS_API_KEY")
     if not api_key:
         return []
+
     url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
     params = {
         "query": query,
@@ -51,11 +54,14 @@ def get_real_pois(query, lat, lng):
     if lat and lng:
         params["location"] = f"{lat},{lng}"
         params["radius"] = 2000
+
     resp = requests.get(url, params=params)
     if resp.status_code != 200:
         return []
+
     results = resp.json().get("results", [])[:3]
     pois = []
+
     for r in results:
         pois.append({
             "name": r.get("name"),
@@ -79,24 +85,29 @@ async def home_chat(req: ChatRequest):
     history = room_data["history"]
     current_lat = room_data["lat"]
     current_lng = room_data["lng"]
+
     pois_block = ""
 
     if req.action == "setup_profile":
         real_pois = get_real_pois("lugares turísticos", current_lat, current_lng)
         nombres_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else "lugares cercanos"
+
         prompt = prompts.CHAT_SETUP_PROMPT.format(context=req.context, nombres_pois=nombres_pois)
         history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
+
         if real_pois:
             pois_block = f"\n<POIS>\n{json.dumps(real_pois, ensure_ascii=False)}\n</POIS>"
     else:
         real_pois = get_real_pois(req.text, current_lat, current_lng)
         nombres_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else ""
+
         prompt = prompts.CHAT_TEXT_PROMPT.format(text=req.text)
         if real_pois:
             prompt += prompts.CHAT_POIS_INSTRUCTION.format(nombres_pois=nombres_pois)
             pois_block = f"\n<POIS>\n{json.dumps(real_pois, ensure_ascii=False)}\n</POIS>"
         else:
             prompt += prompts.CHAT_FALLBACK_INSTRUCTION
+
         history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
     response = gemini_client.models.generate_content(
@@ -105,8 +116,10 @@ async def home_chat(req: ChatRequest):
     )
 
     bot_reply = re.sub(r'<POIS>.*?</POIS>', '', response.text, flags=re.DOTALL)
+
     if pois_block:
         bot_reply += pois_block
+
     history.append(types.Content(role="model", parts=[types.Part.from_text(text=bot_reply)]))
 
     return {"reply": bot_reply}
@@ -190,6 +203,7 @@ async def entrypoint(ctx: JobContext):
                     except Exception:
                         pass
                 asyncio.create_task(text_reply())
+
             elif payload.get("action") == "image_context":
                 mime_type = payload.get("mime_type", "image/jpeg")
                 image_bytes = base64.b64decode(payload["data"])
@@ -209,6 +223,30 @@ async def entrypoint(ctx: JobContext):
                     except Exception:
                         pass
                 asyncio.create_task(process_image())
+
+            # 🟢 NUEVO: Procesamos el audio del invitado
+            elif payload.get("action") == "guest_audio":
+                audio_bytes = base64.b64decode(payload["data"])
+                mime_type = payload.get("mime_type", "audio/webm")
+
+                async def process_guest_audio():
+                    try:
+                        # Transcribimos el audio al vuelo con Gemini Flash
+                        resp = gemini_client.models.generate_content(
+                            model='gemini-2.5-flash',
+                            contents=[
+                                types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                                types.Part.from_text(text="Transcribe con precisión lo que dice la persona en este audio. Responde ÚNICAMENTE con el texto transcrito sin comillas. Si es solo ruido o no se entiende, no respondas nada.")
+                            ]
+                        )
+                        transcripcion = resp.text.strip()
+                        if transcripcion:
+                            instruccion = prompts.VOICE_TEXT_CHAT.format(text=transcripcion)
+                            await session.generate_reply(instructions=instruccion)
+                    except Exception:
+                        pass
+                asyncio.create_task(process_guest_audio())
+
         except Exception:
             pass
 
@@ -217,11 +255,13 @@ async def entrypoint(ctx: JobContext):
         welcome_str = prompts.VOICE_NEW_PARTICIPANT_BASE
         if p.metadata:
             welcome_str = prompts.VOICE_NEW_PARTICIPANT_ENRICHED.format(metadata=p.metadata)
+
         async def send_welcome():
             try:
                 await session.generate_reply(instructions=welcome_str)
             except Exception:
                 pass
+
         asyncio.create_task(send_welcome())
 
     try:

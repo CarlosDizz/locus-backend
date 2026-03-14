@@ -30,12 +30,14 @@ LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET")
 LIVEKIT_URL = os.environ.get("LIVEKIT_URL")
 MAPS_API_KEY = os.environ.get("MAPS_API_KEY")
 
+VOICE_MODEL = os.environ.get("VOICE_MODEL", "gemini-2.5-flash-native-audio-latest")
+ORCHESTRATOR_MODEL = os.environ.get("ORCHESTRATOR_MODEL", "gemini-3-flash-preview")
+CONTENT_MODEL = os.environ.get("CONTENT_MODEL", "gemini-3-flash-preview")
+
 if not GEMINI_API_KEY:
     raise RuntimeError("Falta GEMINI_API_KEY")
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-
-chat_histories = {}
 
 app = FastAPI(title="Locus API")
 app.add_middleware(
@@ -44,6 +46,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"]
 )
+
+chat_histories = {}
+poi_context_cache = {}
 
 
 class ChatRequest(BaseModel):
@@ -67,6 +72,75 @@ class LocusAgent(Agent):
         super().__init__(instructions=instructions)
 
 
+def clean_text(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def parse_json_loose(raw: str) -> dict:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+
+    match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def recent_turns_to_text(turns: list[dict], limit: int = 10) -> str:
+    selected = turns[-limit:]
+    if not selected:
+        return "(sin historial relevante)"
+    lines = []
+    for turn in selected:
+        role = turn.get("role", "user")
+        text = turn.get("text", "")
+        lines.append(f"{role.upper()}: {text}")
+    return "\n".join(lines)
+
+
+def append_turn(turns: list[dict], role: str, text: str, max_turns: int = 20):
+    text = clean_text(text)
+    if not text:
+        return
+    turns.append({"role": role, "text": text})
+    if len(turns) > max_turns:
+        del turns[:-max_turns]
+
+
+def extract_current_poi_name(context_text: str) -> str:
+    if not context_text:
+        return ""
+
+    patterns = [
+        r"Viendo:\s*(.*?)\.\s*Detalles",
+        r"Viendo:\s*(.*?)(?:\.|$)",
+        r"POI:\s*(.*?)(?:\.|$)",
+        r"Lugar:\s*(.*?)(?:\.|$)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, context_text, flags=re.IGNORECASE)
+        if match:
+            poi_name = (match.group(1) or "").strip()
+            if poi_name:
+                return poi_name
+
+    return ""
+
+
 def get_real_pois(query: str, lat: Optional[float], lng: Optional[float]) -> list[dict]:
     if not MAPS_API_KEY:
         return []
@@ -74,7 +148,7 @@ def get_real_pois(query: str, lat: Optional[float], lng: Optional[float]) -> lis
     url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
     params = {
         "query": query,
-        "key": MAPS_API_KEY
+        "key": MAPS_API_KEY,
     }
 
     if lat is not None and lng is not None:
@@ -104,91 +178,68 @@ def get_real_pois(query: str, lat: Optional[float], lng: Optional[float]) -> lis
         return []
 
 
-def extract_current_poi_name(context_text: str) -> str:
-    if not context_text:
+def generate_text(model: str, prompt_text: str) -> str:
+    try:
+        response = gemini_client.models.generate_content(
+            model=model,
+            contents=prompt_text
+        )
+        return clean_text(response.text or "")
+    except Exception:
         return ""
 
-    patterns = [
-        r"Viendo:\s*(.*?)\.\s*Detalles",
-        r"Viendo:\s*(.*?)(?:\.|$)",
-        r"POI:\s*(.*?)(?:\.|$)",
-        r"Lugar:\s*(.*?)(?:\.|$)",
-    ]
 
-    for pattern in patterns:
-        match = re.search(pattern, context_text, flags=re.IGNORECASE)
-        if match:
-            poi_name = (match.group(1) or "").strip()
-            if poi_name:
-                return poi_name
-
-    return ""
-
-
-def looks_factual_question(text: str) -> bool:
-    if not text:
-        return False
-
-    lowered = text.lower().strip()
-
-    triggers = [
-        "quién",
-        "quien",
-        "quién era",
-        "quien era",
-        "cuándo",
-        "cuando",
-        "por qué",
-        "porque se llama",
-        "cómo se llama",
-        "como se llama",
-        "quién lo hizo",
-        "quien lo hizo",
-        "quién lo construyó",
-        "quien lo construyó",
-        "quien lo construyo",
-        "quién lo promovió",
-        "quien lo promovió",
-        "quien lo promovio",
-        "arquitecto",
-        "promotor",
-        "fecha",
-        "año",
-        "ano",
-        "estilo",
-        "historia",
-        "de dónde viene el nombre",
-        "de donde viene el nombre",
-        "origen del nombre",
-    ]
-
-    return any(trigger in lowered for trigger in triggers)
+def generate_json(model: str, prompt_text: str) -> dict:
+    try:
+        response = gemini_client.models.generate_content(
+            model=model,
+            contents=prompt_text,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        return parse_json_loose(response.text or "")
+    except Exception:
+        return {}
 
 
 def fetch_wikipedia_summary_es(query: str) -> str:
     if not query:
         return ""
 
-    try:
-        wikipedia.set_lang("es")
-        return wikipedia.summary(query, sentences=5, auto_suggest=False)
-    except wikipedia.exceptions.DisambiguationError as e:
-        if e.options:
-            for option in e.options[:3]:
+    wikipedia.set_lang("es")
+
+    candidates = [query]
+    if query.lower().startswith("pasaje de "):
+        candidates.append(query)
+    else:
+        candidates.append(f"Pasaje de {query}")
+
+    for candidate in candidates:
+        try:
+            return wikipedia.summary(candidate, sentences=6, auto_suggest=False)
+        except wikipedia.exceptions.DisambiguationError as e:
+            for option in e.options[:5]:
                 try:
-                    return wikipedia.summary(option, sentences=5, auto_suggest=False)
+                    return wikipedia.summary(option, sentences=6, auto_suggest=False)
                 except Exception:
                     continue
-        return ""
-    except wikipedia.exceptions.PageError:
-        return ""
-    except Exception:
-        return ""
+        except wikipedia.exceptions.PageError:
+            continue
+        except Exception:
+            continue
+
+    return ""
 
 
-def build_verified_poi_context(poi_name: str, user_question: str = "") -> str:
+def build_verified_poi_context(poi_name: str, answer_goal: str = "") -> str:
     if not poi_name:
         return ""
+
+    cache_key = f"{poi_name}::{answer_goal}".strip()
+
+    if cache_key in poi_context_cache:
+        return poi_context_cache[cache_key]
 
     raw_text = fetch_wikipedia_summary_es(poi_name)
     if not raw_text:
@@ -196,84 +247,71 @@ def build_verified_poi_context(poi_name: str, user_question: str = "") -> str:
 
     prompt = prompts.DATA_EXTRACTOR_PROMPT.format(
         poi_name=poi_name,
-        user_question=user_question or "",
+        answer_goal=answer_goal or "",
         raw_text=raw_text
     )
 
-    try:
-        resp = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
-        return (resp.text or "").strip()
-    except Exception:
-        return ""
+    verified_context = generate_text(CONTENT_MODEL, prompt)
+    if verified_context:
+        poi_context_cache[cache_key] = verified_context
+
+    return verified_context
 
 
-def build_reactive_context(user_text: str, base_context: str) -> str:
-    poi_name = extract_current_poi_name(base_context)
-
-    if not poi_name:
-        return ""
-
-    if not looks_factual_question(user_text):
-        return ""
-
-    verified_context = build_verified_poi_context(
-        poi_name=poi_name,
-        user_question=user_text
+def analyze_turn(active_poi: str, base_context: str, verified_context: str, turns: list[dict], user_text: str) -> dict:
+    prompt = prompts.ORCHESTRATOR_ANALYZE_PROMPT.format(
+        active_poi=active_poi or "(sin POI activo)",
+        base_context=base_context or "(sin contexto base)",
+        verified_context=verified_context or "(sin contexto factual todavía)",
+        recent_turns=recent_turns_to_text(turns),
+        user_text=user_text
     )
 
-    if not verified_context:
-        return ""
+    data = generate_json(ORCHESTRATOR_MODEL, prompt)
 
-    return f"\n\nCONTEXTO FACTUAL VERIFICADO PARA ESTA RESPUESTA:\n{verified_context}\n"
+    if not data:
+        return {
+            "needs_retrieval": False,
+            "reason": "fallback",
+            "focus_poi": active_poi or "",
+            "retrieval_query": "",
+            "bridge_phrase": prompts.VOICE_BRIDGE_FALLBACK.strip(),
+            "answer_goal": "Responder de forma prudente y centrada en el POI activo."
+        }
+
+    data.setdefault("needs_retrieval", False)
+    data.setdefault("reason", "fallback")
+    data.setdefault("focus_poi", active_poi or "")
+    data.setdefault("retrieval_query", "")
+    data.setdefault("bridge_phrase", prompts.VOICE_BRIDGE_FALLBACK.strip())
+    data.setdefault("answer_goal", "Responder de forma útil, natural y prudente.")
+    return data
 
 
-def clean_voice_text(text: str) -> str:
-    if not text:
-        return ""
-
-    cleaned = re.sub(r"<[^>]+>", "", text)
-    cleaned = re.sub(r"\{.*?\}", "", cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned
-
-
-def generate_http_reply(history: list, prompt_text: str) -> str:
-    history.append(
-        types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=prompt_text)]
-        )
+def answer_user(active_poi: str, base_context: str, verified_context: str, turns: list[dict], user_text: str, answer_goal: str) -> str:
+    prompt = prompts.VOICE_DIRECT_ANSWER_PROMPT.format(
+        active_poi=active_poi or "(sin POI activo)",
+        base_context=base_context or "(sin contexto base)",
+        verified_context=verified_context or "(sin contexto factual verificado)",
+        recent_turns=recent_turns_to_text(turns),
+        user_text=user_text,
+        answer_goal=answer_goal or "Responder al usuario de forma útil."
     )
 
-    response = gemini_client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=history
-    )
-
-    bot_reply = clean_voice_text(response.text or "")
-
-    history.append(
-        types.Content(
-            role="model",
-            parts=[types.Part.from_text(text=bot_reply)]
-        )
-    )
-
-    return bot_reply
+    return generate_text(CONTENT_MODEL, prompt)
 
 
-def generate_single_text(prompt_text: str) -> str:
-    try:
-        response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt_text
-        )
-        return clean_voice_text(response.text or "")
-    except Exception:
-        return ""
+def ensure_room_state(room_id: str) -> dict:
+    if room_id not in chat_histories:
+        chat_histories[room_id] = {
+            "history": [],
+            "lat": None,
+            "lng": None,
+            "base_context": "",
+            "active_poi": "",
+            "verified_context": "",
+        }
+    return chat_histories[room_id]
 
 
 @app.get("/health")
@@ -283,86 +321,104 @@ async def health():
 
 @app.post("/home_chat")
 async def home_chat(req: ChatRequest):
-    if req.roomId not in chat_histories:
-        chat_histories[req.roomId] = {
-            "history": [],
-            "lat": None,
-            "lng": None,
-            "context": ""
-        }
-
-    room_data = chat_histories[req.roomId]
+    room = ensure_room_state(req.roomId)
 
     if req.lat is not None and req.lng is not None:
-        room_data["lat"] = req.lat
-        room_data["lng"] = req.lng
+        room["lat"] = req.lat
+        room["lng"] = req.lng
 
     if req.context:
-        room_data["context"] = req.context
+        room["base_context"] = req.context
+        extracted_poi = extract_current_poi_name(req.context)
+        if extracted_poi:
+            room["active_poi"] = extracted_poi
 
-    history = room_data["history"]
-    current_lat = room_data["lat"]
-    current_lng = room_data["lng"]
-    current_context = room_data["context"]
-
-    pois_block = ""
+    active_poi = room["active_poi"]
+    base_context = room["base_context"]
+    history = room["history"]
 
     if req.action == "setup_profile":
-        real_pois = get_real_pois("lugares turísticos", current_lat, current_lng)
-        nombres_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else "lugares cercanos"
+        real_pois = get_real_pois("lugares turísticos", room["lat"], room["lng"])
+        nearby_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else "lugares cercanos"
+
+        if active_poi and not room["verified_context"]:
+            room["verified_context"] = await asyncio.to_thread(
+                build_verified_poi_context,
+                active_poi,
+                "Dar contexto inicial breve y fiable del POI activo."
+            )
 
         prompt = prompts.CHAT_SETUP_PROMPT.format(
-            context=req.context,
-            nombres_pois=nombres_pois
+            user_context=req.context or "(sin contexto)",
+            active_poi=active_poi or "(sin POI activo)",
+            nearby_pois=nearby_pois
         )
 
-        bot_reply = generate_http_reply(history, prompt)
+        reply = await asyncio.to_thread(generate_text, CONTENT_MODEL, prompt)
+        append_turn(history, "assistant", reply)
 
+        pois_block = ""
         if real_pois:
             pois_block = f"\n<POIS>{json.dumps(real_pois, ensure_ascii=False)}</POIS>"
 
-        return {"reply": bot_reply + pois_block}
+        return {"reply": (reply + pois_block).strip()}
 
-    real_pois = get_real_pois(req.text, current_lat, current_lng)
-    nombres_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else ""
+    user_text = req.text or ""
+    append_turn(history, "user", user_text)
 
-    prompt = prompts.CHAT_TEXT_PROMPT.format(text=req.text)
-
+    real_pois = get_real_pois(user_text, room["lat"], room["lng"])
+    pois_block = ""
     if real_pois:
-        prompt += prompts.CHAT_POIS_INSTRUCTION.format(nombres_pois=nombres_pois)
         pois_block = f"\n<POIS>{json.dumps(real_pois, ensure_ascii=False)}</POIS>"
-    else:
-        prompt += prompts.CHAT_FALLBACK_INSTRUCTION
 
-    reactive_context = build_reactive_context(req.text, current_context)
-    if reactive_context:
-        prompt += reactive_context
+    analysis = await asyncio.to_thread(
+        analyze_turn,
+        active_poi,
+        base_context,
+        room["verified_context"],
+        history,
+        user_text
+    )
 
-    bot_reply = generate_http_reply(history, prompt)
+    if analysis.get("needs_retrieval") and active_poi:
+        verified_context = await asyncio.to_thread(
+            build_verified_poi_context,
+            active_poi,
+            analysis.get("answer_goal", user_text)
+        )
+        if verified_context:
+            room["verified_context"] = verified_context
 
-    if not reactive_context and looks_factual_question(req.text):
-        fallback_suffix = " No tengo ese dato totalmente confirmado ahora mismo."
-        if fallback_suffix not in bot_reply:
-            bot_reply += fallback_suffix
+    reply = await asyncio.to_thread(
+        answer_user,
+        active_poi,
+        base_context,
+        room["verified_context"],
+        history,
+        user_text,
+        analysis.get("answer_goal", "")
+    )
 
-    return {"reply": bot_reply + pois_block}
+    if not reply:
+        reply = "No tengo ese dato confirmado ahora mismo, pero puedo contarte lo que sí sé del lugar."
+
+    append_turn(history, "assistant", reply)
+    return {"reply": (reply + pois_block).strip()}
 
 
 @app.post("/get_token")
 async def get_token(req: TokenRequest):
     enriched_context = req.poi_context or ""
+    active_poi = extract_current_poi_name(req.poi_context)
 
-    poi_name = extract_current_poi_name(req.poi_context)
-    if poi_name:
-        try:
-            verified_context = build_verified_poi_context(
-                poi_name=poi_name,
-                user_question=""
-            )
-            if verified_context:
-                enriched_context += f"\n\nCONTEXTO FACTUAL VERIFICADO INICIAL:\n{verified_context}"
-        except Exception:
-            pass
+    if active_poi:
+        verified_context = await asyncio.to_thread(
+            build_verified_poi_context,
+            active_poi,
+            "Preparar contexto inicial fiable para la visita."
+        )
+        if verified_context:
+            enriched_context += f"\n\nCONTEXTO FACTUAL VERIFICADO DEL POI ACTIVO:\n{verified_context}"
 
     token = AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
     token.with_identity(req.participant_name)
@@ -388,21 +444,28 @@ async def entrypoint(ctx: JobContext):
     await ctx.connect()
 
     participant = await ctx.wait_for_participant()
-    user_context = participant.metadata or ""
+    initial_context = participant.metadata or ""
+    active_poi = extract_current_poi_name(initial_context)
+
+    initial_verified_context = ""
+    if active_poi:
+        initial_verified_context = await asyncio.to_thread(
+            build_verified_poi_context,
+            active_poi,
+            "Preparar contexto inicial fiable para la visita."
+        )
 
     dynamic_prompt = prompts.VOICE_SYSTEM_PROMPT
-    welcome_msg = prompts.VOICE_WELCOME_BASE
+    dynamic_prompt += f"\n\nPOI ACTIVO ACTUAL:\n{active_poi or '(sin POI activo)'}\n"
+    dynamic_prompt += f"\nCONTEXTO BASE DE LA VISITA:\n{initial_context or '(sin contexto base)'}\n"
 
-    if user_context:
-        dynamic_prompt += f"\n\nCONTEXTO ACTUAL DEL USUARIO:\n{user_context}\n"
-        welcome_msg = prompts.VOICE_WELCOME_ENRICHED.format(user_context=user_context)
-
-    dynamic_prompt += "\nNo intentes usar herramientas ni llamadas de función en tiempo real."
+    if initial_verified_context:
+        dynamic_prompt += f"\nCONTEXTO FACTUAL VERIFICADO DEL POI ACTIVO:\n{initial_verified_context}\n"
 
     session = AgentSession(
         llm=livekit_google.beta.realtime.RealtimeModel(
             api_key=GEMINI_API_KEY,
-            model="gemini-2.5-flash-native-audio-latest",
+            model=VOICE_MODEL,
             instructions=dynamic_prompt,
             voice="Puck"
         )
@@ -411,55 +474,78 @@ async def entrypoint(ctx: JobContext):
     agent = LocusAgent(instructions=dynamic_prompt)
     await session.start(agent=agent, room=ctx.room)
 
-    session_state = {
-        "base_context": user_context,
-        "last_verified_context": "",
-        "current_poi_name": extract_current_poi_name(user_context),
+    speech_lock = asyncio.Lock()
+    state = {
+        "base_context": initial_context,
+        "active_poi": active_poi,
+        "verified_context": initial_verified_context,
+        "history": [],
     }
 
-    async def say_bridge_phrase():
-        try:
-            await session.generate_reply(instructions=prompts.VOICE_BRIDGE_FACTUAL)
-        except Exception:
-            pass
-
-    async def build_factual_reply_with_context(user_text: str) -> str:
-        reactive_context = await asyncio.to_thread(
-            build_reactive_context,
-            user_text,
-            session_state["base_context"]
-        )
-
-        if reactive_context:
-            session_state["last_verified_context"] = reactive_context
-
-        instructions = prompts.VOICE_TEXT_CHAT.format(text=user_text)
-
-        if reactive_context:
-            instructions += "\n" + reactive_context
-        else:
-            instructions += (
-                "\nResponde de forma prudente. "
-                "Si no tienes el dato confirmado, dilo de forma natural y breve."
+    async def speak_text(text: str):
+        text = clean_text(text)
+        if not text:
+            return
+        async with speech_lock:
+            instructions = (
+                "Di exactamente el siguiente texto, sin añadir información nueva, "
+                "sin meter otros lugares y manteniendo un tono natural de guía turístico:\n\n"
+                f"{text}"
             )
-
-        return instructions
-
-    async def handle_user_text_for_voice(user_text: str):
-        factual = looks_factual_question(user_text)
-
-        if factual:
-            bridge_task = asyncio.create_task(say_bridge_phrase())
-            instructions = await build_factual_reply_with_context(user_text=user_text)
-            await bridge_task
             await session.generate_reply(instructions=instructions)
+
+    async def process_user_turn(user_text: str):
+        user_text = clean_text(user_text)
+        if not user_text:
             return
 
-        instructions = prompts.VOICE_TEXT_CHAT.format(text=user_text)
-        if session_state["last_verified_context"]:
-            instructions += "\n" + session_state["last_verified_context"]
+        append_turn(state["history"], "user", user_text)
 
-        await session.generate_reply(instructions=instructions)
+        analysis = await asyncio.to_thread(
+            analyze_turn,
+            state["active_poi"],
+            state["base_context"],
+            state["verified_context"],
+            state["history"],
+            user_text
+        )
+
+        retrieval_task = None
+        needs_retrieval = bool(analysis.get("needs_retrieval")) and bool(state["active_poi"])
+
+        if needs_retrieval:
+            retrieval_task = asyncio.create_task(
+                asyncio.to_thread(
+                    build_verified_poi_context,
+                    state["active_poi"],
+                    analysis.get("answer_goal", user_text)
+                )
+            )
+
+            bridge_phrase = clean_text(
+                analysis.get("bridge_phrase") or prompts.VOICE_BRIDGE_FALLBACK
+            )
+            await speak_text(bridge_phrase)
+
+            verified_context = await retrieval_task
+            if verified_context:
+                state["verified_context"] = verified_context
+
+        final_answer = await asyncio.to_thread(
+            answer_user,
+            state["active_poi"],
+            state["base_context"],
+            state["verified_context"],
+            state["history"],
+            user_text,
+            analysis.get("answer_goal", "")
+        )
+
+        if not final_answer:
+            final_answer = "No tengo ese dato confirmado con suficiente seguridad, pero puedo seguir ayudándote con este lugar."
+
+        append_turn(state["history"], "assistant", final_answer)
+        await speak_text(final_answer)
 
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(p: rtc.RemoteParticipant):
@@ -472,132 +558,120 @@ async def entrypoint(ctx: JobContext):
             payload = json.loads(data_packet.data.decode("utf-8"))
 
             if payload.get("action") == "text_chat":
-                async def text_reply():
+                async def handle_text_chat():
                     try:
-                        user_text = payload.get("data", "")
-                        await handle_user_text_for_voice(user_text=user_text)
+                        await process_user_turn(payload.get("data", ""))
                     except Exception:
                         pass
-
-                asyncio.create_task(text_reply())
-
-            elif payload.get("action") == "image_context":
-                mime_type = payload.get("mime_type", "image/jpeg")
-                image_bytes = base64.b64decode(payload["data"])
-
-                async def process_image():
-                    try:
-                        def fetch_desc():
-                            resp = gemini_client.models.generate_content(
-                                model="gemini-2.5-flash",
-                                contents=[
-                                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                                    types.Part.from_text(text=prompts.VOICE_IMAGE_DESCRIBE)
-                                ]
-                            )
-                            return resp.text or ""
-
-                        descripcion = await asyncio.to_thread(fetch_desc)
-
-                        instruccion_foto = prompts.VOICE_IMAGE_COMMENT.format(
-                            descripcion=descripcion
-                        )
-
-                        if session_state["last_verified_context"]:
-                            instruccion_foto += "\n" + session_state["last_verified_context"]
-
-                        await session.generate_reply(instructions=instruccion_foto)
-                    except Exception:
-                        pass
-
-                asyncio.create_task(process_image())
+                asyncio.create_task(handle_text_chat())
 
             elif payload.get("action") == "guest_audio":
-                audio_bytes = base64.b64decode(payload["data"])
-                mime_type = payload.get("mime_type", "audio/webm")
-
-                async def process_guest_audio():
+                async def handle_guest_audio():
                     try:
-                        resp = gemini_client.models.generate_content(
-                            model="gemini-2.5-flash",
-                            contents=[
-                                types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-                                types.Part.from_text(
-                                    text=(
-                                        "Transcribe con precisión lo que dice la persona en este audio. "
-                                        "Responde únicamente con el texto transcrito sin comillas. "
-                                        "Si es solo ruido o no se entiende, no respondas nada."
+                        audio_bytes = base64.b64decode(payload["data"])
+                        mime_type = payload.get("mime_type", "audio/webm")
+
+                        def transcribe():
+                            resp = gemini_client.models.generate_content(
+                                model=CONTENT_MODEL,
+                                contents=[
+                                    types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                                    types.Part.from_text(
+                                        text=(
+                                            "Transcribe con precisión lo que dice la persona en este audio. "
+                                            "Responde únicamente con el texto transcrito. "
+                                            "Si no se entiende, responde vacío."
+                                        )
                                     )
-                                )
-                            ]
-                        )
+                                ]
+                            )
+                            return clean_text(resp.text or "")
 
-                        transcripcion = clean_voice_text(resp.text or "")
+                        transcription = await asyncio.to_thread(transcribe)
 
-                        if transcripcion:
+                        if transcription:
                             chat_msg = json.dumps({
                                 "action": "guest_transcription",
-                                "text": transcripcion
+                                "text": transcription
                             })
                             await ctx.room.local_participant.publish_data(
                                 chat_msg.encode("utf-8"),
                                 reliable=True
                             )
 
-                            await handle_user_text_for_voice(user_text=transcripcion)
+                            await process_user_turn(transcription)
                     except Exception:
                         pass
+                asyncio.create_task(handle_guest_audio())
 
-                asyncio.create_task(process_guest_audio())
+            elif payload.get("action") == "image_context":
+                async def handle_image():
+                    try:
+                        image_bytes = base64.b64decode(payload["data"])
+                        mime_type = payload.get("mime_type", "image/jpeg")
+
+                        def describe_image():
+                            resp = gemini_client.models.generate_content(
+                                model=CONTENT_MODEL,
+                                contents=[
+                                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                                    types.Part.from_text(text=prompts.VOICE_IMAGE_DESCRIBE)
+                                ]
+                            )
+                            return clean_text(resp.text or "")
+
+                        descripcion = await asyncio.to_thread(describe_image)
+
+                        if descripcion:
+                            prompt = prompts.VOICE_IMAGE_COMMENT.format(
+                                descripcion=descripcion
+                            )
+                            prompt += (
+                                f"\n\nPOI ACTIVO:\n{state['active_poi'] or '(sin POI activo)'}"
+                                f"\n\nCONTEXTO FACTUAL VERIFICADO:\n{state['verified_context'] or '(sin contexto factual)'}"
+                            )
+                            image_reply = await asyncio.to_thread(generate_text, CONTENT_MODEL, prompt)
+                            if image_reply:
+                                append_turn(state["history"], "assistant", image_reply)
+                                await speak_text(image_reply)
+                    except Exception:
+                        pass
+                asyncio.create_task(handle_image())
 
             elif payload.get("action") == "update_poi_context":
-                async def update_poi_context():
+                async def handle_update_poi_context():
                     try:
                         new_context = payload.get("data", "")
                         if not new_context:
                             return
 
-                        session_state["base_context"] = new_context
-                        session_state["current_poi_name"] = extract_current_poi_name(new_context)
+                        state["base_context"] = new_context
+                        new_poi = extract_current_poi_name(new_context)
 
-                        poi_name = session_state["current_poi_name"]
-                        if poi_name:
-                            verified_context = await asyncio.to_thread(
+                        if new_poi and new_poi != state["active_poi"]:
+                            state["active_poi"] = new_poi
+                            state["verified_context"] = await asyncio.to_thread(
                                 build_verified_poi_context,
-                                poi_name,
-                                ""
+                                new_poi,
+                                "Actualizar contexto factual del nuevo POI activo."
                             )
-                            if verified_context:
-                                session_state["base_context"] += (
-                                    f"\n\nCONTEXTO FACTUAL VERIFICADO INICIAL:\n{verified_context}"
-                                )
-                                session_state["last_verified_context"] = (
-                                    f"\n\nCONTEXTO FACTUAL VERIFICADO PARA ESTA RESPUESTA:\n{verified_context}\n"
-                                )
+                            state["history"] = []
                     except Exception:
                         pass
-
-                asyncio.create_task(update_poi_context())
+                asyncio.create_task(handle_update_poi_context())
 
         except Exception:
             pass
 
-    @ctx.room.on("participant_connected")
-    def on_participant_connected(p: rtc.RemoteParticipant):
-        welcome_str = prompts.VOICE_NEW_PARTICIPANT_BASE
-        if p.metadata:
-            welcome_str = prompts.VOICE_NEW_PARTICIPANT_ENRICHED.format(metadata=p.metadata)
-
-        async def send_welcome():
-            try:
-                await session.generate_reply(instructions=welcome_str)
-            except Exception:
-                pass
-
-        asyncio.create_task(send_welcome())
-
     try:
-        await session.generate_reply(instructions=welcome_msg)
+        welcome_prompt = prompts.VOICE_WELCOME_PROMPT
+        welcome_prompt += f"\n\nPOI ACTIVO:\n{state['active_poi'] or '(sin POI activo)'}"
+        welcome_prompt += f"\n\nCONTEXTO BASE:\n{state['base_context'] or '(sin contexto base)'}"
+        welcome_text = await asyncio.to_thread(generate_text, CONTENT_MODEL, welcome_prompt)
+
+        if welcome_text:
+            append_turn(state["history"], "assistant", welcome_text)
+            await speak_text(welcome_text)
     except Exception:
         pass
 

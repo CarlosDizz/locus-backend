@@ -272,13 +272,31 @@ def build_verified_poi_context(poi_name: str, answer_goal: str = "") -> str:
     return verified_context
 
 
-def analyze_turn(active_poi: str, base_context: str, verified_context: str, turns: list[dict], user_text: str) -> dict:
+def build_user_turn_text(user_text: str = "", image_description: str = "") -> str:
+    parts = []
+
+    user_text = clean_text(user_text)
+    image_description = clean_text(image_description)
+
+    if user_text:
+        parts.append(f"TEXTO DEL USUARIO: {user_text}")
+
+    if image_description:
+        parts.append(f"CONTEXTO VISUAL APORTADO EN ESTE TURNO: {image_description}")
+
+    if not parts:
+        parts.append("El usuario quiere comentar o entender algo del POI activo, pero no hay más detalle textual.")
+
+    return "\n".join(parts)
+
+
+def analyze_turn(active_poi: str, base_context: str, verified_context: str, turns: list[dict], user_turn: str) -> dict:
     prompt = prompts.ORCHESTRATOR_ANALYZE_PROMPT.format(
         active_poi=active_poi or "(sin POI activo)",
         base_context=base_context or "(sin contexto base)",
         verified_context=verified_context or "(sin contexto factual todavía)",
         recent_turns=recent_turns_to_text(turns),
-        user_text=user_text
+        user_turn=user_turn
     )
 
     data = generate_json(ORCHESTRATOR_MODEL, prompt)
@@ -307,15 +325,15 @@ def answer_user(
     base_context: str,
     verified_context: str,
     turns: list[dict],
-    user_text: str,
+    user_turn: str,
     answer_goal: str
 ) -> str:
-    prompt = prompts.VOICE_DIRECT_ANSWER_PROMPT.format(
+    prompt = prompts.UNIFIED_TURN_ANSWER_PROMPT.format(
         active_poi=active_poi or "(sin POI activo)",
         base_context=base_context or "(sin contexto base)",
         verified_context=verified_context or "(sin contexto factual verificado)",
         recent_turns=recent_turns_to_text(turns),
-        user_text=user_text,
+        user_turn=user_turn,
         answer_goal=answer_goal or "Responder al usuario de forma útil."
     )
 
@@ -341,6 +359,24 @@ def get_livekit_api() -> api.LiveKitAPI:
         api_key=LIVEKIT_API_KEY,
         api_secret=LIVEKIT_API_SECRET
     )
+
+
+async def publish_agent_message(ctx: JobContext, text: str):
+    text = clean_text(text)
+    if not text:
+        return
+
+    try:
+        payload = json.dumps({
+            "action": "assistant_message",
+            "text": text
+        })
+        await ctx.room.local_participant.publish_data(
+            payload.encode("utf-8"),
+            reliable=True
+        )
+    except Exception:
+        pass
 
 
 @app.get("/health")
@@ -392,10 +428,10 @@ async def home_chat(req: ChatRequest):
 
         return {"reply": (reply + pois_block).strip()}
 
-    user_text = req.text or ""
-    append_turn(history, "user", user_text)
+    user_turn = build_user_turn_text(user_text=req.text, image_description="")
+    append_turn(history, "user", user_turn)
 
-    real_pois = get_real_pois(user_text, room["lat"], room["lng"])
+    real_pois = get_real_pois(req.text or "", room["lat"], room["lng"])
     pois_block = ""
     if real_pois:
         pois_block = f"\n<POIS>{json.dumps(real_pois, ensure_ascii=False)}</POIS>"
@@ -406,14 +442,14 @@ async def home_chat(req: ChatRequest):
         base_context,
         room["verified_context"],
         history,
-        user_text
+        user_turn
     )
 
     if analysis.get("needs_retrieval") and active_poi:
         verified_context = await asyncio.to_thread(
             build_verified_poi_context,
             active_poi,
-            analysis.get("answer_goal", user_text)
+            analysis.get("answer_goal", req.text or "")
         )
         if verified_context:
             room["verified_context"] = verified_context
@@ -424,7 +460,7 @@ async def home_chat(req: ChatRequest):
         base_context,
         room["verified_context"],
         history,
-        user_text,
+        user_turn,
         analysis.get("answer_goal", "")
     )
 
@@ -528,6 +564,8 @@ async def entrypoint(ctx: JobContext):
     await session.start(agent=agent, room=ctx.room)
 
     speech_lock = asyncio.Lock()
+    turn_lock = asyncio.Lock()
+
     state = {
         "base_context": initial_context,
         "active_poi": active_poi,
@@ -539,6 +577,7 @@ async def entrypoint(ctx: JobContext):
         text = clean_text(text)
         if not text:
             return
+
         async with speech_lock:
             instructions = (
                 "Di exactamente el siguiente texto, sin añadir información nueva, "
@@ -547,57 +586,73 @@ async def entrypoint(ctx: JobContext):
             )
             await session.generate_reply(instructions=instructions)
 
-    async def process_user_turn(user_text: str):
-        user_text = clean_text(user_text)
-        if not user_text:
-            return
+    async def process_user_turn(
+        user_text: str = "",
+        image_description: str = "",
+        source: str = "text",
+        speak_response: bool = True,
+        publish_response: bool = True
+    ):
+        async with turn_lock:
+            user_turn = build_user_turn_text(
+                user_text=user_text,
+                image_description=image_description
+            )
 
-        append_turn(state["history"], "user", user_text)
+            append_turn(state["history"], "user", user_turn)
 
-        analysis = await asyncio.to_thread(
-            analyze_turn,
-            state["active_poi"],
-            state["base_context"],
-            state["verified_context"],
-            state["history"],
-            user_text
-        )
+            analysis = await asyncio.to_thread(
+                analyze_turn,
+                state["active_poi"],
+                state["base_context"],
+                state["verified_context"],
+                state["history"],
+                user_turn
+            )
 
-        needs_retrieval = bool(analysis.get("needs_retrieval")) and bool(state["active_poi"])
+            needs_retrieval = bool(analysis.get("needs_retrieval")) and bool(state["active_poi"])
 
-        if needs_retrieval:
-            retrieval_task = asyncio.create_task(
-                asyncio.to_thread(
-                    build_verified_poi_context,
-                    state["active_poi"],
-                    analysis.get("answer_goal", user_text)
+            if needs_retrieval:
+                retrieval_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        build_verified_poi_context,
+                        state["active_poi"],
+                        analysis.get("answer_goal", user_text or image_description)
+                    )
                 )
+
+                bridge_phrase = clean_text(
+                    analysis.get("bridge_phrase") or prompts.VOICE_BRIDGE_FALLBACK
+                )
+
+                if publish_response:
+                    await publish_agent_message(ctx, bridge_phrase)
+                if speak_response:
+                    await speak_text(bridge_phrase)
+
+                verified_context = await retrieval_task
+                if verified_context:
+                    state["verified_context"] = verified_context
+
+            final_answer = await asyncio.to_thread(
+                answer_user,
+                state["active_poi"],
+                state["base_context"],
+                state["verified_context"],
+                state["history"],
+                user_turn,
+                analysis.get("answer_goal", "")
             )
 
-            bridge_phrase = clean_text(
-                analysis.get("bridge_phrase") or prompts.VOICE_BRIDGE_FALLBACK
-            )
-            await speak_text(bridge_phrase)
+            if not final_answer:
+                final_answer = "No tengo ese dato confirmado con suficiente seguridad, pero puedo seguir ayudándote con este lugar."
 
-            verified_context = await retrieval_task
-            if verified_context:
-                state["verified_context"] = verified_context
+            append_turn(state["history"], "assistant", final_answer)
 
-        final_answer = await asyncio.to_thread(
-            answer_user,
-            state["active_poi"],
-            state["base_context"],
-            state["verified_context"],
-            state["history"],
-            user_text,
-            analysis.get("answer_goal", "")
-        )
-
-        if not final_answer:
-            final_answer = "No tengo ese dato confirmado con suficiente seguridad, pero puedo seguir ayudándote con este lugar."
-
-        append_turn(state["history"], "assistant", final_answer)
-        await speak_text(final_answer)
+            if publish_response:
+                await publish_agent_message(ctx, final_answer)
+            if speak_response:
+                await speak_text(final_answer)
 
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(p: rtc.RemoteParticipant):
@@ -612,9 +667,16 @@ async def entrypoint(ctx: JobContext):
             if payload.get("action") == "text_chat":
                 async def handle_text_chat():
                     try:
-                        await process_user_turn(payload.get("data", ""))
+                        await process_user_turn(
+                            user_text=payload.get("data", ""),
+                            image_description="",
+                            source="text",
+                            speak_response=True,
+                            publish_response=True
+                        )
                     except Exception:
                         pass
+
                 asyncio.create_task(handle_text_chat())
 
             elif payload.get("action") == "guest_audio":
@@ -651,9 +713,16 @@ async def entrypoint(ctx: JobContext):
                                 reliable=True
                             )
 
-                            await process_user_turn(transcription)
+                            await process_user_turn(
+                                user_text=transcription,
+                                image_description="",
+                                source="guest_audio",
+                                speak_response=True,
+                                publish_response=True
+                            )
                     except Exception:
                         pass
+
                 asyncio.create_task(handle_guest_audio())
 
             elif payload.get("action") == "image_context":
@@ -661,6 +730,7 @@ async def entrypoint(ctx: JobContext):
                     try:
                         image_bytes = base64.b64decode(payload["data"])
                         mime_type = payload.get("mime_type", "image/jpeg")
+                        text_hint = clean_text(payload.get("text", ""))
 
                         def describe_image():
                             resp = gemini_client.models.generate_content(
@@ -672,22 +742,18 @@ async def entrypoint(ctx: JobContext):
                             )
                             return clean_text(resp.text or "")
 
-                        descripcion = await asyncio.to_thread(describe_image)
+                        image_description = await asyncio.to_thread(describe_image)
 
-                        if descripcion:
-                            prompt = prompts.VOICE_IMAGE_COMMENT.format(
-                                descripcion=descripcion
-                            )
-                            prompt += (
-                                f"\n\nPOI ACTIVO:\n{state['active_poi'] or '(sin POI activo)'}"
-                                f"\n\nCONTEXTO FACTUAL VERIFICADO:\n{state['verified_context'] or '(sin contexto factual)'}"
-                            )
-                            image_reply = await asyncio.to_thread(generate_text, CONTENT_MODEL, prompt)
-                            if image_reply:
-                                append_turn(state["history"], "assistant", image_reply)
-                                await speak_text(image_reply)
+                        await process_user_turn(
+                            user_text=text_hint,
+                            image_description=image_description,
+                            source="image",
+                            speak_response=True,
+                            publish_response=True
+                        )
                     except Exception:
                         pass
+
                 asyncio.create_task(handle_image())
 
             elif payload.get("action") == "update_poi_context":
@@ -710,6 +776,7 @@ async def entrypoint(ctx: JobContext):
                             state["history"] = []
                     except Exception:
                         pass
+
                 asyncio.create_task(handle_update_poi_context())
 
         except Exception:
@@ -723,6 +790,7 @@ async def entrypoint(ctx: JobContext):
 
         if welcome_text:
             append_turn(state["history"], "assistant", welcome_text)
+            await publish_agent_message(ctx, welcome_text)
             await speak_text(welcome_text)
     except Exception:
         pass

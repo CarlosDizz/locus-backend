@@ -161,44 +161,6 @@ def extract_current_poi_name(context_text: str) -> str:
     return ""
 
 
-def get_real_pois(query: str, lat: Optional[float], lng: Optional[float]) -> list[dict]:
-    if not MAPS_API_KEY:
-        return []
-
-    url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-    params = {
-        "query": query,
-        "key": MAPS_API_KEY,
-    }
-
-    if lat is not None and lng is not None:
-        params["location"] = f"{lat},{lng}"
-        params["radius"] = 2000
-
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        if resp.status_code != 200:
-            return []
-
-        results = resp.json().get("results", [])[:3]
-        pois = []
-
-        for r in results:
-            geometry = r.get("geometry", {}).get("location", {})
-            if "lat" in geometry and "lng" in geometry:
-                pois.append({
-                    "name": r.get("name"),
-                    "lat": geometry["lat"],
-                    "lng": geometry["lng"],
-                    "description": r.get("formatted_address", "")
-                })
-
-        return pois
-    except Exception as e:
-        log(f"get_real_pois error: {e}")
-        return []
-
-
 def generate_text(model: str, prompt_text: str) -> str:
     try:
         response = gemini_client.models.generate_content(
@@ -259,7 +221,6 @@ def build_verified_context_from_text(subject_name: str, raw_text: str, answer_go
 
     cache_key = f"RAW::{subject_name}::{answer_goal}".strip()
     if cache_key in poi_context_cache:
-        log(f"build_verified_context_from_text cache hit: {cache_key}")
         return poi_context_cache[cache_key]
 
     prompt = prompts.DATA_EXTRACTOR_PROMPT.format(
@@ -489,38 +450,18 @@ async def home_chat(req: ChatRequest):
     history = room["history"]
 
     if req.action == "setup_profile":
-        real_pois = get_real_pois("lugares turísticos", room["lat"], room["lng"])
-        nearby_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else "lugares cercanos"
-
-        if active_poi and not room["verified_context"]:
-            room["verified_context"] = await asyncio.to_thread(
-                build_verified_poi_context,
-                active_poi,
-                "Dar contexto inicial breve y fiable del POI activo."
-            )
-
         prompt = prompts.CHAT_SETUP_PROMPT.format(
             user_context=req.context or "(sin contexto)",
             active_poi=active_poi or "(sin POI activo)",
-            nearby_pois=nearby_pois
+            nearby_pois="lugares cercanos"
         )
 
         reply = await asyncio.to_thread(generate_text, CONTENT_MODEL, prompt)
         append_turn(history, "assistant", reply)
-
-        pois_block = ""
-        if real_pois:
-            pois_block = f"\n<POIS>{json.dumps(real_pois, ensure_ascii=False)}</POIS>"
-
-        return {"reply": (reply + pois_block).strip()}
+        return {"reply": reply}
 
     user_turn = build_user_turn_text(user_text=req.text, image_description="")
     append_turn(history, "user", user_turn)
-
-    real_pois = get_real_pois(req.text or "", room["lat"], room["lng"])
-    pois_block = ""
-    if real_pois:
-        pois_block = f"\n<POIS>{json.dumps(real_pois, ensure_ascii=False)}</POIS>"
 
     analysis = await asyncio.to_thread(
         analyze_turn,
@@ -557,7 +498,7 @@ async def home_chat(req: ChatRequest):
         reply = "No tengo ese dato confirmado ahora mismo, pero puedo contarte lo que sí sé del lugar."
 
     append_turn(history, "assistant", reply)
-    return {"reply": (reply + pois_block).strip()}
+    return {"reply": reply}
 
 
 @app.post("/get_token")
@@ -661,7 +602,6 @@ async def entrypoint(ctx: JobContext):
         "verified_context": initial_verified_context,
         "history": [],
         "welcome_token": 0,
-        "turn_counter": 0,
     }
 
     async def speak_text(text: str, token: Optional[int] = None):
@@ -683,15 +623,32 @@ async def entrypoint(ctx: JobContext):
             await session.generate_reply(instructions=instructions)
             log("speak_text END")
 
+    async def transcribe_audio_bytes(audio_bytes: bytes, mime_type: str) -> str:
+        def transcribe():
+            resp = gemini_client.models.generate_content(
+                model=CONTENT_MODEL,
+                contents=[
+                    types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                    types.Part.from_text(
+                        text=(
+                            "Transcribe con precisión lo que dice la persona en este audio. "
+                            "Responde únicamente con el texto transcrito. "
+                            "Si no se entiende, responde vacío."
+                        )
+                    )
+                ]
+            )
+            return clean_text(resp.text or "")
+
+        return await asyncio.wait_for(asyncio.to_thread(transcribe), timeout=15)
+
     async def process_user_turn(
         user_text: str = "",
         image_description: str = "",
-        source: str = "text",
-        speak_response: bool = True
+        source: str = "text"
     ):
         async with turn_lock:
             try:
-                state["turn_counter"] += 1
                 state["welcome_token"] += 1
 
                 clean_user_text = clean_text(user_text)
@@ -750,9 +707,7 @@ async def entrypoint(ctx: JobContext):
                     bridge_phrase = clean_text(
                         analysis.get("bridge_phrase") or prompts.VOICE_BRIDGE_FALLBACK
                     )
-
-                    if speak_response:
-                        await speak_text(bridge_phrase)
+                    await speak_text(bridge_phrase)
 
                     verified_context = await asyncio.wait_for(retrieval_task, timeout=12)
 
@@ -781,9 +736,7 @@ async def entrypoint(ctx: JobContext):
                     final_answer = "No tengo ese dato confirmado con suficiente seguridad, pero puedo seguir ayudándote con este lugar."
 
                 append_turn(state["history"], "assistant", final_answer)
-
-                if speak_response:
-                    await speak_text(final_answer)
+                await speak_text(final_answer)
 
                 log("TURN END OK")
 
@@ -791,17 +744,13 @@ async def entrypoint(ctx: JobContext):
                 log("TURN TIMEOUT")
                 fallback = "Estoy tardando demasiado en afinar esa respuesta. Prueba a preguntármelo de forma más concreta."
                 append_turn(state["history"], "assistant", fallback)
-
-                if speak_response:
-                    await speak_text(fallback)
+                await speak_text(fallback)
 
             except Exception as e:
                 log(f"TURN ERROR {e}")
                 fallback = "Se me ha cruzado ese turno. Vuelve a decírmelo y te contesto."
                 append_turn(state["history"], "assistant", fallback)
-
-                if speak_response:
-                    await speak_text(fallback)
+                await speak_text(fallback)
 
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(p: rtc.RemoteParticipant):
@@ -822,64 +771,44 @@ async def entrypoint(ctx: JobContext):
                         await process_user_turn(
                             user_text=text,
                             image_description="",
-                            source="text",
-                            speak_response=True
+                            source="text"
                         )
                     except Exception as e:
                         log(f"handle_text_chat error: {e}")
 
                 asyncio.create_task(handle_text_chat())
 
-            elif payload.get("action") == "guest_audio":
-                async def handle_guest_audio():
+            elif payload.get("action") in ("guest_audio", "host_audio"):
+                async def handle_audio():
                     try:
-                        log("guest_audio START")
+                        source = payload.get("action")
+                        log(f"{source} START")
                         audio_bytes = base64.b64decode(payload["data"])
                         mime_type = payload.get("mime_type", "audio/webm")
 
-                        def transcribe():
-                            resp = gemini_client.models.generate_content(
-                                model=CONTENT_MODEL,
-                                contents=[
-                                    types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-                                    types.Part.from_text(
-                                        text=(
-                                            "Transcribe con precisión lo que dice la persona en este audio. "
-                                            "Responde únicamente con el texto transcrito. "
-                                            "Si no se entiende, responde vacío."
-                                        )
-                                    )
-                                ]
-                            )
-                            return clean_text(resp.text or "")
-
-                        transcription = await asyncio.wait_for(
-                            asyncio.to_thread(transcribe),
-                            timeout=15
-                        )
-
-                        log(f"guest_audio transcription={transcription}")
+                        transcription = await transcribe_audio_bytes(audio_bytes, mime_type)
+                        log(f"{source} transcription={transcription}")
 
                         if transcription:
-                            chat_msg = json.dumps({
-                                "action": "guest_transcription",
-                                "text": transcription
-                            })
-                            await ctx.room.local_participant.publish_data(
-                                chat_msg.encode("utf-8"),
-                                reliable=True
-                            )
+                            if source == "guest_audio":
+                                chat_msg = json.dumps({
+                                    "action": "guest_transcription",
+                                    "text": transcription
+                                })
+                                await ctx.room.local_participant.publish_data(
+                                    chat_msg.encode("utf-8"),
+                                    reliable=True
+                                )
 
                             await process_user_turn(
                                 user_text=transcription,
                                 image_description="",
-                                source="guest_audio",
-                                speak_response=True
+                                source=source
                             )
                     except Exception as e:
-                        log(f"handle_guest_audio error: {e}")
+                        log(f"handle_audio error: {e}")
 
-                asyncio.create_task(handle_guest_audio())
+                asyncio.create_task(handle_audio())
 
             elif payload.get("action") == "image_context":
                 async def handle_image():
@@ -909,8 +838,7 @@ async def entrypoint(ctx: JobContext):
                         await process_user_turn(
                             user_text=text_hint,
                             image_description=image_description,
-                            source="image",
-                            speak_response=True
+                            source="image"
                         )
                     except Exception as e:
                         log(f"handle_image error: {e}")

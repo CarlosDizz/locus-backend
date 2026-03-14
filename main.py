@@ -375,24 +375,6 @@ def get_livekit_api() -> api.LiveKitAPI:
     )
 
 
-async def publish_agent_message(ctx: JobContext, text: str):
-    text = clean_text(text)
-    if not text:
-        return
-
-    try:
-        payload = json.dumps({
-            "action": "assistant_message",
-            "text": text
-        })
-        await ctx.room.local_participant.publish_data(
-            payload.encode("utf-8"),
-            reliable=True
-        )
-    except Exception as e:
-        log(f"publish_agent_message error: {e}")
-
-
 @app.get("/health")
 async def health():
     return {"ok": True}
@@ -606,8 +588,7 @@ async def entrypoint(ctx: JobContext):
         user_text: str = "",
         image_description: str = "",
         source: str = "text",
-        speak_response: bool = True,
-        publish_response: bool = True
+        speak_response: bool = True
     ):
         async with turn_lock:
             try:
@@ -652,8 +633,6 @@ async def entrypoint(ctx: JobContext):
                         analysis.get("bridge_phrase") or prompts.VOICE_BRIDGE_FALLBACK
                     )
 
-                    if publish_response:
-                        await publish_agent_message(ctx, bridge_phrase)
                     if speak_response:
                         await speak_text(bridge_phrase)
 
@@ -685,8 +664,6 @@ async def entrypoint(ctx: JobContext):
 
                 append_turn(state["history"], "assistant", final_answer)
 
-                if publish_response:
-                    await publish_agent_message(ctx, final_answer)
                 if speak_response:
                     await speak_text(final_answer)
 
@@ -697,8 +674,6 @@ async def entrypoint(ctx: JobContext):
                 fallback = "Estoy tardando demasiado en afinar esa respuesta. Prueba a preguntármelo de forma más concreta."
                 append_turn(state["history"], "assistant", fallback)
 
-                if publish_response:
-                    await publish_agent_message(ctx, fallback)
                 if speak_response:
                     await speak_text(fallback)
 
@@ -707,8 +682,6 @@ async def entrypoint(ctx: JobContext):
                 fallback = "Se me ha cruzado ese turno. Vuelve a decírmelo y te contesto."
                 append_turn(state["history"], "assistant", fallback)
 
-                if publish_response:
-                    await publish_agent_message(ctx, fallback)
                 if speak_response:
                     await speak_text(fallback)
 
@@ -732,8 +705,7 @@ async def entrypoint(ctx: JobContext):
                             user_text=text,
                             image_description="",
                             source="text",
-                            speak_response=True,
-                            publish_response=True
+                            speak_response=True
                         )
                     except Exception as e:
                         log(f"handle_text_chat error: {e}")
@@ -784,8 +756,7 @@ async def entrypoint(ctx: JobContext):
                                 user_text=transcription,
                                 image_description="",
                                 source="guest_audio",
-                                speak_response=True,
-                                publish_response=True
+                                speak_response=True
                             )
                     except Exception as e:
                         log(f"handle_guest_audio error: {e}")
@@ -821,8 +792,7 @@ async def entrypoint(ctx: JobContext):
                             user_text=text_hint,
                             image_description=image_description,
                             source="image",
-                            speak_response=True,
-                            publish_response=True
+                            speak_response=True
                         )
                     except Exception as e:
                         log(f"handle_image error: {e}")
@@ -868,7 +838,6 @@ async def entrypoint(ctx: JobContext):
 
         if welcome_text:
             append_turn(state["history"], "assistant", welcome_text)
-            await publish_agent_message(ctx, welcome_text)
             await speak_text(welcome_text)
     except Exception as e:
         log(f"welcome error: {e}")

@@ -224,14 +224,13 @@ async def entrypoint(ctx: JobContext):
                         pass
                 asyncio.create_task(process_image())
 
-            # 🟢 NUEVO: Procesamos el audio del invitado
+            # 🟢 NUEVO: Procesamos el audio del invitado y enviamos su globo
             elif payload.get("action") == "guest_audio":
                 audio_bytes = base64.b64decode(payload["data"])
                 mime_type = payload.get("mime_type", "audio/webm")
 
                 async def process_guest_audio():
                     try:
-                        # Transcribimos el audio al vuelo con Gemini Flash
                         resp = gemini_client.models.generate_content(
                             model='gemini-2.5-flash',
                             contents=[
@@ -241,6 +240,11 @@ async def entrypoint(ctx: JobContext):
                         )
                         transcripcion = resp.text.strip()
                         if transcripcion:
+                            # 1. Devolvemos el globo de texto del invitado al canal de datos
+                            chat_msg = json.dumps({"action": "guest_transcription", "text": transcripcion})
+                            await ctx.room.local_participant.publish_data(chat_msg.encode("utf-8"), reliable=True)
+
+                            # 2. Locus responde
                             instruccion = prompts.VOICE_TEXT_CHAT.format(text=transcripcion)
                             await session.generate_reply(instructions=instruccion)
                     except Exception:

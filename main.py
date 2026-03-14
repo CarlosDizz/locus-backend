@@ -107,7 +107,7 @@ async def home_chat(req: ChatRequest):
         history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
 
     response = gemini_client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-2.0-flash',
         contents=history
     )
 
@@ -135,7 +135,7 @@ async def get_token(req: TokenRequest):
         try:
             prompt_data = prompts.DATA_EXTRACTOR_PROMPT.format(poi_name=poi_name)
             resp = gemini_client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-2.0-flash',
                 contents=prompt_data
             )
             if "NO_DATA" not in resp.text:
@@ -151,7 +151,13 @@ async def get_token(req: TokenRequest):
     token.with_name(req.participant_name)
     token.with_metadata(enriched_context)
 
-    grant = VideoGrants(room_join=True, room=req.room_name)
+    grant = VideoGrants(
+        room_join=True,
+        room=req.room_name,
+        can_publish=True,
+        can_subscribe=True,
+        can_publish_data=True
+    )
     token.with_grants(grant)
 
     return {"token": token.to_jwt(), "ws_url": os.getenv("LIVEKIT_URL")}
@@ -206,7 +212,7 @@ async def entrypoint(ctx: JobContext):
                     try:
                         def fetch_desc():
                             return gemini_client.models.generate_content(
-                                model='gemini-2.5-flash',
+                                model='gemini-2.0-flash',
                                 contents=[
                                     types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
                                     types.Part.from_text(text=prompts.VOICE_IMAGE_DESCRIBE)
@@ -219,7 +225,7 @@ async def entrypoint(ctx: JobContext):
                     except Exception:
                         pass
 
-                    asyncio.create_task(process_image())
+                asyncio.create_task(process_image())
         except Exception:
             pass
 

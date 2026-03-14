@@ -77,14 +77,14 @@ La última intervención del usuario manda sobre el resto del historial.
 
 Devuelve EXCLUSIVAMENTE JSON válido con este formato:
 
-{
+{{
   "needs_retrieval": true,
   "reason": "factual_gap | enough_context | smalltalk | offtopic | visual_question",
   "focus_poi": "string",
   "retrieval_query": "string",
   "bridge_phrase": "string",
   "answer_goal": "string"
-}
+}}
 
 Reglas:
 - "needs_retrieval" debe ser true o false.
@@ -110,6 +110,7 @@ HISTORIAL RECIENTE:
 ÚLTIMO TURNO DEL USUARIO:
 {user_turn}
 """
+
 
 DATA_EXTRACTOR_PROMPT = """
 Tu trabajo es convertir una fuente textual en una ficha factual limpia para un guía turístico.
@@ -196,6 +197,7 @@ Preséntate como guía turístico por voz.
 Si existe un POI activo, deja claro que la visita gira en torno a ese lugar.
 Invita al usuario a preguntar por la historia, el contexto o los detalles del sitio.
 No inventes datos históricos.
+Habla en español salvo que el usuario pida explícitamente otro idioma.
 """
 
 
@@ -237,6 +239,7 @@ Reglas:
 - No cambies de tema.
 - No cierres con frases turísticas vacías si queda una pregunta sin responder.
 - Mantén tono de guía turístico cercano.
+- Habla en español salvo que el usuario pida explícitamente otro idioma.
 - No uses markdown.
 """
 

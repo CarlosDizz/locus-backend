@@ -6,3 +6,4 @@ livekit-api
 google-genai
 python-dotenv
 requests
+wikipedia==1.4.0

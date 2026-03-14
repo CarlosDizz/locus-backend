@@ -4,6 +4,7 @@ import re
 import base64
 import asyncio
 import requests
+import wikipedia
 from google import genai
 from google.genai import types
 from fastapi import FastAPI
@@ -13,7 +14,7 @@ from dotenv import load_dotenv
 
 import prompts
 
-from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
+from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli, llm
 from livekit.plugins import google as livekit_google
 from livekit.api import AccessToken, VideoGrants
 from livekit import rtc
@@ -70,6 +71,20 @@ def get_real_pois(query, lat, lng):
             "description": r.get("formatted_address", "")
         })
     return pois
+
+class LocusTools(llm.FunctionContext):
+    @llm.ai_callable(description="Busca información histórica, arquitectos, años y datos exactos de monumentos en Wikipedia.")
+    async def consultar_enciclopedia(self, consulta: str) -> str:
+        try:
+            wikipedia.set_lang("es")
+            resultado = await asyncio.to_thread(wikipedia.summary, consulta, sentences=4)
+            return resultado
+        except wikipedia.exceptions.DisambiguationError:
+            return f"Hay varios resultados para {consulta}. Necesito que el usuario sea más específico."
+        except wikipedia.exceptions.PageError:
+            return f"No se encontraron datos confirmados sobre {consulta}."
+        except Exception:
+            return "Error de conexión al buscar el dato."
 
 @app.post("/home_chat")
 async def home_chat(req: ChatRequest):
@@ -174,6 +189,8 @@ async def entrypoint(ctx: JobContext):
         dynamic_prompt += f"\nCONTEXTO DEL USUARIO: {user_context}."
         welcome_msg = prompts.VOICE_WELCOME_ENRICHED.format(user_context=user_context)
 
+    fnc_ctx = LocusTools()
+
     session = AgentSession(
         llm=livekit_google.beta.realtime.RealtimeModel(
             api_key=os.environ.get("GEMINI_API_KEY"),
@@ -183,7 +200,7 @@ async def entrypoint(ctx: JobContext):
         )
     )
 
-    agent = Agent(instructions=dynamic_prompt)
+    agent = Agent(instructions=dynamic_prompt, fnc_ctx=fnc_ctx)
     await session.start(agent=agent, room=ctx.room)
 
     @ctx.room.on("participant_disconnected")
@@ -224,7 +241,6 @@ async def entrypoint(ctx: JobContext):
                         pass
                 asyncio.create_task(process_image())
 
-            # 🟢 NUEVO: Procesamos el audio del invitado y enviamos su globo
             elif payload.get("action") == "guest_audio":
                 audio_bytes = base64.b64decode(payload["data"])
                 mime_type = payload.get("mime_type", "audio/webm")
@@ -240,11 +256,9 @@ async def entrypoint(ctx: JobContext):
                         )
                         transcripcion = resp.text.strip()
                         if transcripcion:
-                            # 1. Devolvemos el globo de texto del invitado al canal de datos
                             chat_msg = json.dumps({"action": "guest_transcription", "text": transcripcion})
                             await ctx.room.local_participant.publish_data(chat_msg.encode("utf-8"), reliable=True)
 
-                            # 2. Locus responde
                             instruccion = prompts.VOICE_TEXT_CHAT.format(text=transcripcion)
                             await session.generate_reply(instructions=instruccion)
                     except Exception:

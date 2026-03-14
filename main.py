@@ -151,7 +151,13 @@ async def get_token(req: TokenRequest):
     token.with_name(req.participant_name)
     token.with_metadata(enriched_context)
 
-    grant = VideoGrants(room_join=True, room=req.room_name)
+    grant = VideoGrants(
+        room_join=True,
+        room=req.room_name,
+        can_publish=True,
+        can_publish_data=True,
+        can_subscribe=True
+    )
     token.with_grants(grant)
 
     return {"token": token.to_jwt(), "ws_url": os.getenv("LIVEKIT_URL")}
@@ -159,15 +165,7 @@ async def get_token(req: TokenRequest):
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
 
-    participant = await ctx.wait_for_participant()
-    user_context = participant.metadata or ""
-
     dynamic_prompt = prompts.VOICE_SYSTEM_PROMPT
-    welcome_msg = prompts.VOICE_WELCOME_BASE
-
-    if user_context:
-        dynamic_prompt += f"\nCONTEXTO DEL USUARIO: {user_context}."
-        welcome_msg = prompts.VOICE_WELCOME_ENRICHED.format(user_context=user_context)
 
     session = AgentSession(
         llm=livekit_google.beta.realtime.RealtimeModel(
@@ -238,7 +236,7 @@ async def entrypoint(ctx: JobContext):
         asyncio.create_task(send_welcome())
 
     try:
-        await session.generate_reply(instructions=welcome_msg)
+        await session.generate_reply(instructions=prompts.VOICE_WELCOME_BASE)
     except Exception:
         pass
 

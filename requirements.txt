@@ -1,9 +1,8 @@
-fastapi
-uvicorn
-livekit-agents
-livekit-plugins-google
-livekit-api
-google-genai
-python-dotenv
-requests
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+livekit-agents[google]~=1.4
+livekit-api>=1.0,<2.0
+google-genai>=1.0,<2.0
+python-dotenv>=1.0,<2.0
+requests>=2.32,<3.0
 wikipedia==1.4.0

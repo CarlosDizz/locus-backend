@@ -5,6 +5,7 @@ import base64
 import asyncio
 import requests
 import wikipedia
+
 from google import genai
 from google.genai import types
 from fastapi import FastAPI
@@ -14,7 +15,14 @@ from dotenv import load_dotenv
 
 import prompts
 
-from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli, llm
+from livekit.agents import (
+    Agent,
+    AgentSession,
+    JobContext,
+    WorkerOptions,
+    cli,
+    function_tool,
+)
 from livekit.plugins import google as livekit_google
 from livekit.api import AccessToken, VideoGrants
 from livekit import rtc
@@ -22,11 +30,16 @@ from livekit import rtc
 load_dotenv()
 
 gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-
 chat_histories = {}
 
 app = FastAPI(title="Locus API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 class ChatRequest(BaseModel):
     action: str
@@ -34,13 +47,15 @@ class ChatRequest(BaseModel):
     deviceId: str
     context: str = ""
     text: str = ""
-    lat: float = None
-    lng: float = None
+    lat: float | None = None
+    lng: float | None = None
+
 
 class TokenRequest(BaseModel):
     participant_name: str
     room_name: str
     poi_context: str = ""
+
 
 def get_real_pois(query, lat, lng):
     api_key = os.environ.get("MAPS_API_KEY")
@@ -50,41 +65,67 @@ def get_real_pois(query, lat, lng):
     url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
     params = {
         "query": query,
-        "key": api_key
+        "key": api_key,
     }
-    if lat and lng:
+
+    if lat is not None and lng is not None:
         params["location"] = f"{lat},{lng}"
         params["radius"] = 2000
 
-    resp = requests.get(url, params=params)
-    if resp.status_code != 200:
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code != 200:
+            return []
+
+        results = resp.json().get("results", [])[:3]
+        pois = []
+
+        for r in results:
+            geometry = r.get("geometry", {}).get("location", {})
+            if "lat" not in geometry or "lng" not in geometry:
+                continue
+
+            pois.append(
+                {
+                    "name": r.get("name"),
+                    "lat": geometry["lat"],
+                    "lng": geometry["lng"],
+                    "description": r.get("formatted_address", ""),
+                }
+            )
+
+        return pois
+    except Exception:
         return []
 
-    results = resp.json().get("results", [])[:3]
-    pois = []
 
-    for r in results:
-        pois.append({
-            "name": r.get("name"),
-            "lat": r["geometry"]["location"]["lat"],
-            "lng": r["geometry"]["location"]["lng"],
-            "description": r.get("formatted_address", "")
-        })
-    return pois
+class LocusAgent(Agent):
+    def __init__(self, instructions: str):
+        super().__init__(instructions=instructions)
 
-class LocusTools(llm.FunctionContext):
-    @llm.ai_callable(description="Busca información histórica, arquitectos, años y datos exactos de monumentos en Wikipedia.")
+    @function_tool()
     async def consultar_enciclopedia(self, consulta: str) -> str:
+        """
+        Busca información histórica, arquitectos, años y datos exactos
+        de monumentos en Wikipedia.
+        """
         try:
             wikipedia.set_lang("es")
-            resultado = await asyncio.to_thread(wikipedia.summary, consulta, sentences=4)
+            resultado = await asyncio.to_thread(
+                wikipedia.summary,
+                consulta,
+                sentences=4,
+                auto_suggest=False,
+            )
             return resultado
-        except wikipedia.exceptions.DisambiguationError:
-            return f"Hay varios resultados para {consulta}. Necesito que el usuario sea más específico."
+        except wikipedia.exceptions.DisambiguationError as e:
+            opciones = ", ".join(e.options[:5])
+            return f"Hay varios resultados para {consulta}. Sé más específico. Opciones: {opciones}"
         except wikipedia.exceptions.PageError:
             return f"No se encontraron datos confirmados sobre {consulta}."
         except Exception:
             return "Error de conexión al buscar el dato."
+
 
 @app.post("/home_chat")
 async def home_chat(req: ChatRequest):
@@ -107,59 +148,82 @@ async def home_chat(req: ChatRequest):
         real_pois = get_real_pois("lugares turísticos", current_lat, current_lng)
         nombres_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else "lugares cercanos"
 
-        prompt = prompts.CHAT_SETUP_PROMPT.format(context=req.context, nombres_pois=nombres_pois)
-        history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
+        prompt = prompts.CHAT_SETUP_PROMPT.format(
+            context=req.context,
+            nombres_pois=nombres_pois,
+        )
+
+        history.append(
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=prompt)],
+            )
+        )
 
         if real_pois:
-            pois_block = f"\n<POIS>\n{json.dumps(real_pois, ensure_ascii=False)}\n</POIS>"
+            pois_block = f"\n\n{json.dumps(real_pois, ensure_ascii=False)}\n"
+
     else:
         real_pois = get_real_pois(req.text, current_lat, current_lng)
         nombres_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else ""
 
         prompt = prompts.CHAT_TEXT_PROMPT.format(text=req.text)
+
         if real_pois:
             prompt += prompts.CHAT_POIS_INSTRUCTION.format(nombres_pois=nombres_pois)
-            pois_block = f"\n<POIS>\n{json.dumps(real_pois, ensure_ascii=False)}\n</POIS>"
+            pois_block = f"\n\n{json.dumps(real_pois, ensure_ascii=False)}\n"
         else:
             prompt += prompts.CHAT_FALLBACK_INSTRUCTION
 
-        history.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
+        history.append(
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=prompt)],
+            )
+        )
 
     response = gemini_client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=history
+        model="gemini-2.5-flash",
+        contents=history,
     )
 
-    bot_reply = re.sub(r'<POIS>.*?</POIS>', '', response.text, flags=re.DOTALL)
+    bot_reply = re.sub(r"<[^>]+>", "", response.text or "", flags=re.DOTALL)
 
     if pois_block:
         bot_reply += pois_block
 
-    history.append(types.Content(role="model", parts=[types.Part.from_text(text=bot_reply)]))
+    history.append(
+        types.Content(
+            role="model",
+            parts=[types.Part.from_text(text=bot_reply)],
+        )
+    )
 
     return {"reply": bot_reply}
+
 
 @app.post("/get_token")
 async def get_token(req: TokenRequest):
     enriched_context = req.poi_context
-    match = re.search(r'Viendo:\s*(.*?)\.\s*Detalles', req.poi_context)
 
+    match = re.search(r"Viendo:\s*(.*?)\.\s*Detalles", req.poi_context)
     if match:
         poi_name = match.group(1)
+
         try:
             prompt_data = prompts.DATA_EXTRACTOR_PROMPT.format(poi_name=poi_name)
             resp = gemini_client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt_data
+                model="gemini-2.5-flash",
+                contents=prompt_data,
             )
-            if "NO_DATA" not in resp.text:
+            if resp.text and "NO_DATA" not in resp.text:
                 enriched_context += f" | DATOS HISTÓRICOS REALES PARA QUE LOS USES: {resp.text}"
-        except:
+        except Exception:
             pass
 
     token = AccessToken(
         os.getenv("LIVEKIT_API_KEY"),
-        os.getenv("LIVEKIT_API_SECRET")
+        os.getenv("LIVEKIT_API_SECRET"),
     )
     token.with_identity(req.participant_name)
     token.with_name(req.participant_name)
@@ -170,16 +234,20 @@ async def get_token(req: TokenRequest):
         room=req.room_name,
         can_publish=True,
         can_subscribe=True,
-        can_publish_data=True
+        can_publish_data=True,
     )
     token.with_grants(grant)
 
-    return {"token": token.to_jwt(), "ws_url": os.getenv("LIVEKIT_URL")}
+    return {
+        "token": token.to_jwt(),
+        "ws_url": os.getenv("LIVEKIT_URL"),
+    }
+
 
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
-
     participant = await ctx.wait_for_participant()
+
     user_context = participant.metadata or ""
 
     dynamic_prompt = prompts.VOICE_SYSTEM_PROMPT
@@ -189,18 +257,16 @@ async def entrypoint(ctx: JobContext):
         dynamic_prompt += f"\nCONTEXTO DEL USUARIO: {user_context}."
         welcome_msg = prompts.VOICE_WELCOME_ENRICHED.format(user_context=user_context)
 
-    fnc_ctx = LocusTools()
-
     session = AgentSession(
         llm=livekit_google.beta.realtime.RealtimeModel(
             api_key=os.environ.get("GEMINI_API_KEY"),
             model="gemini-2.5-flash-native-audio-latest",
             instructions=dynamic_prompt,
-            voice="Puck"
+            voice="Puck",
         )
     )
 
-    agent = Agent(instructions=dynamic_prompt, fnc_ctx=fnc_ctx)
+    agent = LocusAgent(instructions=dynamic_prompt)
     await session.start(agent=agent, room=ctx.room)
 
     @ctx.room.on("participant_disconnected")
@@ -212,33 +278,39 @@ async def entrypoint(ctx: JobContext):
     def on_data_received(data_packet: rtc.DataPacket):
         try:
             payload = json.loads(data_packet.data.decode("utf-8"))
+
             if payload.get("action") == "text_chat":
+
                 async def text_reply():
                     try:
-                        instruccion = prompts.VOICE_TEXT_CHAT.format(text=payload['data'])
+                        instruccion = prompts.VOICE_TEXT_CHAT.format(text=payload["data"])
                         await session.generate_reply(instructions=instruccion)
                     except Exception:
                         pass
+
                 asyncio.create_task(text_reply())
 
             elif payload.get("action") == "image_context":
                 mime_type = payload.get("mime_type", "image/jpeg")
                 image_bytes = base64.b64decode(payload["data"])
+
                 async def process_image():
                     try:
                         def fetch_desc():
                             return gemini_client.models.generate_content(
-                                model='gemini-2.5-flash',
+                                model="gemini-2.5-flash",
                                 contents=[
                                     types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                                    types.Part.from_text(text=prompts.VOICE_IMAGE_DESCRIBE)
-                                ]
+                                    types.Part.from_text(text=prompts.VOICE_IMAGE_DESCRIBE),
+                                ],
                             ).text
+
                         descripcion = await asyncio.to_thread(fetch_desc)
                         instruccion_foto = prompts.VOICE_IMAGE_COMMENT.format(descripcion=descripcion)
                         await session.generate_reply(instructions=instruccion_foto)
                     except Exception:
                         pass
+
                 asyncio.create_task(process_image())
 
             elif payload.get("action") == "guest_audio":
@@ -248,21 +320,38 @@ async def entrypoint(ctx: JobContext):
                 async def process_guest_audio():
                     try:
                         resp = gemini_client.models.generate_content(
-                            model='gemini-2.5-flash',
+                            model="gemini-2.5-flash",
                             contents=[
                                 types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-                                types.Part.from_text(text="Transcribe con precisión lo que dice la persona en este audio. Responde ÚNICAMENTE con el texto transcrito sin comillas. Si es solo ruido o no se entiende, no respondas nada.")
-                            ]
+                                types.Part.from_text(
+                                    text=(
+                                        "Transcribe con precisión lo que dice la persona en este audio. "
+                                        "Responde ÚNICAMENTE con el texto transcrito sin comillas. "
+                                        "Si es solo ruido o no se entiende, no respondas nada."
+                                    )
+                                ),
+                            ],
                         )
-                        transcripcion = resp.text.strip()
+
+                        transcripcion = (resp.text or "").strip()
+
                         if transcripcion:
-                            chat_msg = json.dumps({"action": "guest_transcription", "text": transcripcion})
-                            await ctx.room.local_participant.publish_data(chat_msg.encode("utf-8"), reliable=True)
+                            chat_msg = json.dumps(
+                                {
+                                    "action": "guest_transcription",
+                                    "text": transcripcion,
+                                }
+                            )
+                            await ctx.room.local_participant.publish_data(
+                                chat_msg.encode("utf-8"),
+                                reliable=True,
+                            )
 
                             instruccion = prompts.VOICE_TEXT_CHAT.format(text=transcripcion)
                             await session.generate_reply(instructions=instruccion)
                     except Exception:
                         pass
+
                 asyncio.create_task(process_guest_audio())
 
         except Exception:
@@ -271,6 +360,7 @@ async def entrypoint(ctx: JobContext):
     @ctx.room.on("participant_connected")
     def on_participant_connected(p: rtc.RemoteParticipant):
         welcome_str = prompts.VOICE_NEW_PARTICIPANT_BASE
+
         if p.metadata:
             welcome_str = prompts.VOICE_NEW_PARTICIPANT_ENRICHED.format(metadata=p.metadata)
 
@@ -286,6 +376,7 @@ async def entrypoint(ctx: JobContext):
         await session.generate_reply(instructions=welcome_msg)
     except Exception:
         pass
+
 
 if __name__ == "__main__":
     cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))

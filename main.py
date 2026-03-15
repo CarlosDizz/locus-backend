@@ -259,7 +259,7 @@ def build_verified_context_from_text(subject_name: str, raw_text: str, answer_go
 
     cache_key = f"RAW::{subject_name}::{answer_goal}".strip()
     if cache_key in poi_context_cache:
-        return poi_context_cache[cache_key]
+      return poi_context_cache[cache_key]
 
     prompt = prompts.DATA_EXTRACTOR_PROMPT.format(
         poi_name=subject_name,
@@ -717,6 +717,32 @@ async def entrypoint(ctx: JobContext):
 
         return await asyncio.wait_for(asyncio.to_thread(transcribe), timeout=15)
 
+    async def register_host_turn_only(user_text: str):
+        text = clean_text(user_text)
+        if not text:
+            return
+
+        async with turn_lock:
+            state["welcome_token"] += 1
+
+            sub_poi = infer_sub_poi(text)
+            if sub_poi:
+                state["current_sub_poi"] = sub_poi
+                log(f"HOST SUB_POI detected={sub_poi}")
+
+            user_turn = build_user_turn_text(user_text=text, image_description="")
+            append_turn(state["history"], "user", user_turn)
+            log(f"HOST SHADOW appended text={text}")
+
+    async def register_agent_shadow(text: str):
+        text = clean_text(text)
+        if not text:
+            return
+
+        async with turn_lock:
+            append_turn(state["history"], "assistant", text)
+            log(f"AGENT SHADOW appended text={text[:150]}")
+
     async def process_user_turn(
         user_text: str = "",
         image_description: str = "",
@@ -890,16 +916,6 @@ async def entrypoint(ctx: JobContext):
                         reliable=True
                     )
 
-                elif source == "host_audio":
-                    chat_msg = json.dumps({
-                        "action": "host_transcription",
-                        "text": transcription
-                    })
-                    await ctx.room.local_participant.publish_data(
-                        chat_msg.encode("utf-8"),
-                        reliable=True
-                    )
-
                 await process_user_turn(
                     user_text=transcription,
                     image_description="",
@@ -938,8 +954,11 @@ async def entrypoint(ctx: JobContext):
             elif payload.get("action") == "guest_audio_chunk":
                 asyncio.create_task(handle_audio_chunk("guest_audio", payload))
 
-            elif payload.get("action") == "host_audio_chunk":
-                asyncio.create_task(handle_audio_chunk("host_audio", payload))
+            elif payload.get("action") == "host_transcription":
+                asyncio.create_task(register_host_turn_only(payload.get("text", "")))
+
+            elif payload.get("action") == "agent_shadow":
+                asyncio.create_task(register_agent_shadow(payload.get("text", "")))
 
             elif payload.get("action") == "image_context":
                 async def handle_image():
@@ -987,7 +1006,7 @@ async def entrypoint(ctx: JobContext):
                         state["base_context"] = new_context
                         new_poi = extract_current_poi_name(new_context)
 
-                        if new_poi and new_poi != state["active_poi"]:
+                        if new_poi:
                             state["active_poi"] = new_poi
                             state["current_sub_poi"] = ""
                             state["verified_context"] = await asyncio.wait_for(

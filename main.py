@@ -660,7 +660,19 @@ async def entrypoint(ctx: JobContext):
         "verified_context": initial_verified_context,
         "history": [],
         "welcome_token": 0,
+        "audio_buffers": {}
     }
+
+    def cleanup_audio_buffers():
+        to_delete = []
+        for audio_id, item in state["audio_buffers"].items():
+            age = asyncio.get_event_loop().time() - item["created_at"]
+            if age > 120:
+                to_delete.append(audio_id)
+
+        for audio_id in to_delete:
+            del state["audio_buffers"][audio_id]
+            log(f"audio buffer expired audio_id={audio_id}")
 
     async def speak_text(text: str, token: Optional[int] = None):
         text = clean_text(text)
@@ -810,6 +822,84 @@ async def entrypoint(ctx: JobContext):
                 append_turn(state["history"], "assistant", fallback)
                 await speak_text(fallback)
 
+    async def handle_audio_chunk(source: str, payload: dict):
+        try:
+            cleanup_audio_buffers()
+
+            audio_id = payload.get("audio_id", "")
+            chunk_index = int(payload.get("chunk_index", -1))
+            total_chunks = int(payload.get("total_chunks", 0))
+            mime_type = payload.get("mime_type", "audio/webm")
+            chunk_data = payload.get("data", "")
+
+            if not audio_id or chunk_index < 0 or total_chunks <= 0 or not chunk_data:
+                log(f"{source}_chunk invalid payload")
+                return
+
+            if audio_id not in state["audio_buffers"]:
+                state["audio_buffers"][audio_id] = {
+                    "source": source,
+                    "mime_type": mime_type,
+                    "total_chunks": total_chunks,
+                    "chunks": {},
+                    "created_at": asyncio.get_event_loop().time(),
+                }
+                log(f"{source}_chunk buffer created audio_id={audio_id} total_chunks={total_chunks}")
+
+            buf = state["audio_buffers"][audio_id]
+            buf["chunks"][chunk_index] = chunk_data
+
+            received = len(buf["chunks"])
+            log(f"{source}_chunk received audio_id={audio_id} chunk={chunk_index + 1}/{total_chunks}")
+
+            if received < total_chunks:
+                return
+
+            ordered = []
+            for i in range(total_chunks):
+                part = buf["chunks"].get(i)
+                if part is None:
+                    log(f"{source}_chunk missing part audio_id={audio_id} idx={i}")
+                    return
+                ordered.append(part)
+
+            base64data = "".join(ordered)
+            del state["audio_buffers"][audio_id]
+
+            audio_bytes = base64.b64decode(base64data)
+            transcription = await transcribe_audio_bytes(audio_bytes, mime_type)
+            log(f"{source}_chunk transcription={transcription}")
+
+            if transcription:
+                if source == "guest_audio":
+                    chat_msg = json.dumps({
+                        "action": "guest_transcription",
+                        "text": transcription
+                    })
+                    await ctx.room.local_participant.publish_data(
+                        chat_msg.encode("utf-8"),
+                        reliable=True
+                    )
+
+                elif source == "host_audio":
+                    chat_msg = json.dumps({
+                        "action": "host_transcription",
+                        "text": transcription
+                    })
+                    await ctx.room.local_participant.publish_data(
+                        chat_msg.encode("utf-8"),
+                        reliable=True
+                    )
+
+                await process_user_turn(
+                    user_text=transcription,
+                    image_description="",
+                    source=source
+                )
+
+        except Exception as e:
+            log(f"handle_audio_chunk error source={source}: {e}")
+
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(p: rtc.RemoteParticipant):
         if not ctx.room.remote_participants:
@@ -836,37 +926,11 @@ async def entrypoint(ctx: JobContext):
 
                 asyncio.create_task(handle_text_chat())
 
-            elif payload.get("action") in ("guest_audio", "host_audio"):
-                async def handle_audio():
-                    try:
-                        source = payload.get("action")
-                        log(f"{source} START")
-                        audio_bytes = base64.b64decode(payload["data"])
-                        mime_type = payload.get("mime_type", "audio/webm")
+            elif payload.get("action") == "guest_audio_chunk":
+                asyncio.create_task(handle_audio_chunk("guest_audio", payload))
 
-                        transcription = await transcribe_audio_bytes(audio_bytes, mime_type)
-                        log(f"{source} transcription={transcription}")
-
-                        if transcription:
-                            if source == "guest_audio":
-                                chat_msg = json.dumps({
-                                    "action": "guest_transcription",
-                                    "text": transcription
-                                })
-                                await ctx.room.local_participant.publish_data(
-                                    chat_msg.encode("utf-8"),
-                                    reliable=True
-                                )
-
-                            await process_user_turn(
-                                user_text=transcription,
-                                image_description="",
-                                source=source
-                            )
-                    except Exception as e:
-                        log(f"handle_audio error: {e}")
-
-                asyncio.create_task(handle_audio())
+            elif payload.get("action") == "host_audio_chunk":
+                asyncio.create_task(handle_audio_chunk("host_audio", payload))
 
             elif payload.get("action") == "image_context":
                 async def handle_image():

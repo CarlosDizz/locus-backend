@@ -259,7 +259,7 @@ def build_verified_context_from_text(subject_name: str, raw_text: str, answer_go
 
     cache_key = f"RAW::{subject_name}::{answer_goal}".strip()
     if cache_key in poi_context_cache:
-      return poi_context_cache[cache_key]
+        return poi_context_cache[cache_key]
 
     prompt = prompts.DATA_EXTRACTOR_PROMPT.format(
         poi_name=subject_name,
@@ -667,7 +667,8 @@ async def entrypoint(ctx: JobContext):
         "audio_buffers": {},
         "current_sub_poi": "",
         "seen_user_segments": set(),
-        "seen_agent_segments": set()
+        "seen_agent_segments": set(),
+        "shadow_events": [],
     }
 
     def cleanup_audio_buffers():
@@ -719,7 +720,12 @@ async def entrypoint(ctx: JobContext):
 
         return await asyncio.wait_for(asyncio.to_thread(transcribe), timeout=15)
 
-    async def register_participant_turn_only(user_text: str, participant_role: str = "", participant_identity: str = "", segment_id: str = ""):
+    async def register_participant_turn_only(
+        user_text: str,
+        participant_role: str = "",
+        participant_identity: str = "",
+        segment_id: str = ""
+    ):
         text = clean_text(user_text)
         if not text:
             return
@@ -742,7 +748,12 @@ async def entrypoint(ctx: JobContext):
 
             user_turn = build_user_turn_text(user_text=text, image_description="")
             append_turn(state["history"], "user", user_turn)
-            log(f"PARTICIPANT SHADOW appended role={participant_role or '(unknown)'} identity={participant_identity or '(unknown)'} text={text}")
+            log(
+                f"PARTICIPANT SHADOW appended to canonical history "
+                f"role={participant_role or '(unknown)'} "
+                f"identity={participant_identity or '(unknown)'} "
+                f"text={text}"
+            )
 
     async def register_agent_shadow(text: str, segment_id: str = ""):
         text = clean_text(text)
@@ -757,8 +768,17 @@ async def entrypoint(ctx: JobContext):
         async with turn_lock:
             if dedupe_key:
                 state["seen_agent_segments"].add(dedupe_key)
-            append_turn(state["history"], "assistant", text)
-            log(f"AGENT SHADOW appended text={text[:150]}")
+
+            state["shadow_events"].append({
+                "role": "assistant_shadow",
+                "text": text,
+                "segment_id": segment_id,
+            })
+
+            if len(state["shadow_events"]) > 50:
+                state["shadow_events"] = state["shadow_events"][-50:]
+
+            log(f"AGENT SHADOW stored out of canonical history text={text[:150]}")
 
     async def process_user_turn(
         user_text: str = "",
@@ -790,7 +810,11 @@ async def entrypoint(ctx: JobContext):
 
                 effective_focus = state["active_poi"]
                 if state["current_sub_poi"]:
-                    effective_focus = f"{state['current_sub_poi']} ({state['active_poi']})" if state["active_poi"] else state["current_sub_poi"]
+                    effective_focus = (
+                        f"{state['current_sub_poi']} ({state['active_poi']})"
+                        if state["active_poi"]
+                        else state["current_sub_poi"]
+                    )
 
                 log(f"TURN effective_focus={effective_focus}")
 
@@ -1046,6 +1070,9 @@ async def entrypoint(ctx: JobContext):
                                 timeout=12
                             )
                             state["history"] = []
+                            state["shadow_events"] = []
+                            state["seen_user_segments"].clear()
+                            state["seen_agent_segments"].clear()
                             state["welcome_token"] += 1
                             log(f"update_poi_context END active_poi={new_poi}")
                     except Exception as e:

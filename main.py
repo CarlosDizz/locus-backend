@@ -3,7 +3,6 @@ import json
 import re
 import base64
 import asyncio
-import time
 from typing import Optional
 
 import requests
@@ -53,10 +52,6 @@ app.add_middleware(
 
 chat_histories = {}
 poi_context_cache = {}
-POI_CACHE_TTL_SECONDS = 60 * 60 * 6
-POI_CACHE_MAX_ITEMS = 250
-ROOM_HISTORY_TTL_SECONDS = 60 * 60 * 12
-ROOM_HISTORY_MAX_ITEMS = 250
 
 
 class ChatRequest(BaseModel):
@@ -96,77 +91,6 @@ def clean_text(text: str) -> str:
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
-
-
-def cleanup_room_histories():
-    now = time.time()
-    expired_keys = []
-    for room_id, room_state in chat_histories.items():
-        updated_at = room_state.get("_updated_at", now) if isinstance(room_state, dict) else now
-        if now - updated_at > ROOM_HISTORY_TTL_SECONDS:
-            expired_keys.append(room_id)
-
-    for room_id in expired_keys:
-        chat_histories.pop(room_id, None)
-        log(f"room history expired room_id={room_id}")
-
-    if len(chat_histories) > ROOM_HISTORY_MAX_ITEMS:
-        ordered = sorted(
-            chat_histories.items(),
-            key=lambda item: item[1].get("_updated_at", 0) if isinstance(item[1], dict) else 0
-        )
-        for room_id, _ in ordered[:-ROOM_HISTORY_MAX_ITEMS]:
-            chat_histories.pop(room_id, None)
-            log(f"room history evicted room_id={room_id}")
-
-
-def get_cached_poi_context(cache_key: str) -> str:
-    cleanup_poi_context_cache()
-    item = poi_context_cache.get(cache_key)
-    if isinstance(item, dict):
-        return clean_text(item.get("value", ""))
-    if isinstance(item, str):
-        return clean_text(item)
-    return ""
-
-
-def set_cached_poi_context(cache_key: str, value: str):
-    if not value:
-        return
-    cleanup_poi_context_cache()
-    poi_context_cache[cache_key] = {"value": value, "ts": time.time()}
-
-
-def cleanup_poi_context_cache():
-    now = time.time()
-    expired = []
-    for cache_key, item in poi_context_cache.items():
-        if isinstance(item, dict):
-            ts = item.get("ts", 0)
-            if now - ts > POI_CACHE_TTL_SECONDS:
-                expired.append(cache_key)
-
-    for cache_key in expired:
-        poi_context_cache.pop(cache_key, None)
-        log(f"poi context expired cache_key={cache_key}")
-
-    if len(poi_context_cache) > POI_CACHE_MAX_ITEMS:
-        ordered = sorted(
-            poi_context_cache.items(),
-            key=lambda item: item[1].get("ts", 0) if isinstance(item[1], dict) else 0
-        )
-        for cache_key, _ in ordered[:-POI_CACHE_MAX_ITEMS]:
-            poi_context_cache.pop(cache_key, None)
-            log(f"poi context evicted cache_key={cache_key}")
-
-
-def participant_role_to_label(role: str) -> str:
-    role = clean_text(role).lower()
-    if role == "anfitrion":
-        return "Anfitrión"
-    if role == "invitado":
-        return "Invitado"
-    return "Participante"
 
 
 def parse_json_loose(raw: str) -> dict:
@@ -334,9 +258,8 @@ def build_verified_context_from_text(subject_name: str, raw_text: str, answer_go
         return ""
 
     cache_key = f"RAW::{subject_name}::{answer_goal}".strip()
-    cached_context = get_cached_poi_context(cache_key)
-    if cached_context:
-      return cached_context
+    if cache_key in poi_context_cache:
+      return poi_context_cache[cache_key]
 
     prompt = prompts.DATA_EXTRACTOR_PROMPT.format(
         poi_name=subject_name,
@@ -346,7 +269,7 @@ def build_verified_context_from_text(subject_name: str, raw_text: str, answer_go
 
     verified_context = generate_text(CONTENT_MODEL, prompt)
     if verified_context:
-        set_cached_poi_context(cache_key, verified_context)
+        poi_context_cache[cache_key] = verified_context
 
     return verified_context
 
@@ -357,10 +280,9 @@ def build_verified_poi_context(poi_name: str, answer_goal: str = "") -> str:
 
     cache_key = f"{poi_name}::{answer_goal}".strip()
 
-    cached_context = get_cached_poi_context(cache_key)
-    if cached_context:
+    if cache_key in poi_context_cache:
         log(f"build_verified_poi_context cache hit: {cache_key}")
-        return cached_context
+        return poi_context_cache[cache_key]
 
     log(f"build_verified_poi_context START poi={poi_name} goal={answer_goal}")
 
@@ -376,7 +298,7 @@ def build_verified_poi_context(poi_name: str, answer_goal: str = "") -> str:
     )
 
     if verified_context:
-        set_cached_poi_context(cache_key, verified_context)
+        poi_context_cache[cache_key] = verified_context
         log(f"build_verified_poi_context END OK poi={poi_name}")
     else:
         log(f"build_verified_poi_context END EMPTY poi={poi_name}")
@@ -392,10 +314,9 @@ def build_verified_context_from_query(query: str, fallback_name: str, answer_goa
         return build_verified_poi_context(fallback_name, answer_goal)
 
     cache_key = f"QUERY::{query}::{answer_goal}".strip()
-    cached_context = get_cached_poi_context(cache_key)
-    if cached_context:
+    if cache_key in poi_context_cache:
         log(f"build_verified_context_from_query cache hit: {cache_key}")
-        return cached_context
+        return poi_context_cache[cache_key]
 
     log(f"build_verified_context_from_query START query={query} fallback={fallback_name}")
 
@@ -417,7 +338,7 @@ def build_verified_context_from_query(query: str, fallback_name: str, answer_goa
     )
 
     if verified_context:
-        set_cached_poi_context(cache_key, verified_context)
+        poi_context_cache[cache_key] = verified_context
         log("build_verified_context_from_query END OK")
     else:
         log("build_verified_context_from_query END EMPTY")
@@ -745,7 +666,8 @@ async def entrypoint(ctx: JobContext):
         "welcome_token": 0,
         "audio_buffers": {},
         "current_sub_poi": "",
-        "bg_tasks": set()
+        "seen_user_segments": set(),
+        "seen_agent_segments": set()
     }
 
     def cleanup_audio_buffers():
@@ -758,22 +680,6 @@ async def entrypoint(ctx: JobContext):
         for audio_id in to_delete:
             del state["audio_buffers"][audio_id]
             log(f"audio buffer expired audio_id={audio_id}")
-
-    def spawn(coro, task_name: str = "task"):
-        task = asyncio.create_task(coro, name=task_name)
-        state["bg_tasks"].add(task)
-
-        def _cleanup(done_task: asyncio.Task):
-            state["bg_tasks"].discard(done_task)
-            try:
-                done_task.result()
-            except asyncio.CancelledError:
-                log(f"task cancelled name={task_name}")
-            except Exception as e:
-                log(f"task error name={task_name}: {e}")
-
-        task.add_done_callback(_cleanup)
-        return task
 
     async def speak_text(text: str, token: Optional[int] = None):
         text = clean_text(text)
@@ -813,29 +719,44 @@ async def entrypoint(ctx: JobContext):
 
         return await asyncio.wait_for(asyncio.to_thread(transcribe), timeout=15)
 
-    async def register_host_turn_only(user_text: str):
+    async def register_participant_turn_only(user_text: str, participant_role: str = "", participant_identity: str = "", segment_id: str = ""):
         text = clean_text(user_text)
         if not text:
             return
 
+        dedupe_key = clean_text(segment_id or f"{participant_identity}:{text[:80]}")
+        if dedupe_key and dedupe_key in state["seen_user_segments"]:
+            log(f"PARTICIPANT SHADOW duplicate skipped key={dedupe_key}")
+            return
+
         async with turn_lock:
+            if dedupe_key:
+                state["seen_user_segments"].add(dedupe_key)
+
             state["welcome_token"] += 1
 
             sub_poi = infer_sub_poi(text)
             if sub_poi:
                 state["current_sub_poi"] = sub_poi
-                log(f"HOST SUB_POI detected={sub_poi}")
+                log(f"PARTICIPANT SUB_POI detected={sub_poi}")
 
             user_turn = build_user_turn_text(user_text=text, image_description="")
             append_turn(state["history"], "user", user_turn)
-            log(f"HOST SHADOW appended text={text}")
+            log(f"PARTICIPANT SHADOW appended role={participant_role or '(unknown)'} identity={participant_identity or '(unknown)'} text={text}")
 
-    async def register_agent_shadow(text: str):
+    async def register_agent_shadow(text: str, segment_id: str = ""):
         text = clean_text(text)
         if not text:
             return
 
+        dedupe_key = clean_text(segment_id or text[:120])
+        if dedupe_key and dedupe_key in state["seen_agent_segments"]:
+            log(f"AGENT SHADOW duplicate skipped key={dedupe_key}")
+            return
+
         async with turn_lock:
+            if dedupe_key:
+                state["seen_agent_segments"].add(dedupe_key)
             append_turn(state["history"], "assistant", text)
             log(f"AGENT SHADOW appended text={text[:150]}")
 
@@ -962,8 +883,6 @@ async def entrypoint(ctx: JobContext):
             total_chunks = int(payload.get("total_chunks", 0))
             mime_type = payload.get("mime_type", "audio/webm")
             chunk_data = payload.get("data", "")
-            participant_role = clean_text(payload.get("role", "")).lower()
-            participant_name = clean_text(payload.get("participant_name", ""))
 
             if not audio_id or chunk_index < 0 or total_chunks <= 0 or not chunk_data:
                 log(f"{source}_chunk invalid payload")
@@ -976,8 +895,6 @@ async def entrypoint(ctx: JobContext):
                     "total_chunks": total_chunks,
                     "chunks": {},
                     "created_at": asyncio.get_event_loop().time(),
-                    "participant_role": participant_role,
-                    "participant_name": participant_name,
                 }
                 log(f"{source}_chunk buffer created audio_id={audio_id} total_chunks={total_chunks}")
 
@@ -999,8 +916,6 @@ async def entrypoint(ctx: JobContext):
                 ordered.append(part)
 
             base64data = "".join(ordered)
-            participant_role = buf.get("participant_role", participant_role)
-            participant_name = buf.get("participant_name", participant_name)
             del state["audio_buffers"][audio_id]
 
             audio_bytes = base64.b64decode(base64data)
@@ -1008,22 +923,20 @@ async def entrypoint(ctx: JobContext):
             log(f"{source}_chunk transcription={transcription}")
 
             if transcription:
-                chat_msg = json.dumps({
-                    "action": "user_transcription",
-                    "sender": participant_role_to_label(participant_role),
-                    "role": participant_role or source,
-                    "participant_name": participant_name,
-                    "text": transcription
-                })
-                await ctx.room.local_participant.publish_data(
-                    chat_msg.encode("utf-8"),
-                    reliable=True
-                )
+                if source == "guest_audio":
+                    chat_msg = json.dumps({
+                        "action": "guest_transcription",
+                        "text": transcription
+                    })
+                    await ctx.room.local_participant.publish_data(
+                        chat_msg.encode("utf-8"),
+                        reliable=True
+                    )
 
                 await process_user_turn(
                     user_text=transcription,
                     image_description="",
-                    source=participant_role or source
+                    source=source
                 )
 
         except Exception as e:
@@ -1032,7 +945,7 @@ async def entrypoint(ctx: JobContext):
     @ctx.room.on("participant_disconnected")
     def on_participant_disconnected(p: rtc.RemoteParticipant):
         if not ctx.room.remote_participants:
-            spawn(ctx.room.disconnect(), "room_disconnect")
+            asyncio.create_task(ctx.room.disconnect())
 
     @ctx.room.on("data_received")
     def on_data_received(data_packet: rtc.DataPacket):
@@ -1053,29 +966,27 @@ async def entrypoint(ctx: JobContext):
                     except Exception as e:
                         log(f"handle_text_chat error: {e}")
 
-                spawn(handle_text_chat(), "handle_text_chat")
+                asyncio.create_task(handle_text_chat())
 
-            elif payload.get("action") in ("voice_input_chunk", "guest_audio_chunk", "host_audio_chunk"):
-                source = clean_text(payload.get("role", "")).lower() or "guest_audio"
-                spawn(handle_audio_chunk(source, payload), f"voice_input_chunk_{source}")
+            elif payload.get("action") == "guest_audio_chunk":
+                asyncio.create_task(handle_audio_chunk("guest_audio", payload))
 
             elif payload.get("action") == "guest_audio":
-                source = clean_text(payload.get("role", "")).lower() or "guest_audio"
-                spawn(handle_audio_chunk(source, {
-                    "audio_id": f"legacy_{int(time.time() * 1000)}",
-                    "chunk_index": 0,
-                    "total_chunks": 1,
-                    "mime_type": payload.get("mime_type", "audio/webm"),
-                    "data": payload.get("data", ""),
-                    "role": payload.get("role", source),
-                    "participant_name": payload.get("participant_name", ""),
-                }), f"legacy_guest_audio_{source}")
+                asyncio.create_task(handle_audio_chunk("guest_audio", payload))
 
-            elif payload.get("action") == "host_transcription":
-                spawn(register_host_turn_only(payload.get("text", "")), "register_host_turn_only")
+            elif payload.get("action") in ("participant_transcription", "host_transcription"):
+                asyncio.create_task(register_participant_turn_only(
+                    payload.get("text", ""),
+                    payload.get("role", ""),
+                    payload.get("participant_identity", ""),
+                    payload.get("segment_id", "")
+                ))
 
             elif payload.get("action") == "agent_shadow":
-                spawn(register_agent_shadow(payload.get("text", "")), "register_agent_shadow")
+                asyncio.create_task(register_agent_shadow(
+                    payload.get("text", ""),
+                    payload.get("segment_id", "")
+                ))
 
             elif payload.get("action") == "image_context":
                 async def handle_image():
@@ -1110,7 +1021,7 @@ async def entrypoint(ctx: JobContext):
                     except Exception as e:
                         log(f"handle_image error: {e}")
 
-                spawn(handle_image(), "handle_image")
+                asyncio.create_task(handle_image())
 
             elif payload.get("action") == "update_poi_context":
                 async def handle_update_poi_context():
@@ -1140,7 +1051,7 @@ async def entrypoint(ctx: JobContext):
                     except Exception as e:
                         log(f"handle_update_poi_context error: {e}")
 
-                spawn(handle_update_poi_context(), "handle_update_poi_context")
+                asyncio.create_task(handle_update_poi_context())
 
         except Exception as e:
             log(f"data_received parse error: {e}")
@@ -1154,7 +1065,7 @@ async def entrypoint(ctx: JobContext):
         if welcome_text:
             append_turn(state["history"], "assistant", welcome_text)
             current_token = state["welcome_token"]
-            spawn(speak_text(welcome_text, token=current_token), "welcome_speak")
+            asyncio.create_task(speak_text(welcome_text, token=current_token))
     except Exception as e:
         log(f"welcome error: {e}")
 

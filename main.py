@@ -24,6 +24,8 @@ from livekit.api import AccessToken, VideoGrants
 
 load_dotenv()
 
+APP_BUILD = "rome-voice-only-v1"
+
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.environ.get("LIVEKIT_API_SECRET")
@@ -50,8 +52,8 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-chat_histories = {}
-poi_context_cache = {}
+chat_histories: dict[str, dict] = {}
+poi_context_cache: dict[str, str] = {}
 
 
 class ChatRequest(BaseModel):
@@ -89,6 +91,7 @@ def clean_text(text: str) -> str:
     if not text:
         return ""
     text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\*+", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
@@ -96,7 +99,6 @@ def clean_text(text: str) -> str:
 def parse_json_loose(raw: str) -> dict:
     if not raw:
         return {}
-
     try:
         data = json.loads(raw)
         return data if isinstance(data, dict) else {}
@@ -110,11 +112,10 @@ def parse_json_loose(raw: str) -> dict:
             return data if isinstance(data, dict) else {}
         except Exception:
             return {}
-
     return {}
 
 
-def recent_turns_to_text(turns: list[dict], limit: int = 10) -> str:
+def recent_turns_to_text(turns: list[dict], limit: int = 12) -> str:
     selected = turns[-limit:]
     if not selected:
         return "(sin historial relevante)"
@@ -124,17 +125,14 @@ def recent_turns_to_text(turns: list[dict], limit: int = 10) -> str:
         role = turn.get("role", "user")
         text = turn.get("text", "")
         lines.append(f"{role.upper()}: {text}")
-
     return "\n".join(lines)
 
 
-def append_turn(turns: list[dict], role: str, text: str, max_turns: int = 20):
+def append_turn(turns: list[dict], role: str, text: str, max_turns: int = 30):
     text = clean_text(text)
     if not text:
         return
-
     turns.append({"role": role, "text": text})
-
     if len(turns) > max_turns:
         del turns[:-max_turns]
 
@@ -157,7 +155,6 @@ def extract_current_poi_name(context_text: str) -> str:
             poi_name = clean_text(match.group(1))
             if poi_name:
                 return poi_name
-
     return ""
 
 
@@ -166,10 +163,7 @@ def get_real_pois(query: str, lat: Optional[float], lng: Optional[float]) -> lis
         return []
 
     url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-    params = {
-        "query": query,
-        "key": MAPS_API_KEY,
-    }
+    params = {"query": query, "key": MAPS_API_KEY}
 
     if lat is not None and lng is not None:
         params["location"] = f"{lat},{lng}"
@@ -182,32 +176,27 @@ def get_real_pois(query: str, lat: Optional[float], lng: Optional[float]) -> lis
 
         results = resp.json().get("results", [])[:3]
         pois = []
-
-        for r in results:
-            geometry = r.get("geometry", {}).get("location", {})
+        for result in results:
+            geometry = result.get("geometry", {}).get("location", {})
             if "lat" in geometry and "lng" in geometry:
                 pois.append({
-                    "name": r.get("name"),
+                    "name": result.get("name"),
                     "lat": geometry["lat"],
                     "lng": geometry["lng"],
-                    "description": r.get("formatted_address", "")
+                    "description": result.get("formatted_address", "")
                 })
-
         return pois
-    except Exception as e:
-        log(f"get_real_pois error: {e}")
+    except Exception as exc:
+        log(f"get_real_pois error: {exc}")
         return []
 
 
 def generate_text(model: str, prompt_text: str) -> str:
     try:
-        response = gemini_client.models.generate_content(
-            model=model,
-            contents=prompt_text
-        )
+        response = gemini_client.models.generate_content(model=model, contents=prompt_text)
         return clean_text(response.text or "")
-    except Exception as e:
-        log(f"generate_text error [{model}]: {e}")
+    except Exception as exc:
+        log(f"generate_text error [{model}]: {exc}")
         return ""
 
 
@@ -216,13 +205,11 @@ def generate_json(model: str, prompt_text: str) -> dict:
         response = gemini_client.models.generate_content(
             model=model,
             contents=prompt_text,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
+            config=types.GenerateContentConfig(response_mime_type="application/json")
         )
         return parse_json_loose(response.text or "")
-    except Exception as e:
-        log(f"generate_json error [{model}]: {e}")
+    except Exception as exc:
+        log(f"generate_json error [{model}]: {exc}")
         return {}
 
 
@@ -231,7 +218,6 @@ def fetch_wikipedia_summary_es(query: str) -> str:
         return ""
 
     wikipedia.set_lang("es")
-
     candidates = [query]
     if not query.lower().startswith("pasaje de "):
         candidates.append(f"Pasaje de {query}")
@@ -239,8 +225,8 @@ def fetch_wikipedia_summary_es(query: str) -> str:
     for candidate in candidates:
         try:
             return wikipedia.summary(candidate, sentences=6, auto_suggest=False)
-        except wikipedia.exceptions.DisambiguationError as e:
-            for option in e.options[:5]:
+        except wikipedia.exceptions.DisambiguationError as exc:
+            for option in exc.options[:5]:
                 try:
                     return wikipedia.summary(option, sentences=6, auto_suggest=False)
                 except Exception:
@@ -249,7 +235,6 @@ def fetch_wikipedia_summary_es(query: str) -> str:
             continue
         except Exception:
             continue
-
     return ""
 
 
@@ -266,11 +251,9 @@ def build_verified_context_from_text(subject_name: str, raw_text: str, answer_go
         answer_goal=answer_goal or "",
         raw_text=raw_text
     )
-
     verified_context = generate_text(CONTENT_MODEL, prompt)
     if verified_context:
         poi_context_cache[cache_key] = verified_context
-
     return verified_context
 
 
@@ -279,13 +262,11 @@ def build_verified_poi_context(poi_name: str, answer_goal: str = "") -> str:
         return ""
 
     cache_key = f"{poi_name}::{answer_goal}".strip()
-
     if cache_key in poi_context_cache:
         log(f"build_verified_poi_context cache hit: {cache_key}")
         return poi_context_cache[cache_key]
 
     log(f"build_verified_poi_context START poi={poi_name} goal={answer_goal}")
-
     raw_text = fetch_wikipedia_summary_es(poi_name)
     if not raw_text:
         log(f"build_verified_poi_context NO_WIKI poi={poi_name}")
@@ -296,13 +277,11 @@ def build_verified_poi_context(poi_name: str, answer_goal: str = "") -> str:
         raw_text=raw_text,
         answer_goal=answer_goal
     )
-
     if verified_context:
         poi_context_cache[cache_key] = verified_context
         log(f"build_verified_poi_context END OK poi={poi_name}")
     else:
         log(f"build_verified_poi_context END EMPTY poi={poi_name}")
-
     return verified_context
 
 
@@ -319,30 +298,24 @@ def build_verified_context_from_query(query: str, fallback_name: str, answer_goa
         return poi_context_cache[cache_key]
 
     log(f"build_verified_context_from_query START query={query} fallback={fallback_name}")
-
     raw_text = fetch_wikipedia_summary_es(query)
-
     if not raw_text and fallback_name:
         raw_text = fetch_wikipedia_summary_es(fallback_name)
-
     if not raw_text:
         log("build_verified_context_from_query NO_WIKI")
         return ""
 
     subject_name = query if len(query) <= 120 else fallback_name
-
     verified_context = build_verified_context_from_text(
         subject_name=subject_name or fallback_name or "contexto",
         raw_text=raw_text,
         answer_goal=answer_goal
     )
-
     if verified_context:
         poi_context_cache[cache_key] = verified_context
         log("build_verified_context_from_query END OK")
     else:
         log("build_verified_context_from_query END EMPTY")
-
     return verified_context
 
 
@@ -371,25 +344,20 @@ def infer_sub_poi(user_text: str) -> str:
             value = re.sub(r"^(el|la|los|las|un|una)\s+", "", value, flags=re.IGNORECASE)
             if value:
                 return value
-
     return ""
 
 
 def build_user_turn_text(user_text: str = "", image_description: str = "") -> str:
-    parts = []
-
+    parts: list[str] = []
     user_text = clean_text(user_text)
     image_description = clean_text(image_description)
 
     if user_text:
         parts.append(f"TEXTO DEL USUARIO: {user_text}")
-
     if image_description:
         parts.append(f"CONTEXTO VISUAL APORTADO EN ESTE TURNO: {image_description}")
-
     if not parts:
         parts.append("El usuario quiere comentar o entender algo del POI activo, pero no hay más detalle textual.")
-
     return "\n".join(parts)
 
 
@@ -401,9 +369,7 @@ def analyze_turn(active_poi: str, base_context: str, verified_context: str, turn
         recent_turns=recent_turns_to_text(turns),
         user_turn=user_turn
     )
-
     data = generate_json(ORCHESTRATOR_MODEL, prompt)
-
     if not data:
         return {
             "needs_retrieval": False,
@@ -423,14 +389,7 @@ def analyze_turn(active_poi: str, base_context: str, verified_context: str, turn
     return data
 
 
-def answer_user(
-    active_poi: str,
-    base_context: str,
-    verified_context: str,
-    turns: list[dict],
-    user_turn: str,
-    answer_goal: str
-) -> str:
+def answer_user(active_poi: str, base_context: str, verified_context: str, turns: list[dict], user_turn: str, answer_goal: str) -> str:
     prompt = prompts.UNIFIED_TURN_ANSWER_PROMPT.format(
         active_poi=active_poi or "(sin POI activo)",
         base_context=base_context or "(sin contexto base)",
@@ -439,7 +398,6 @@ def answer_user(
         user_turn=user_turn,
         answer_goal=answer_goal or "Responder al usuario de forma útil."
     )
-
     return generate_text(CONTENT_MODEL, prompt)
 
 
@@ -460,13 +418,13 @@ def get_livekit_api() -> api.LiveKitAPI:
     return api.LiveKitAPI(
         url=LIVEKIT_URL,
         api_key=LIVEKIT_API_KEY,
-        api_secret=LIVEKIT_API_SECRET
+        api_secret=LIVEKIT_API_SECRET,
     )
 
 
 @app.get("/health")
 async def health():
-    return {"ok": True}
+    return {"ok": True, "build": APP_BUILD}
 
 
 @app.post("/home_chat")
@@ -489,7 +447,7 @@ async def home_chat(req: ChatRequest):
 
     if req.action == "setup_profile":
         real_pois = get_real_pois("lugares turísticos", room["lat"], room["lng"])
-        nearby_pois = ", ".join([p["name"] for p in real_pois]) if real_pois else "lugares cercanos"
+        nearby_pois = ", ".join([poi["name"] for poi in real_pois]) if real_pois else "lugares cercanos"
 
         if active_poi and not room["verified_context"]:
             room["verified_context"] = await asyncio.to_thread(
@@ -503,7 +461,6 @@ async def home_chat(req: ChatRequest):
             active_poi=active_poi or "(sin POI activo)",
             nearby_pois=nearby_pois
         )
-
         reply = await asyncio.to_thread(generate_text, CONTENT_MODEL, prompt)
         append_turn(history, "assistant", reply)
 
@@ -527,11 +484,10 @@ async def home_chat(req: ChatRequest):
         base_context,
         room["verified_context"],
         history,
-        user_turn
+        user_turn,
     )
 
     retrieval_target = analysis.get("retrieval_query", "") or active_poi
-
     if analysis.get("needs_retrieval") and retrieval_target:
         verified_context = await asyncio.to_thread(
             build_verified_context_from_query,
@@ -551,7 +507,6 @@ async def home_chat(req: ChatRequest):
         user_turn,
         analysis.get("answer_goal", "")
     )
-
     if not reply:
         reply = "No tengo ese dato confirmado ahora mismo, pero puedo contarte lo que sí sé del lugar."
 
@@ -564,6 +519,7 @@ async def get_token(req: TokenRequest):
     enriched_context = req.poi_context or ""
     active_poi = extract_current_poi_name(req.poi_context)
 
+    log(f"BOOT {APP_BUILD}")
     log(f"get_token active_poi={active_poi} context={clean_text(req.poi_context)[:250]}")
 
     if active_poi:
@@ -585,37 +541,30 @@ async def get_token(req: TokenRequest):
         room=req.room_name,
         can_publish=True,
         can_subscribe=True,
-        can_publish_data=True
+        can_publish_data=True,
     )
     token.with_grants(grant)
 
-    return {
-        "token": token.to_jwt(),
-        "ws_url": LIVEKIT_URL
-    }
+    return {"token": token.to_jwt(), "ws_url": LIVEKIT_URL, "build": APP_BUILD}
 
 
 @app.post("/end_room")
 async def end_room(req: EndRoomRequest):
     if req.requester_role != "anfitrion":
         return {"ok": False, "error": "Solo el anfitrión puede cerrar la sala"}
-
     if not req.room_name:
         return {"ok": False, "error": "Falta room_name"}
 
     try:
         async with get_livekit_api() as lkapi:
-            await lkapi.room.delete_room(
-                api.proto_room.DeleteRoomRequest(room=req.room_name)
-            )
-    except Exception as e:
-        msg = str(e)
+            await lkapi.room.delete_room(api.proto_room.DeleteRoomRequest(room=req.room_name))
+    except Exception as exc:
+        msg = str(exc)
         if "not found" not in msg.lower() and "does not exist" not in msg.lower():
             return {"ok": False, "error": msg}
 
     if req.room_name in chat_histories:
         del chat_histories[req.room_name]
-
     return {"ok": True, "room_name": req.room_name}
 
 
@@ -626,7 +575,7 @@ async def entrypoint(ctx: JobContext):
     initial_context = participant.metadata or ""
     active_poi = extract_current_poi_name(initial_context)
 
-    log(f"entrypoint active_poi={active_poi} metadata={clean_text(initial_context)[:300]}")
+    log(f"entrypoint build={APP_BUILD} active_poi={active_poi} metadata={clean_text(initial_context)[:300]}")
 
     initial_verified_context = ""
     if active_poi:
@@ -639,7 +588,6 @@ async def entrypoint(ctx: JobContext):
     dynamic_prompt = prompts.VOICE_SYSTEM_PROMPT
     dynamic_prompt += f"\n\nPOI ACTIVO ACTUAL:\n{active_poi or '(sin POI activo)'}\n"
     dynamic_prompt += f"\nCONTEXTO BASE DE LA VISITA:\n{initial_context or '(sin contexto base)'}\n"
-
     if initial_verified_context:
         dynamic_prompt += f"\nCONTEXTO FACTUAL VERIFICADO DEL POI ACTIVO:\n{initial_verified_context}\n"
 
@@ -648,10 +596,9 @@ async def entrypoint(ctx: JobContext):
             api_key=GEMINI_API_KEY,
             model=VOICE_MODEL,
             instructions=dynamic_prompt,
-            voice="Puck"
+            voice="Puck",
         )
     )
-
     agent = LocusAgent(instructions=dynamic_prompt)
     await session.start(agent=agent, room=ctx.room)
 
@@ -667,39 +614,21 @@ async def entrypoint(ctx: JobContext):
         "audio_buffers": {},
         "current_sub_poi": "",
         "seen_user_segments": set(),
-        "shadow_events": [],
+        "seen_agent_segments": set(),
     }
 
     def cleanup_audio_buffers():
+        loop_time = asyncio.get_event_loop().time()
         to_delete = []
         for audio_id, item in state["audio_buffers"].items():
-            age = asyncio.get_event_loop().time() - item["created_at"]
+            age = loop_time - item["created_at"]
             if age > 120:
                 to_delete.append(audio_id)
-
         for audio_id in to_delete:
             del state["audio_buffers"][audio_id]
             log(f"audio buffer expired audio_id={audio_id}")
 
-    async def publish_ui_event(action: str, text: str, extra: Optional[dict] = None):
-        text = clean_text(text)
-        if not text:
-            return
-
-        payload = {"action": action, "text": text}
-        if extra:
-            payload.update(extra)
-
-        try:
-            await ctx.room.local_participant.publish_data(
-                json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                reliable=True
-            )
-            log(f"ui_event published action={action} text={text[:120]}")
-        except Exception as e:
-            log(f"publish_ui_event error action={action}: {e}")
-
-    async def speak_text(text: str, token: Optional[int] = None, publish_action: Optional[str] = None):
+    async def speak_text(text: str, token: Optional[int] = None, phase: str = "answer"):
         text = clean_text(text)
         if not text:
             return
@@ -709,17 +638,17 @@ async def entrypoint(ctx: JobContext):
                 log(f"speak_text SKIP stale token={token} current={state['welcome_token']}")
                 return
 
-            if publish_action:
-                await publish_ui_event(publish_action, text)
-
-            log(f"speak_text START text={text[:120]}")
+            log(f"speak_text START phase={phase} text={text[:140]}")
             instructions = (
-                "Di exactamente el siguiente texto, sin añadir información nueva, "
-                "sin meter otros lugares y manteniendo un tono natural de guía turístico:\n\n"
-                f"{text}"
+                "Vas a responder SOLO por voz dentro de una visita guiada compartida. "
+                "Di exactamente una respuesta útil y natural al usuario. "
+                "No expliques procesos internos. "
+                "No menciones que estás buscando, pensando o usando contexto salvo que el texto ya lo diga. "
+                "Mantén el foco en el POI activo.\n\n"
+                f"TEXTO A DECIR:\n{text}"
             )
             await session.generate_reply(instructions=instructions)
-            log("speak_text END")
+            log(f"speak_text END phase={phase}")
 
     async def transcribe_audio_bytes(audio_bytes: bytes, mime_type: str) -> str:
         def transcribe():
@@ -740,26 +669,19 @@ async def entrypoint(ctx: JobContext):
 
         return await asyncio.wait_for(asyncio.to_thread(transcribe), timeout=15)
 
-    async def register_participant_turn_only(
-        user_text: str,
-        participant_role: str = "",
-        participant_identity: str = "",
-        segment_id: str = ""
-    ):
+    async def register_participant_turn_only(user_text: str, participant_role: str = "", participant_identity: str = "", segment_id: str = ""):
         text = clean_text(user_text)
         if not text:
             return
 
         dedupe_key = clean_text(segment_id or f"{participant_identity}:{text[:80]}")
         if dedupe_key and dedupe_key in state["seen_user_segments"]:
-            log(f"PARTICIPANT SHADOW duplicate skipped key={dedupe_key}")
+            log(f"PARTICIPANT duplicate skipped key={dedupe_key}")
             return
 
         async with turn_lock:
             if dedupe_key:
                 state["seen_user_segments"].add(dedupe_key)
-
-            state["welcome_token"] += 1
 
             sub_poi = infer_sub_poi(text)
             if sub_poi:
@@ -769,36 +691,26 @@ async def entrypoint(ctx: JobContext):
             user_turn = build_user_turn_text(user_text=text, image_description="")
             append_turn(state["history"], "user", user_turn)
             log(
-                f"PARTICIPANT SHADOW appended to canonical history "
-                f"role={participant_role or '(unknown)'} "
-                f"identity={participant_identity or '(unknown)'} "
-                f"text={text}"
+                f"PARTICIPANT appended role={participant_role or '(unknown)'} "
+                f"identity={participant_identity or '(unknown)'} text={text}"
             )
 
     async def register_agent_shadow(text: str, segment_id: str = ""):
         text = clean_text(text)
         if not text:
             return
+        dedupe_key = clean_text(segment_id or text[:120])
+        if dedupe_key and dedupe_key in state["seen_agent_segments"]:
+            return
+        if dedupe_key:
+            state["seen_agent_segments"].add(dedupe_key)
+        log(f"AGENT SHADOW ignored_for_ui text={text[:150]}")
 
-        state["shadow_events"].append({
-            "role": "assistant_shadow",
-            "text": text,
-            "segment_id": segment_id,
-        })
-
-        if len(state["shadow_events"]) > 50:
-            state["shadow_events"] = state["shadow_events"][-50:]
-
-        log(f"AGENT SHADOW ignored for canonical flow text={text[:150]}")
-
-    async def process_user_turn(
-        user_text: str = "",
-        image_description: str = "",
-        source: str = "text"
-    ):
+    async def process_user_turn(user_text: str = "", image_description: str = "", source: str = "text"):
         async with turn_lock:
             try:
                 state["welcome_token"] += 1
+                current_token = state["welcome_token"]
 
                 clean_user_text = clean_text(user_text)
                 sub_poi = infer_sub_poi(clean_user_text)
@@ -808,28 +720,18 @@ async def entrypoint(ctx: JobContext):
                 elif clean_user_text:
                     log(f"SUB_POI keep current={state['current_sub_poi']}")
 
-                user_turn = build_user_turn_text(
-                    user_text=user_text,
-                    image_description=image_description
-                )
-
-                log(f"TURN START source={source}")
-                log(f"TURN active_poi={state['active_poi']} current_sub_poi={state['current_sub_poi']}")
-                log(f"TURN user_turn={user_turn[:300]}")
-
+                user_turn = build_user_turn_text(user_text=user_text, image_description=image_description)
                 append_turn(state["history"], "user", user_turn)
 
                 effective_focus = state["active_poi"]
                 if state["current_sub_poi"]:
-                    effective_focus = (
-                        f"{state['current_sub_poi']} ({state['active_poi']})"
-                        if state["active_poi"]
-                        else state["current_sub_poi"]
-                    )
+                    effective_focus = f"{state['current_sub_poi']} ({state['active_poi']})" if state["active_poi"] else state["current_sub_poi"]
 
+                log(f"TURN START source={source}")
+                log(f"TURN active_poi={state['active_poi']} current_sub_poi={state['current_sub_poi']}")
+                log(f"TURN user_turn={user_turn[:300]}")
                 log(f"TURN effective_focus={effective_focus}")
 
-                log("analyze_turn START")
                 analysis = await asyncio.wait_for(
                     asyncio.to_thread(
                         analyze_turn,
@@ -837,9 +739,9 @@ async def entrypoint(ctx: JobContext):
                         state["base_context"],
                         state["verified_context"],
                         state["history"],
-                        user_turn
+                        user_turn,
                     ),
-                    timeout=12
+                    timeout=12,
                 )
                 log(f"analyze_turn END analysis={analysis}")
 
@@ -848,26 +750,20 @@ async def entrypoint(ctx: JobContext):
                     retrieval_target = state["current_sub_poi"] or state["active_poi"]
 
                 needs_retrieval = bool(analysis.get("needs_retrieval")) and bool(retrieval_target)
-
+                retrieval_task = None
                 if needs_retrieval:
                     log(f"retrieval START target={retrieval_target}")
-
                     retrieval_task = asyncio.create_task(
                         asyncio.to_thread(
                             build_verified_context_from_query,
                             retrieval_target,
                             state["active_poi"],
-                            analysis.get("answer_goal", clean_user_text or image_description)
+                            analysis.get("answer_goal", clean_user_text or image_description),
                         )
                     )
 
-                    bridge_phrase = clean_text(
-                        analysis.get("bridge_phrase") or prompts.VOICE_BRIDGE_FALLBACK
-                    )
-                    await speak_text(bridge_phrase, publish_action="assistant_bridge")
-
+                if retrieval_task:
                     verified_context = await asyncio.wait_for(retrieval_task, timeout=12)
-
                     if verified_context:
                         state["verified_context"] = verified_context
                         log("retrieval END OK")
@@ -883,9 +779,9 @@ async def entrypoint(ctx: JobContext):
                         state["verified_context"],
                         state["history"],
                         user_turn,
-                        analysis.get("answer_goal", "")
+                        analysis.get("answer_goal", ""),
                     ),
-                    timeout=15
+                    timeout=15,
                 )
                 log(f"answer_user END final_answer={final_answer[:250]}")
 
@@ -893,21 +789,20 @@ async def entrypoint(ctx: JobContext):
                     final_answer = "No tengo ese dato confirmado con suficiente seguridad, pero puedo seguir ayudándote con este lugar."
 
                 append_turn(state["history"], "assistant", final_answer)
-                await speak_text(final_answer, publish_action="assistant_final")
-
+                await speak_text(final_answer, token=current_token, phase="answer")
                 log("TURN END OK")
 
             except asyncio.TimeoutError:
                 log("TURN TIMEOUT")
                 fallback = "Estoy tardando demasiado en afinar esa respuesta. Prueba a preguntármelo de forma más concreta."
                 append_turn(state["history"], "assistant", fallback)
-                await speak_text(fallback, publish_action="assistant_final")
+                await speak_text(fallback, token=state["welcome_token"], phase="timeout")
 
-            except Exception as e:
-                log(f"TURN ERROR {e}")
+            except Exception as exc:
+                log(f"TURN ERROR {exc}")
                 fallback = "Se me ha cruzado ese turno. Vuelve a decírmelo y te contesto."
                 append_turn(state["history"], "assistant", fallback)
-                await speak_text(fallback, publish_action="assistant_final")
+                await speak_text(fallback, token=state["welcome_token"], phase="error")
 
     async def handle_audio_chunk(source: str, payload: dict):
         try:
@@ -935,18 +830,16 @@ async def entrypoint(ctx: JobContext):
 
             buf = state["audio_buffers"][audio_id]
             buf["chunks"][chunk_index] = chunk_data
-
             received = len(buf["chunks"])
             log(f"{source}_chunk received audio_id={audio_id} chunk={chunk_index + 1}/{total_chunks}")
-
             if received < total_chunks:
                 return
 
             ordered = []
-            for i in range(total_chunks):
-                part = buf["chunks"].get(i)
+            for idx in range(total_chunks):
+                part = buf["chunks"].get(idx)
                 if part is None:
-                    log(f"{source}_chunk missing part audio_id={audio_id} idx={i}")
+                    log(f"{source}_chunk missing part audio_id={audio_id} idx={idx}")
                     return
                 ordered.append(part)
 
@@ -956,29 +849,19 @@ async def entrypoint(ctx: JobContext):
             audio_bytes = base64.b64decode(base64data)
             transcription = await transcribe_audio_bytes(audio_bytes, mime_type)
             log(f"{source}_chunk transcription={transcription}")
+            if not transcription:
+                return
 
-            if transcription:
-                if source == "guest_audio":
-                    chat_msg = json.dumps({
-                        "action": "guest_transcription",
-                        "text": transcription
-                    })
-                    await ctx.room.local_participant.publish_data(
-                        chat_msg.encode("utf-8"),
-                        reliable=True
-                    )
+            if source == "guest_audio":
+                chat_msg = json.dumps({"action": "guest_transcription", "text": transcription})
+                await ctx.room.local_participant.publish_data(chat_msg.encode("utf-8"), reliable=True)
 
-                await process_user_turn(
-                    user_text=transcription,
-                    image_description="",
-                    source=source
-                )
-
-        except Exception as e:
-            log(f"handle_audio_chunk error source={source}: {e}")
+            await process_user_turn(user_text=transcription, image_description="", source=source)
+        except Exception as exc:
+            log(f"handle_audio_chunk error source={source}: {exc}")
 
     @ctx.room.on("participant_disconnected")
-    def on_participant_disconnected(p: rtc.RemoteParticipant):
+    def on_participant_disconnected(_participant: rtc.RemoteParticipant):
         if not ctx.room.remote_participants:
             asyncio.create_task(ctx.room.disconnect())
 
@@ -986,44 +869,37 @@ async def entrypoint(ctx: JobContext):
     def on_data_received(data_packet: rtc.DataPacket):
         try:
             payload = json.loads(data_packet.data.decode("utf-8"))
-            log(f"data_received action={payload.get('action')}")
+            action = payload.get("action")
+            log(f"data_received action={action}")
 
-            if payload.get("action") == "text_chat":
+            if action == "text_chat":
                 async def handle_text_chat():
                     try:
                         text = payload.get("data", "")
                         log(f"TEXT_CHAT recibido text={text}")
-                        await process_user_turn(
-                            user_text=text,
-                            image_description="",
-                            source="text"
-                        )
-                    except Exception as e:
-                        log(f"handle_text_chat error: {e}")
-
+                        await process_user_turn(user_text=text, image_description="", source="text")
+                    except Exception as exc:
+                        log(f"handle_text_chat error: {exc}")
                 asyncio.create_task(handle_text_chat())
 
-            elif payload.get("action") == "guest_audio_chunk":
+            elif action == "guest_audio_chunk":
                 asyncio.create_task(handle_audio_chunk("guest_audio", payload))
 
-            elif payload.get("action") == "guest_audio":
+            elif action == "guest_audio":
                 asyncio.create_task(handle_audio_chunk("guest_audio", payload))
 
-            elif payload.get("action") in ("participant_transcription", "host_transcription"):
+            elif action in ("participant_transcription", "host_transcription"):
                 asyncio.create_task(register_participant_turn_only(
                     payload.get("text", ""),
                     payload.get("role", ""),
                     payload.get("participant_identity", ""),
-                    payload.get("segment_id", "")
+                    payload.get("segment_id", ""),
                 ))
 
-            elif payload.get("action") == "agent_shadow":
-                asyncio.create_task(register_agent_shadow(
-                    payload.get("text", ""),
-                    payload.get("segment_id", "")
-                ))
+            elif action == "agent_shadow":
+                asyncio.create_task(register_agent_shadow(payload.get("text", ""), payload.get("segment_id", "")))
 
-            elif payload.get("action") == "image_context":
+            elif action == "image_context":
                 async def handle_image():
                     try:
                         log("image_context START")
@@ -1036,29 +912,19 @@ async def entrypoint(ctx: JobContext):
                                 model=CONTENT_MODEL,
                                 contents=[
                                     types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                                    types.Part.from_text(text=prompts.VOICE_IMAGE_DESCRIBE)
-                                ]
+                                    types.Part.from_text(text=prompts.VOICE_IMAGE_DESCRIBE),
+                                ],
                             )
                             return clean_text(resp.text or "")
 
-                        image_description = await asyncio.wait_for(
-                            asyncio.to_thread(describe_image),
-                            timeout=15
-                        )
-
+                        image_description = await asyncio.wait_for(asyncio.to_thread(describe_image), timeout=15)
                         log(f"image_context description={image_description[:250]}")
-
-                        await process_user_turn(
-                            user_text=text_hint,
-                            image_description=image_description,
-                            source="image"
-                        )
-                    except Exception as e:
-                        log(f"handle_image error: {e}")
-
+                        await process_user_turn(user_text=text_hint, image_description=image_description, source="image")
+                    except Exception as exc:
+                        log(f"handle_image error: {exc}")
                 asyncio.create_task(handle_image())
 
-            elif payload.get("action") == "update_poi_context":
+            elif action == "update_poi_context":
                 async def handle_update_poi_context():
                     try:
                         new_context = payload.get("data", "")
@@ -1068,7 +934,6 @@ async def entrypoint(ctx: JobContext):
                         log(f"update_poi_context START new_context={new_context[:250]}")
                         state["base_context"] = new_context
                         new_poi = extract_current_poi_name(new_context)
-
                         if new_poi:
                             state["active_poi"] = new_poi
                             state["current_sub_poi"] = ""
@@ -1076,35 +941,32 @@ async def entrypoint(ctx: JobContext):
                                 asyncio.to_thread(
                                     build_verified_poi_context,
                                     new_poi,
-                                    "Actualizar contexto factual del nuevo POI activo."
+                                    "Actualizar contexto factual del nuevo POI activo.",
                                 ),
-                                timeout=12
+                                timeout=12,
                             )
                             state["history"] = []
-                            state["shadow_events"] = []
                             state["seen_user_segments"].clear()
+                            state["seen_agent_segments"].clear()
                             state["welcome_token"] += 1
                             log(f"update_poi_context END active_poi={new_poi}")
-                    except Exception as e:
-                        log(f"handle_update_poi_context error: {e}")
-
+                    except Exception as exc:
+                        log(f"handle_update_poi_context error: {exc}")
                 asyncio.create_task(handle_update_poi_context())
 
-        except Exception as e:
-            log(f"data_received parse error: {e}")
+        except Exception as exc:
+            log(f"data_received parse error: {exc}")
 
     try:
         welcome_prompt = prompts.VOICE_WELCOME_PROMPT
         welcome_prompt += f"\n\nPOI ACTIVO:\n{state['active_poi'] or '(sin POI activo)'}"
         welcome_prompt += f"\n\nCONTEXTO BASE:\n{state['base_context'] or '(sin contexto base)'}"
         welcome_text = await asyncio.to_thread(generate_text, CONTENT_MODEL, welcome_prompt)
-
         if welcome_text:
             append_turn(state["history"], "assistant", welcome_text)
-            current_token = state["welcome_token"]
-            asyncio.create_task(speak_text(welcome_text, token=current_token, publish_action="assistant_final"))
-    except Exception as e:
-        log(f"welcome error: {e}")
+            asyncio.create_task(speak_text(welcome_text, token=state["welcome_token"], phase="welcome"))
+    except Exception as exc:
+        log(f"welcome error: {exc}")
 
 
 if __name__ == "__main__":

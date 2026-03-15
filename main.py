@@ -667,7 +667,6 @@ async def entrypoint(ctx: JobContext):
         "audio_buffers": {},
         "current_sub_poi": "",
         "seen_user_segments": set(),
-        "seen_agent_segments": set(),
         "shadow_events": [],
     }
 
@@ -682,7 +681,25 @@ async def entrypoint(ctx: JobContext):
             del state["audio_buffers"][audio_id]
             log(f"audio buffer expired audio_id={audio_id}")
 
-    async def speak_text(text: str, token: Optional[int] = None):
+    async def publish_ui_event(action: str, text: str, extra: Optional[dict] = None):
+        text = clean_text(text)
+        if not text:
+            return
+
+        payload = {"action": action, "text": text}
+        if extra:
+            payload.update(extra)
+
+        try:
+            await ctx.room.local_participant.publish_data(
+                json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                reliable=True
+            )
+            log(f"ui_event published action={action} text={text[:120]}")
+        except Exception as e:
+            log(f"publish_ui_event error action={action}: {e}")
+
+    async def speak_text(text: str, token: Optional[int] = None, publish_action: Optional[str] = None):
         text = clean_text(text)
         if not text:
             return
@@ -691,6 +708,9 @@ async def entrypoint(ctx: JobContext):
             if token is not None and token != state["welcome_token"]:
                 log(f"speak_text SKIP stale token={token} current={state['welcome_token']}")
                 return
+
+            if publish_action:
+                await publish_ui_event(publish_action, text)
 
             log(f"speak_text START text={text[:120]}")
             instructions = (
@@ -760,25 +780,16 @@ async def entrypoint(ctx: JobContext):
         if not text:
             return
 
-        dedupe_key = clean_text(segment_id or text[:120])
-        if dedupe_key and dedupe_key in state["seen_agent_segments"]:
-            log(f"AGENT SHADOW duplicate skipped key={dedupe_key}")
-            return
+        state["shadow_events"].append({
+            "role": "assistant_shadow",
+            "text": text,
+            "segment_id": segment_id,
+        })
 
-        async with turn_lock:
-            if dedupe_key:
-                state["seen_agent_segments"].add(dedupe_key)
+        if len(state["shadow_events"]) > 50:
+            state["shadow_events"] = state["shadow_events"][-50:]
 
-            state["shadow_events"].append({
-                "role": "assistant_shadow",
-                "text": text,
-                "segment_id": segment_id,
-            })
-
-            if len(state["shadow_events"]) > 50:
-                state["shadow_events"] = state["shadow_events"][-50:]
-
-            log(f"AGENT SHADOW stored out of canonical history text={text[:150]}")
+        log(f"AGENT SHADOW ignored for canonical flow text={text[:150]}")
 
     async def process_user_turn(
         user_text: str = "",
@@ -853,7 +864,7 @@ async def entrypoint(ctx: JobContext):
                     bridge_phrase = clean_text(
                         analysis.get("bridge_phrase") or prompts.VOICE_BRIDGE_FALLBACK
                     )
-                    await speak_text(bridge_phrase)
+                    await speak_text(bridge_phrase, publish_action="assistant_bridge")
 
                     verified_context = await asyncio.wait_for(retrieval_task, timeout=12)
 
@@ -882,7 +893,7 @@ async def entrypoint(ctx: JobContext):
                     final_answer = "No tengo ese dato confirmado con suficiente seguridad, pero puedo seguir ayudándote con este lugar."
 
                 append_turn(state["history"], "assistant", final_answer)
-                await speak_text(final_answer)
+                await speak_text(final_answer, publish_action="assistant_final")
 
                 log("TURN END OK")
 
@@ -890,13 +901,13 @@ async def entrypoint(ctx: JobContext):
                 log("TURN TIMEOUT")
                 fallback = "Estoy tardando demasiado en afinar esa respuesta. Prueba a preguntármelo de forma más concreta."
                 append_turn(state["history"], "assistant", fallback)
-                await speak_text(fallback)
+                await speak_text(fallback, publish_action="assistant_final")
 
             except Exception as e:
                 log(f"TURN ERROR {e}")
                 fallback = "Se me ha cruzado ese turno. Vuelve a decírmelo y te contesto."
                 append_turn(state["history"], "assistant", fallback)
-                await speak_text(fallback)
+                await speak_text(fallback, publish_action="assistant_final")
 
     async def handle_audio_chunk(source: str, payload: dict):
         try:
@@ -1072,7 +1083,6 @@ async def entrypoint(ctx: JobContext):
                             state["history"] = []
                             state["shadow_events"] = []
                             state["seen_user_segments"].clear()
-                            state["seen_agent_segments"].clear()
                             state["welcome_token"] += 1
                             log(f"update_poi_context END active_poi={new_poi}")
                     except Exception as e:
@@ -1092,7 +1102,7 @@ async def entrypoint(ctx: JobContext):
         if welcome_text:
             append_turn(state["history"], "assistant", welcome_text)
             current_token = state["welcome_token"]
-            asyncio.create_task(speak_text(welcome_text, token=current_token))
+            asyncio.create_task(speak_text(welcome_text, token=current_token, publish_action="assistant_final"))
     except Exception as e:
         log(f"welcome error: {e}")
 

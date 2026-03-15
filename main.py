@@ -24,7 +24,7 @@ from livekit.api import AccessToken, VideoGrants
 
 load_dotenv()
 
-APP_BUILD = "rome-unified-input-v1"
+APP_BUILD = "rome-refresh-context-v1"
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 LIVEKIT_API_KEY = os.environ.get("LIVEKIT_API_KEY")
@@ -483,7 +483,7 @@ async def entrypoint(ctx: JobContext):
 
     dynamic_prompt = prompts.VOICE_SYSTEM_PROMPT
     dynamic_prompt += f"\n\nPOI ACTIVO ACTUAL:\n{active_poi or '(sin POI activo)'}\n"
-    dynamic_prompt += f"\nCONTEXTO BASE DE LA VISITA:\n{initial_context or '(sin contexto base)'}\n"
+    dynamic_prompt += f"\nCONTEXTO BASE DE LA VISITA Y DEL GRUPO:\n{initial_context or '(sin contexto base)'}\n"
     if initial_verified_context:
         dynamic_prompt += f"\nCONTEXTO FACTUAL VERIFICADO DEL POI ACTIVO:\n{initial_verified_context}\n"
 

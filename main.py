@@ -144,9 +144,9 @@ def extract_current_poi_name(context_text: str) -> str:
         return ""
 
     patterns = [
+        r"Lugar actual:\s*(.*?)(?:\.|$)",
         r"Viendo:\s*(.*?)\.\s*Detalles",
         r"Viendo:\s*(.*?)(?:\.|$)",
-        r"Lugar actual:\s*(.*?)(?:\.|$)",
         r"POI:\s*(.*?)(?:\.|$)",
         r"Lugar:\s*(.*?)(?:\.|$)",
     ]
@@ -154,7 +154,7 @@ def extract_current_poi_name(context_text: str) -> str:
     for pattern in patterns:
         match = re.search(pattern, context_text, flags=re.IGNORECASE)
         if match:
-            poi_name = (match.group(1) or "").strip()
+            poi_name = clean_text(match.group(1))
             if poi_name:
                 return poi_name
 
@@ -564,6 +564,8 @@ async def get_token(req: TokenRequest):
     enriched_context = req.poi_context or ""
     active_poi = extract_current_poi_name(req.poi_context)
 
+    log(f"get_token active_poi={active_poi} context={clean_text(req.poi_context)[:250]}")
+
     if active_poi:
         verified_context = await asyncio.to_thread(
             build_verified_poi_context,
@@ -624,6 +626,8 @@ async def entrypoint(ctx: JobContext):
     initial_context = participant.metadata or ""
     active_poi = extract_current_poi_name(initial_context)
 
+    log(f"entrypoint active_poi={active_poi} metadata={clean_text(initial_context)[:300]}")
+
     initial_verified_context = ""
     if active_poi:
         initial_verified_context = await asyncio.to_thread(
@@ -660,7 +664,8 @@ async def entrypoint(ctx: JobContext):
         "verified_context": initial_verified_context,
         "history": [],
         "welcome_token": 0,
-        "audio_buffers": {}
+        "audio_buffers": {},
+        "current_sub_poi": ""
     }
 
     def cleanup_audio_buffers():
@@ -724,9 +729,10 @@ async def entrypoint(ctx: JobContext):
                 clean_user_text = clean_text(user_text)
                 sub_poi = infer_sub_poi(clean_user_text)
                 if sub_poi:
+                    state["current_sub_poi"] = sub_poi
                     log(f"SUB_POI detected={sub_poi}")
-                    state["base_context"] += f"\n\nSUBLUGAR ACTUAL DETECTADO EN ESTA VISITA:\n{sub_poi}"
-                    state["history"] = state["history"][-8:]
+                elif clean_user_text:
+                    log(f"SUB_POI keep current={state['current_sub_poi']}")
 
                 user_turn = build_user_turn_text(
                     user_text=user_text,
@@ -734,13 +740,16 @@ async def entrypoint(ctx: JobContext):
                 )
 
                 log(f"TURN START source={source}")
+                log(f"TURN active_poi={state['active_poi']} current_sub_poi={state['current_sub_poi']}")
                 log(f"TURN user_turn={user_turn[:300]}")
 
                 append_turn(state["history"], "user", user_turn)
 
                 effective_focus = state["active_poi"]
-                if sub_poi:
-                    effective_focus = f"{sub_poi} ({state['active_poi']})" if state["active_poi"] else sub_poi
+                if state["current_sub_poi"]:
+                    effective_focus = f"{state['current_sub_poi']} ({state['active_poi']})" if state["active_poi"] else state["current_sub_poi"]
+
+                log(f"TURN effective_focus={effective_focus}")
 
                 log("analyze_turn START")
                 analysis = await asyncio.wait_for(
@@ -758,7 +767,7 @@ async def entrypoint(ctx: JobContext):
 
                 retrieval_target = clean_text(analysis.get("retrieval_query", ""))
                 if not retrieval_target:
-                    retrieval_target = sub_poi or state["active_poi"]
+                    retrieval_target = state["current_sub_poi"] or state["active_poi"]
 
                 needs_retrieval = bool(analysis.get("needs_retrieval")) and bool(retrieval_target)
 
@@ -980,6 +989,7 @@ async def entrypoint(ctx: JobContext):
 
                         if new_poi and new_poi != state["active_poi"]:
                             state["active_poi"] = new_poi
+                            state["current_sub_poi"] = ""
                             state["verified_context"] = await asyncio.wait_for(
                                 asyncio.to_thread(
                                     build_verified_poi_context,

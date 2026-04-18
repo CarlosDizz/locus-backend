@@ -34,6 +34,7 @@ class Settings:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     openai_chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.2")
+    openai_response_timeout_seconds: int = int(os.getenv("OPENAI_RESPONSE_TIMEOUT_SECONDS", "180"))
     openai_realtime_model: str = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
     openai_realtime_voice: str = os.getenv("OPENAI_REALTIME_VOICE", "marin")
     openai_realtime_secret_ttl_seconds: int = int(os.getenv("OPENAI_REALTIME_SECRET_TTL_SECONDS", "600"))
@@ -43,6 +44,8 @@ class Settings:
     wikidata_base_url: str = os.getenv("WIKIDATA_BASE_URL", "https://www.wikidata.org")
     wikidata_language: str = os.getenv("WIKIDATA_LANGUAGE", "es")
     wikidata_sparql_url: str = os.getenv("WIKIDATA_SPARQL_URL", "https://query.wikidata.org/sparql")
+    overpass_api_url: str = os.getenv("OVERPASS_API_URL", "https://overpass-api.de/api/interpreter")
+    overpass_timeout_seconds: int = int(os.getenv("OVERPASS_TIMEOUT_SECONDS", "25"))
 
     billing_margin_multiplier: float = float(os.getenv("BILLING_MARGIN_MULTIPLIER", "1.15"))
     billing_usd_to_eur: float = float(os.getenv("BILLING_USD_TO_EUR", "1.00"))

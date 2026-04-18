@@ -101,7 +101,8 @@ class PoiDocumentationResponse(BaseModel):
 
 class CityPoiImportRequest(BaseModel):
     radius_km: float = Field(default=8.0, gt=0, le=50)
-    limit: int = Field(default=80, gt=0, le=300)
+    limit: int = Field(default=40, gt=0, le=150)
+    use_ai_candidates: bool = True
 
 
 class CityPoiImportResponse(BaseModel):
@@ -110,4 +111,5 @@ class CityPoiImportResponse(BaseModel):
     imported_count: int
     updated_count: int
     skipped_count: int
+    stats: dict = Field(default_factory=dict)
     pois: list[PoiResponse]

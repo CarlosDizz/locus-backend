@@ -4,7 +4,7 @@ def get_session_tool_manifest() -> list[dict]:
             "type": "function",
             "name": "get_session_profile",
             "description": "Lee el perfil actual del grupo y las preferencias de la sesión.",
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
             "strict": True,
         },
         {

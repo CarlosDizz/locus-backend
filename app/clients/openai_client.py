@@ -45,6 +45,7 @@ class OpenAIClient:
         previous_response_id: str | None = None,
         tool_choice: str | dict[str, Any] = "auto",
         max_output_tokens: int = 700,
+        extra_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model,
@@ -57,12 +58,14 @@ class OpenAIClient:
             payload["tools"] = tools
         if previous_response_id:
             payload["previous_response_id"] = previous_response_id
+        if extra_payload:
+            payload.update(extra_payload)
 
         response = requests.post(
             f"{self.base_url}/responses",
             headers=self._headers(),
             json=payload,
-            timeout=60,
+            timeout=settings.openai_response_timeout_seconds,
         )
         if not response.ok:
             raise OpenAIClientError(f"Responses API error {response.status_code}: {response.text}")

@@ -10,7 +10,7 @@ def get_knowledge_tool_manifest() -> list[dict]:
                     "poi_name": {"type": "string"},
                     "question": {"type": "string"},
                 },
-                "required": ["poi_name"],
+                "required": ["poi_name", "question"],
                 "additionalProperties": False
             },
             "strict": True,

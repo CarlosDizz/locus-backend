@@ -118,11 +118,14 @@ async def import_city_pois(
     _current_user: UserResponse = Depends(get_current_user_required),
 ) -> CityPoiImportResponse:
     try:
-        imported_count, updated_count, skipped_count, pois, city_name = catalog_service.import_city_pois(
+        imported_count, updated_count, skipped_count, stats, pois, city_name = catalog_service.import_city_pois(
             city_id=city_id,
             radius_km=payload.radius_km,
             limit=payload.limit,
+            use_ai_candidates=payload.use_ai_candidates,
         )
+        if payload.use_ai_candidates:
+            catalog_service.start_pending_enrichment(city_id, min(payload.limit, 150))
     except CatalogError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return CityPoiImportResponse(
@@ -131,5 +134,6 @@ async def import_city_pois(
         imported_count=imported_count,
         updated_count=updated_count,
         skipped_count=skipped_count,
+        stats=stats,
         pois=pois,
     )

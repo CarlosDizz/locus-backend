@@ -11,7 +11,7 @@ def get_poi_tool_manifest() -> list[dict]:
                     "lat": {"type": "number"},
                     "lng": {"type": "number"},
                 },
-                "required": ["query"],
+                "required": ["query", "lat", "lng"],
                 "additionalProperties": False
             },
             "strict": True,

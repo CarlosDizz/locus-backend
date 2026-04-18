@@ -20,9 +20,9 @@ class WikidataClient:
             "User-Agent": f"{settings.app_name}/{settings.app_build} (Locus backend prototype)"
         }
 
-    def search_entity(self, query: str, limit: int = 1) -> dict[str, Any] | None:
+    def search_entities(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         if not query:
-            return None
+            return []
         params = {
             "action": "wbsearchentities",
             "format": "json",
@@ -37,7 +37,11 @@ class WikidataClient:
             results = response.json().get("search", [])
         except Exception as exc:
             logger.warning("Wikidata search failed: %s", exc)
-            return None
+            return []
+        return results
+
+    def search_entity(self, query: str, limit: int = 1) -> dict[str, Any] | None:
+        results = self.search_entities(query, limit=limit)
         return results[0] if results else None
 
     def get_entity(self, entity_id: str) -> dict[str, Any]:
@@ -51,6 +55,20 @@ class WikidataClient:
         response = requests.get(self.api_url, params=params, headers=self.headers, timeout=10)
         response.raise_for_status()
         return response.json().get("entities", {}).get(entity_id, {})
+
+    def get_entities(self, entity_ids: list[str]) -> dict[str, Any]:
+        if not entity_ids:
+            return {}
+        params = {
+            "action": "wbgetentities",
+            "format": "json",
+            "ids": "|".join(sorted(set(entity_ids))),
+            "languages": settings.wikidata_language,
+            "props": "labels|descriptions|claims|sitelinks",
+        }
+        response = requests.get(self.api_url, params=params, headers=self.headers, timeout=10)
+        response.raise_for_status()
+        return response.json().get("entities", {})
 
     def get_entity_labels(self, entity_ids: list[str]) -> dict[str, str]:
         if not entity_ids:

@@ -35,8 +35,12 @@ class POIService:
             name=poi.name,
             lat=float(poi.lat) if poi.lat is not None else 0.0,
             lng=float(poi.lng) if poi.lng is not None else 0.0,
+            poi_type_code="",
             description=description,
             summary=summary,
+            source_of_truth=poi.source_of_truth or "catalog",
+            is_ephemeral=False,
+            google_place_id=poi.google_place_id or "",
         )
 
     def _is_generic_query(self, query: str) -> bool:
@@ -117,6 +121,10 @@ class POIService:
             if len(merged) >= limit:
                 break
         return merged
+
+    def search_contextual_places(self, query: str, lat: float | None, lng: float | None, limit: int = 5) -> list[POI]:
+        raw_places = self.maps_client.search_places(query=query, lat=lat, lng=lng, limit=limit)
+        return [POI(**item) for item in raw_places]
 
     def enrich_poi(self, poi: POI) -> POI:
         if poi.summary:

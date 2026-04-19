@@ -1,5 +1,6 @@
 from app.config import settings
 from app.utils.logging import get_logger
+from app.utils.text import clean_text
 import requests
 
 
@@ -37,6 +38,8 @@ class MapsClient:
             geometry = item.get("geometry", {}).get("location", {})
             if "lat" not in geometry or "lng" not in geometry:
                 continue
+            raw_types = item.get("types", []) or []
+            type_code = self._map_place_type(raw_types, query)
             normalized.append(
                 {
                     "id": item.get("place_id", ""),
@@ -44,6 +47,20 @@ class MapsClient:
                     "lat": geometry["lat"],
                     "lng": geometry["lng"],
                     "description": item.get("formatted_address", ""),
+                    "poi_type_code": type_code,
+                    "source_of_truth": "google_places",
+                    "is_ephemeral": True,
+                    "google_place_id": item.get("place_id", ""),
                 }
             )
         return normalized
+
+    def _map_place_type(self, raw_types: list[str], query: str) -> str:
+        lowered = clean_text(query).lower()
+        if "restaurant" in raw_types or any(token in lowered for token in ["carbonara", "pizza", "pasta", "ristorante", "comer", "restaurante"]):
+            return "restaurant"
+        if "bar" in raw_types or "night_club" in raw_types or any(token in lowered for token in ["ipa", "cerveza", "beer", "bar", "pub"]):
+            return "bar"
+        if "cafe" in raw_types or any(token in lowered for token in ["cafe", "café", "coffee"]):
+            return "cafe"
+        return "place"

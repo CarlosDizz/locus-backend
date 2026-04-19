@@ -29,6 +29,12 @@ class ToolRuntimeService:
             "ok": True,
             "profile_context": session.profile.raw_context,
             "preferences": session.profile.preferences,
+            "nearby_pois": [poi.model_dump() for poi in session.nearby_pois[:10]],
+            "location_hint": (
+                f"Zona actual con geolocalizacion activa y lugares visibles como {', '.join(poi.name for poi in session.nearby_pois[:4])}."
+                if session.nearby_pois
+                else ("Zona actual con geolocalizacion activa." if session.location.lat is not None and session.location.lng is not None else "")
+            ),
             "active_poi": session.active_poi.model_dump() if session.active_poi else None,
         }
 

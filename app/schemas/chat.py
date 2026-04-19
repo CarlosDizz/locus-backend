@@ -23,4 +23,5 @@ class ChatResponse(BaseModel):
     session_id: str
     reply: str
     pois: list[POI] = Field(default_factory=list)
+    ephemeral_pois: list[POI] = Field(default_factory=list)
     prompt_preview: str = Field(default="")

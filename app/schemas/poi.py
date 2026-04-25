@@ -12,3 +12,4 @@ class POI(BaseModel):
     source_of_truth: str = Field(default="catalog")
     is_ephemeral: bool = Field(default=False)
     google_place_id: str = Field(default="")
+    context_kind: str = Field(default="catalog")

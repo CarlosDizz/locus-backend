@@ -15,14 +15,30 @@ class PromptService:
         shared = self.load_prompt("shared_rules.json")
         prompt = self.load_prompt(prompt_name)
 
+        main = prompt["instrucciones_principales"]
+        tools = prompt["tools"]
+
         sections = [
-            f"AGENTE:\n{prompt['identity']['name']}",
-            f"ROL:\n{prompt['identity']['role']}",
+            "INSTRUCCIONES PRINCIPALES:\n"
+            + "\n".join(
+                [
+                    f"IDENTIDAD:\n{main['identidad']}",
+                    f"CONTEXTO DE LA APLICACION:\n{main['contexto_aplicacion']}",
+                    "MISION:\n" + "\n".join(f"- {item}" for item in main["mision"]),
+                    "REGLAS:\n" + "\n".join(f"- {item}" for item in shared["hard_rules"] + main["reglas"]),
+                    "ESTILO:\n" + "\n".join(f"- {item}" for item in main["estilo"]),
+                ]
+            ),
+            f"CONTEXTO DE USUARIO:\n{prompt['contexto_usuario']['descripcion']}",
+            "TOOLS:\n"
+            + "\n".join(
+                [
+                    "POLITICA GENERAL:\n" + "\n".join(f"- {item}" for item in tools["politica_general"]),
+                    "LISTA DISPONIBLE:\n"
+                    + "\n".join(f"- {name}: {description}" for name, description in tools["lista"].items()),
+                ]
+            ),
         ]
-        sections.append("OBJETIVOS:\n" + "\n".join(f"- {item}" for item in prompt["objectives"]))
-        sections.append("REGLAS DURAS:\n" + "\n".join(f"- {item}" for item in shared["hard_rules"] + prompt["hard_rules"]))
-        sections.append("USO DE TOOLS:\n" + "\n".join(f"- {item}" for item in prompt["tool_rules"]))
-        sections.append("ESTILO:\n" + "\n".join(f"- {item}" for item in prompt["style"]))
 
         dynamic_lines = []
         for key, label in prompt["dynamic_context"].items():

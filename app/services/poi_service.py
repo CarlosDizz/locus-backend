@@ -27,6 +27,25 @@ class POIService:
         lng_factor = 111.32 * max(cos(radians(lat_a)), 0.2)
         return sqrt(((lat_b - lat_a) * lat_factor) ** 2 + ((lng_b - lng_a) * lng_factor) ** 2)
 
+    def _is_hospitality_or_service_label(self, text: str) -> bool:
+        lowered = clean_text(text).lower()
+        blocked = [
+            "restaurante",
+            "restaurant",
+            "bar",
+            "pub",
+            "cafe",
+            "café",
+            "hotel",
+            "hostel",
+            "farmacia",
+            "pharmacy",
+            "supermercado",
+            "taxi",
+            "garden",
+        ]
+        return any(token in lowered for token in blocked)
+
     def _catalog_poi_to_runtime(self, poi: Poi) -> POI:
         description = poi.short_description or poi.long_description or ""
         summary = poi.long_description or poi.short_description or ""
@@ -41,6 +60,7 @@ class POIService:
             source_of_truth=poi.source_of_truth or "catalog",
             is_ephemeral=False,
             google_place_id=poi.google_place_id or "",
+            context_kind="catalog",
         )
 
     def _is_generic_query(self, query: str) -> bool:
@@ -104,6 +124,8 @@ class POIService:
 
     def search_nearby_pois(self, query: str, lat: float | None, lng: float | None, limit: int = 5) -> list[POI]:
         catalog_results = self._search_catalog_pois(query=query, lat=lat, lng=lng, limit=limit)
+        if self._is_generic_query(query):
+            return catalog_results[:limit]
         if len(catalog_results) >= limit:
             return catalog_results
 
@@ -125,6 +147,25 @@ class POIService:
     def search_contextual_places(self, query: str, lat: float | None, lng: float | None, limit: int = 5) -> list[POI]:
         raw_places = self.maps_client.search_places(query=query, lat=lat, lng=lng, limit=limit)
         return [POI(**item) for item in raw_places]
+
+    def search_tourism_candidates(self, query: str, lat: float | None, lng: float | None, limit: int = 5) -> list[POI]:
+        results = self.search_nearby_pois(query=query, lat=lat, lng=lng, limit=limit)
+        query_tokens = [token for token in slugify(query).split("-") if len(token) > 2]
+        normalized: list[POI] = []
+        for poi in results:
+            haystack = f"{poi.name} {poi.description} {poi.summary}"
+            slug = slugify(haystack)
+            if self._is_hospitality_or_service_label(haystack):
+                continue
+            if query_tokens and not any(token in slug for token in query_tokens):
+                continue
+            if lat is not None and lng is not None and self._distance_km(lat, lng, poi.lat, poi.lng) > 8:
+                continue
+            context_kind = "catalog" if not poi.is_ephemeral else "tourism_candidate"
+            normalized.append(poi.model_copy(update={"context_kind": context_kind}))
+            if len(normalized) >= limit:
+                break
+        return normalized
 
     def enrich_poi(self, poi: POI) -> POI:
         if poi.summary:

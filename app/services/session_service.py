@@ -15,6 +15,8 @@ class SessionService:
     def _serialize(self, row: AppSession) -> SessionState:
         active_poi = POI(**row.active_poi_json) if row.active_poi_json else None
         nearby_pois = [POI(**poi) for poi in (row.nearby_pois_json or [])]
+        metadata = row.metadata_json or {}
+        ephemeral_map_pois = [POI(**poi) for poi in (metadata.get("ephemeral_map_pois") or [])]
         return SessionState(
             session_id=row.session_id,
             user_id=row.user_id,
@@ -29,8 +31,9 @@ class SessionService:
             ),
             active_poi=active_poi,
             nearby_pois=nearby_pois,
+            ephemeral_map_pois=ephemeral_map_pois,
             memory=row.memory_json or [],
-            metadata=row.metadata_json or {},
+            metadata=metadata,
         )
 
     def _get_row(self, session_id: str) -> AppSession | None:
@@ -175,6 +178,26 @@ class SessionService:
                 db.add(row)
                 db.flush()
             row.nearby_pois_json = [poi.model_dump() for poi in pois]
+            return self._serialize(row)
+
+    def set_ephemeral_map_pois(self, session_id: str, pois: list[POI]) -> SessionState:
+        with session_scope() as db:
+            row = db.get(AppSession, session_id.upper())
+            if row is None:
+                row = AppSession(
+                    session_id=session_id.upper(),
+                    profile_context="",
+                    profile_language="es",
+                    profile_preferences_json={},
+                    nearby_pois_json=[],
+                    memory_json=[],
+                    metadata_json={},
+                )
+                db.add(row)
+                db.flush()
+            metadata = dict(row.metadata_json or {})
+            metadata["ephemeral_map_pois"] = [poi.model_dump() for poi in pois]
+            row.metadata_json = metadata
             return self._serialize(row)
 
     def set_active_poi(self, session_id: str, poi: POI | None) -> SessionState:

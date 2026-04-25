@@ -51,6 +51,7 @@ class MapsClient:
                     "source_of_truth": "google_places",
                     "is_ephemeral": True,
                     "google_place_id": item.get("place_id", ""),
+                    "context_kind": "hospitality",
                 }
             )
         return normalized

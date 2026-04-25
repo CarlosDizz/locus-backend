@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from app.clients.openai_client import OpenAIClient, OpenAIClientError
 from app.schemas.chat import ChatMessageRequest, ChatResponse, ChatSetupRequest
@@ -14,10 +15,80 @@ from app.services.tool_runtime_service import tool_runtime_service
 from app.tools.knowledge_tools import get_knowledge_tool_manifest
 from app.tools.poi_tools import get_poi_tool_manifest
 from app.tools.session_tools import get_session_tool_manifest
-from app.utils.text import clean_text
+from app.utils.text import clean_text, slugify
 
 
 class ChatService:
+    MATCH_STOPWORDS = {
+        "de",
+        "del",
+        "la",
+        "las",
+        "el",
+        "los",
+        "y",
+        "of",
+        "the",
+        "di",
+        "da",
+        "do",
+        "a",
+        "al",
+        "en",
+        "un",
+        "una",
+        "por",
+    }
+
+    LANDMARK_TERMS = [
+        "obelisco",
+        "estatua",
+        "monumento",
+        "fuente",
+        "arco",
+        "torre",
+        "puerta",
+        "muralla",
+        "castillo",
+        "puente",
+        "plaza",
+        "edificio",
+        "iglesia",
+        "basilica",
+        "basílica",
+        "palacio",
+        "templo",
+        "teatro",
+        "mirador",
+    ]
+
+    RELATIVE_LOCATION_TERMS = [
+        "frente",
+        "delante",
+        "enfrente",
+        "junto",
+        "al lado",
+        "cerca",
+        "pegado",
+        "justo",
+    ]
+
+    DEICTIC_LANDMARK_TERMS = [
+        "este",
+        "esta",
+        "esto",
+        "ese",
+        "esa",
+        "eso",
+        "aqui",
+        "aquí",
+        "veo",
+        "viendo",
+        "tengo delante",
+        "puerta principal",
+        "te estoy comentando",
+    ]
+
     def __init__(self) -> None:
         self.openai = OpenAIClient()
 
@@ -34,7 +105,34 @@ class ChatService:
                 lines.append(f"- {poi.name}")
         return "\n".join(lines)
 
+    def _format_ephemeral_map_pois(self, pois: list[POI], limit: int = 6) -> str:
+        if not pois:
+            return ""
+
+        lines: list[str] = []
+        for poi in pois[:limit]:
+            blurb = clean_text(poi.description or poi.summary)
+            if blurb:
+                lines.append(f"- {poi.name}: ya marcado en el mapa de Locus como recomendacion temporal. {blurb}")
+            else:
+                lines.append(f"- {poi.name}: ya marcado en el mapa de Locus como recomendacion temporal.")
+        return "\n".join(lines)
+
     def _format_location_context(self, session) -> str:
+        if session.ephemeral_map_pois:
+            ephemeral_names = ", ".join(poi.name for poi in session.ephemeral_map_pois[:3])
+            if session.nearby_pois:
+                visible_names = ", ".join(poi.name for poi in session.nearby_pois[:4])
+                return (
+                    "Hay geolocalizacion activa y el usuario esta en una zona donde el mapa ya muestra "
+                    f"lugares como {visible_names}. Ademas, ya hay recomendaciones temporales marcadas en el mapa de Locus como {ephemeral_names}. "
+                    "Usa ese contexto y no menciones coordenadas."
+                )
+            return (
+                "Hay geolocalizacion activa y ya hay recomendaciones temporales marcadas en el mapa de Locus como "
+                f"{ephemeral_names}. Usa ese contexto y no menciones coordenadas."
+            )
+
         if session.nearby_pois:
             names = ", ".join(poi.name for poi in session.nearby_pois[:4])
             return (
@@ -47,18 +145,215 @@ class ChatService:
 
         return ""
 
+    def _format_active_poi_context(self, session) -> str:
+        if session.active_poi is None:
+            return ""
+
+        blurb = clean_text(session.active_poi.description or session.active_poi.summary)
+        if blurb:
+            return f"{session.active_poi.name}. {blurb}"
+        return session.active_poi.name
+
     def _format_recent_memory(self, session) -> str:
         return "\n".join(f"{item['role'].upper()}: {item['text']}" for item in session.memory[-8:])
 
+    def _normalize_match_text(self, text: str) -> str:
+        return slugify(clean_text(text)).replace("-", " ")
+
+    def _match_tokens(self, text: str) -> set[str]:
+        return {
+            token
+            for token in self._normalize_match_text(text).split()
+            if token and token not in self.MATCH_STOPWORDS and len(token) > 2
+        }
+
+    def _poi_match_score(self, message: str, poi: POI) -> int:
+        normalized_message = self._normalize_match_text(message)
+        normalized_name = self._normalize_match_text(poi.name)
+        if normalized_name and normalized_name in normalized_message:
+            return 100
+
+        poi_tokens = self._match_tokens(poi.name)
+        message_tokens = self._match_tokens(message)
+        overlap = poi_tokens & message_tokens
+        if len(overlap) >= 2:
+            return len(overlap) * 10
+        if poi_tokens and overlap == poi_tokens:
+            return len(overlap) * 10
+        return 0
+
+    def _find_named_poi(self, message: str, pois: list[POI]) -> POI | None:
+        best: POI | None = None
+        best_score = 0
+        ambiguous = False
+        for poi in pois:
+            score = self._poi_match_score(message, poi)
+            if score > best_score:
+                best = poi
+                best_score = score
+                ambiguous = False
+            elif score > 0 and score == best_score:
+                ambiguous = True
+        if best_score <= 0 or ambiguous:
+            return None
+        return best
+
+    def _find_named_focus_poi(self, message: str, session) -> POI | None:
+        named_visible = self._find_named_poi(message, session.nearby_pois)
+        if named_visible is not None:
+            return named_visible
+        return self._find_named_poi(message, session.ephemeral_map_pois)
+
+    def _contains_term(self, text: str, term: str) -> bool:
+        if not term:
+            return False
+        if " " in term:
+            return term in text
+        return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text) is not None
+
+    def _contains_any_term(self, text: str, terms: list[str]) -> bool:
+        return any(self._contains_term(text, term) for term in terms)
+
+    def _looks_like_landmark_reference(self, message: str) -> bool:
+        lowered = clean_text(message).lower()
+        if not self._contains_any_term(lowered, self.LANDMARK_TERMS):
+            return False
+        return self._contains_any_term(lowered, self.RELATIVE_LOCATION_TERMS) or self._contains_any_term(lowered, self.DEICTIC_LANDMARK_TERMS)
+
+    def _recent_user_landmark_reference(self, session) -> str:
+        for item in reversed(session.memory[-6:]):
+            if item.get("role") != "user":
+                continue
+            text = clean_text(item.get("text", ""))
+            if text and self._looks_like_landmark_reference(text):
+                return text
+        return ""
+
+    def _extract_landmark_reference_text(self, session, message: str) -> str:
+        cleaned = clean_text(message)
+        lowered = cleaned.lower()
+        if self._looks_like_landmark_reference(cleaned):
+            return cleaned
+
+        if session.active_poi is None:
+            return ""
+
+        asks_about_this = self._contains_any_term(lowered, ["este", "esta", "esto", "ese", "esa", "eso", "te estoy comentando"])
+        mentions_landmark = self._contains_any_term(lowered, self.LANDMARK_TERMS)
+        if asks_about_this or mentions_landmark:
+            previous = self._recent_user_landmark_reference(session)
+            if previous:
+                return previous
+        return ""
+
+    def _references_external_map(self, message: str) -> bool:
+        lowered = clean_text(message).lower()
+        return any(token in lowered for token in ["google maps", "apple maps", "waze", "maps de apple"])
+
+    def _asks_about_map_presence(self, message: str) -> bool:
+        lowered = clean_text(message).lower()
+        return "mapa" in lowered and any(
+            token in lowered
+            for token in [
+                "encontr",
+                "aparece",
+                "aparecera",
+                "aparecerá",
+                "marcad",
+                "veré",
+                "vere",
+                "estará",
+                "estara",
+            ]
+        )
+
     def _extract_ephemeral_places_query(self, message: str) -> str | None:
         lowered = clean_text(message).lower()
-        if any(token in lowered for token in ["carbonara", "comer", "restaurante", "ristorante", "pasta"]):
+        if self._contains_any_term(lowered, ["carbonara", "comer", "restaurante", "ristorante", "pasta"]):
             return "restaurante carbonara"
-        if any(token in lowered for token in ["ipa", "cerveza artesanal", "craft beer", "cerveza", "pub", "bar"]):
+        if self._contains_any_term(lowered, ["ipa", "cerveza artesanal", "craft beer", "cerveza", "pub", "bar"]):
             return "bar cerveza artesanal ipa"
-        if any(token in lowered for token in ["cafe", "café", "desayuno", "coffee"]):
+        if self._contains_any_term(lowered, ["cafe", "café", "desayuno", "coffee"]):
             return "cafe"
         return None
+
+    def _classify_request_intent(self, message: str) -> str:
+        lowered = clean_text(message).lower()
+
+        if self._contains_any_term(lowered, ["carbonara", "restaurante", "ristorante", "comer", "cenar", "tapeo", "pizza", "pasta"]):
+            return "hospitality_food"
+        if self._contains_any_term(lowered, ["ipa", "cerveza", "beer", "bar", "pub", "coctel", "cóctel", "vino", "birra"]):
+            return "hospitality_drink"
+        if self._contains_any_term(lowered, ["farmacia", "atm", "cajero", "taxi", "supermercado", "hospital", "urgencia", "lavanderia", "lavandería"]):
+            return "service"
+        if self._contains_any_term(
+            lowered,
+            [
+                "quiero visitar",
+                "quiero ver",
+                "merece la pena",
+                "merece más la pena",
+                "que es",
+                "qué es",
+                "háblame de",
+                "hablame de",
+                "edificio historico",
+                "edificio histórico",
+                "museo",
+                "iglesia",
+                "basilica",
+                "basílica",
+                "fabrica",
+                "fábrica",
+                "castillo",
+                "puente",
+                "monumento",
+            ],
+        ):
+            return "tourism_candidate"
+        return "general"
+
+    def _extract_tourism_candidate_query(self, message: str, active_poi_name: str = "") -> str:
+        cleaned = clean_text(message)
+        lowered = cleaned.lower()
+        landmark_term = next((term for term in self.LANDMARK_TERMS if self._contains_term(lowered, term)), "")
+        has_relative_reference = self._contains_any_term(lowered, self.RELATIVE_LOCATION_TERMS)
+        if landmark_term and active_poi_name and has_relative_reference:
+            return f"{landmark_term} {clean_text(active_poi_name)}"
+        if landmark_term and active_poi_name and len(lowered.split()) <= 6:
+            return f"{landmark_term} {clean_text(active_poi_name)}"
+        if landmark_term:
+            return landmark_term
+
+        replacements = [
+            "quiero visitar ",
+            "quiero ver ",
+            "háblame de ",
+            "hablame de ",
+            "qué es ",
+            "que es ",
+            "me interesa ",
+            "quiero conocer ",
+        ]
+        query = cleaned
+        for prefix in replacements:
+            if lowered.startswith(prefix):
+                query = cleaned[len(prefix):]
+                break
+
+        for suffix in [
+            ", que es un edificio histórico",
+            ", que es un edificio historico",
+            " que es un edificio histórico",
+            " que es un edificio historico",
+            ", es un edificio histórico",
+            ", es un edificio historico",
+        ]:
+            if query.lower().endswith(suffix):
+                query = query[: -len(suffix)]
+                break
+
+        return query.strip(" .,:;")
 
     def _places_reply_mentions_result(self, reply: str, places: list[POI]) -> bool:
         lowered = reply.lower()
@@ -88,12 +383,58 @@ class ChatService:
         names = ", ".join(place.name for place in places[:3])
         return f"Para eso cerca de ti me fijaría en {names}."
 
+    def _grounded_tourism_candidate_reply(self, message: str, places: list[POI]) -> str:
+        first = places[0]
+        second = places[1] if len(places) > 1 else None
+        lowered = clean_text(message).lower()
+
+        if any(token in lowered for token in ["localizar", "ubicar", "indicarme donde esta", "indicarme dónde está", "mapa", "frente"]):
+            return (
+                f"Sí, es muy probable que sea {first.name}. "
+                "Te lo he marcado en el mapa para que lo ubiques mejor y puedas ubicarlo al llegar."
+            )
+
+        if any(token in lowered for token in ["que es", "qué es", "háblame", "hablame"]):
+            if second:
+                return (
+                    f"Sí, te diría que empieces por {first.name}. "
+                    f"{self._poi_reason(first)} Si quieres comparar con algo parecido, también tienes {second.name}."
+                )
+            return f"Sí, te diría que empieces por {first.name}. {self._poi_reason(first)}"
+
+        if second:
+            return (
+                f"Si te apetece ese plan, probaría primero con {first.name}. "
+                f"{self._poi_reason(first)} Como alternativa cercana, también miraría {second.name}."
+            )
+        return f"Si te apetece ese plan, probaría con {first.name}. {self._poi_reason(first)}"
+
+    def _grounded_ephemeral_map_reply(self, message: str, places: list[POI]) -> str:
+        first = places[0]
+        lowered = clean_text(message).lower()
+
+        if self._asks_about_map_presence(message) and not self._references_external_map(message):
+            return (
+                f"Sí. En el mapa de Locus lo vas a encontrar ya marcado como recomendacion temporal, y en este caso el punto es {first.name}. "
+                "Cuando llegues a la zona, te servira para ubicarlo sin tener que buscarlo aparte."
+            )
+
+        if any(token in lowered for token in ["donde esta", "dónde está", "ubicar", "localizar", "indicarme"]):
+            return (
+                f"Sí, te lo he dejado marcado en el mapa de Locus como {first.name}. "
+                "Lo veras en la zona inmediata a la que te estoy guiando."
+            )
+
+        return f"Sí. Lo tienes ya marcado en el mapa de Locus como recomendacion temporal: {first.name}."
+
     def _poi_reason(self, poi: POI) -> str:
         text = clean_text(poi.description or poi.summary)
         if not text:
             return "Es una opcion clara de las que tienes ya visibles en el mapa."
+        if poi.is_ephemeral and any(char.isdigit() for char in text):
+            return "Te encaja como parada concreta y razonable para ese plan."
         first_sentence = text.split(".")[0].strip()
-        if first_sentence:
+        if first_sentence and len(first_sentence) > 8:
             return first_sentence.rstrip(".") + "."
         return "Es una opcion clara de las que tienes ya visibles en el mapa."
 
@@ -146,6 +487,9 @@ class ChatService:
         lowered = reply.lower()
         return any(poi.name.lower() in lowered for poi in pois[:8])
 
+    def _reply_mentions_specific_poi(self, reply: str, poi: POI) -> bool:
+        return self._poi_match_score(reply, poi) > 0
+
     def _reply_sounds_technical(self, reply: str) -> bool:
         lowered = reply.lower()
         bad_tokens = [
@@ -161,6 +505,37 @@ class ChatService:
             "captura",
         ]
         return any(token in lowered for token in bad_tokens)
+
+    def _reply_sounds_generic_for_focus(self, reply: str) -> bool:
+        lowered = clean_text(reply).lower()
+        generic_markers = [
+            "para orientarte con lo que ya tienes delante",
+            "si me dices el plan que te apetece",
+            "me fijaria en",
+            "me fijaría en",
+            "seguimos con",
+            "tambien tienes cerca",
+            "también tienes cerca",
+        ]
+        return any(marker in lowered for marker in generic_markers)
+
+    def _focused_poi_reply(self, message: str, poi: POI) -> str:
+        lowered = clean_text(message).lower()
+        reason = self._poi_reason(poi)
+
+        if any(token in lowered for token in ["antes de comer", "hora de comer", "organizar", "ya", "plan"]):
+            return (
+                f"Sí: si te interesa {poi.name}, yo iría ya a por esa visita. {reason} "
+                "Hazla a tu ritmo y luego rematas la zona antes de comer sin complicarte."
+            )
+
+        if any(token in lowered for token in ["quiero visitar", "quiero ver", "me interesa", "tengo mucho interes", "tengo mucho interés"]):
+            return (
+                f"Sí: si te apetece {poi.name}, la tomaría como tu siguiente parada. {reason} "
+                "Si quieres, te la ordeno en versión rápida o tranquila."
+            )
+
+        return f"Sí: {poi.name} encaja bien con lo que buscas ahora. {reason}"
 
     def _needs_grounding(self, message: str, reply: str, pois: list[POI]) -> bool:
         if not pois:
@@ -180,16 +555,22 @@ class ChatService:
         lowered = message.lower()
         active_name = session.active_poi.name if session.active_poi else ""
         visible = pois or session.nearby_pois
+        named_focus = self._find_named_focus_poi(message, session)
+
+        if named_focus is not None:
+            return self._focused_poi_reply(message, named_focus)
+
+        if lowered.strip() in {"hola", "buenas", "hey", "holi", "hello"}:
+            return "Hola. Estoy contigo. Dime qué te apetece hacer y te ayudo a orientarte por aquí."
 
         if visible:
             if any(token in lowered for token in ["cans", "45", "poco", "cerca", "andar", "rapido", "rápido", "caminar"]):
                 return self._grounded_map_reply(message, visible)
 
             if active_name:
-                top_names = ", ".join(poi.name for poi in visible[:3])
-                return f"Seguimos con {active_name} en mente, pero si quieres cambiar de plan ahora mismo tambien tienes cerca {top_names}."
+                return f"Seguimos con {active_name}. Si quieres, te ayudo a situarte mejor o a organizar esa visita."
 
-            return self._grounded_map_reply(message, visible)
+            return "Estoy contigo. Si quieres ver algo concreto o montar un plan desde donde estás, te ayudo."
 
         return "Estoy contigo. Dime si te apetece algo monumental, tranquilo, rapido o mas local y te doy una propuesta concreta."
 
@@ -206,13 +587,15 @@ class ChatService:
 
         pois = poi_service.search_nearby_pois("lugares turisticos", data.lat, data.lng, limit=8)
         session = session_service.set_nearby_pois(session.session_id, pois)
+        session = session_service.set_ephemeral_map_pois(session.session_id, [])
         prompt_preview = prompt_service.render(
             "chat_agent.json",
             {
                 "session_profile": session.profile.raw_context,
-                "active_poi": session.active_poi.name if session.active_poi else "",
+                "active_poi": self._format_active_poi_context(session),
                 "session_location": self._format_location_context(session),
                 "nearby_pois": self._format_nearby_pois(session.nearby_pois),
+                "ephemeral_map_pois": "",
                 "recent_memory": "",
             },
         )
@@ -237,9 +620,10 @@ class ChatService:
             "chat_agent.json",
             {
                 "session_profile": session.profile.raw_context,
-                "active_poi": session.active_poi.name if session.active_poi else "",
+                "active_poi": self._format_active_poi_context(session),
                 "session_location": self._format_location_context(session),
                 "nearby_pois": self._format_nearby_pois(session.nearby_pois),
+                "ephemeral_map_pois": self._format_ephemeral_map_pois(session.ephemeral_map_pois),
                 "recent_memory": self._format_recent_memory(session),
             },
         )
@@ -328,6 +712,48 @@ class ChatService:
                 previous_response_id=response.get("id"),
             )
 
+    def _run_landmark_identification(self, session, message: str) -> list[POI]:
+        reference_text = self._extract_landmark_reference_text(session, message)
+        if session.active_poi is None or not reference_text:
+            return []
+
+        raw_output = tool_runtime_service.execute(
+            session.session_id,
+            "identify_map_landmark",
+            {
+                "reference_text": reference_text,
+                "near_poi_name": session.active_poi.name,
+                "lat": session.location.lat,
+                "lng": session.location.lng,
+                "limit": 5,
+            },
+        )
+        try:
+            payload = json.loads(raw_output)
+        except json.JSONDecodeError:
+            return []
+        if not payload.get("ok"):
+            return []
+        identified = [POI(**item) for item in payload.get("pois", [])]
+        if not identified:
+            return []
+
+        mark_output = tool_runtime_service.execute(
+            session.session_id,
+            "mark_pois_on_map",
+            {
+                "poi_names": [identified[0].name],
+                "reason": "Landmark identified near active POI and should be visible on the Locus map",
+            },
+        )
+        try:
+            mark_payload = json.loads(mark_output)
+        except json.JSONDecodeError:
+            return identified
+        if not mark_payload.get("ok"):
+            return identified
+        return [POI(**item) for item in mark_payload.get("marked_pois", [])]
+
     def handle_message(self, data: ChatMessageRequest) -> ChatResponse:
         if data.user_id is not None:
             session_service.attach_user(data.session_id, data.user_id)
@@ -340,17 +766,13 @@ class ChatService:
         clean_message = clean_text(data.message)
         session_service.append_memory(session.session_id, "user", clean_message)
         ephemeral_pois: list[POI] = []
-
-        pois: list[POI] = []
         try:
             if self.openai.is_configured():
                 if session.user_id is not None:
                     billing_service.ensure_user_can_consume(session.user_id)
                 reply, final_response = self._run_openai_chat(session.session_id, clean_message)
-                fresh_session = session_service.get_or_create(session.session_id)
-                if self._needs_grounding(clean_message, reply, fresh_session.nearby_pois):
-                    reply = self._grounded_map_reply(clean_message, fresh_session.nearby_pois)
                 final_session = session_service.get_or_create(session.session_id)
+                ephemeral_pois = list(final_session.ephemeral_map_pois)
                 if final_session.user_id is not None:
                     billing_service.record_usage(
                         user_id=final_session.user_id,
@@ -367,30 +789,11 @@ class ChatService:
         except BillingError:
             reply = "Tu saldo actual no permite iniciar una nueva interacción. Recarga saldo para seguir usando Locus."
         except OpenAIClientError:
-            lowered = clean_message.lower()
-            if any(token in lowered for token in ["poi", "cerca", "que ver", "qué ver", "recomienda"]):
-                pois = poi_service.search_nearby_pois(
-                    query=clean_message or "lugares turisticos",
-                    lat=session.location.lat,
-                    lng=session.location.lng,
-                    limit=5,
-                )
-                session = session_service.set_nearby_pois(session.session_id, pois)
+            reply = "Ahora mismo no he podido responder bien. Inténtalo otra vez en un momento."
 
-            reply = self._fallback_reply(session, clean_message, pois)
-
-        ephemeral_query = self._extract_ephemeral_places_query(clean_message)
-        if ephemeral_query:
-            ephemeral_pois = poi_service.search_contextual_places(
-                query=ephemeral_query,
-                lat=session.location.lat,
-                lng=session.location.lng,
-                limit=5,
-            )
-            if ephemeral_pois and not self._places_reply_mentions_result(reply, ephemeral_pois):
-                reply = self._grounded_places_reply(clean_message, ephemeral_pois)
-
-        pois = session_service.get_or_create(session.session_id).nearby_pois
+        latest_session = session_service.get_or_create(session.session_id)
+        pois = latest_session.nearby_pois
+        ephemeral_pois = list(latest_session.ephemeral_map_pois)
         prompt_preview = self._build_instructions(session.session_id)
         session_service.append_memory(session.session_id, "assistant", reply)
         return ChatResponse(

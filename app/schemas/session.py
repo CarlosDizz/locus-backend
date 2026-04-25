@@ -23,6 +23,7 @@ class SessionState(BaseModel):
     location: SessionLocation = Field(default_factory=SessionLocation)
     active_poi: POI | None = None
     nearby_pois: list[POI] = Field(default_factory=list)
+    ephemeral_map_pois: list[POI] = Field(default_factory=list)
     memory: list[dict[str, str]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

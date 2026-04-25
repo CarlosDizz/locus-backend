@@ -22,6 +22,7 @@ class ToolRuntimeService:
             "mark_pois_on_map": self._mark_pois_on_map,
             "get_poi_summary": self._get_poi_summary,
             "resolve_poi_facts": self._resolve_poi_facts,
+            "search_wikipedia": self._search_wikipedia,
         }
         handler = handlers.get(tool_name)
         if handler is None:
@@ -273,6 +274,17 @@ class ToolRuntimeService:
             "sources": documentation["sources"],
             "source_policy": "Usa hechos documentales de Wikidata y resumen narrativo prudente; si falta un dato concreto, no debe inventarse.",
         }
+
+
+    def _search_wikipedia(self, _session_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        from app.clients.wikipedia_client import WikipediaClient
+        query = (arguments.get("query") or "").strip()
+        if not query:
+            return {"ok": False, "error": "query is required"}
+        summary = WikipediaClient().get_summary(query, sentences=5)
+        if not summary:
+            return {"ok": False, "error": f"No Wikipedia article found for: {query}"}
+        return {"ok": True, "query": query, "summary": summary}
 
 
 tool_runtime_service = ToolRuntimeService()

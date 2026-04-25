@@ -96,6 +96,10 @@ class OpenAIClient:
                 "tools": tools,
                 "audio": {
                     "input": {
+                        "transcription": {
+                            "model": settings.openai_realtime_input_transcription_model,
+                            "language": settings.openai_realtime_input_transcription_language,
+                        },
                         "turn_detection": {
                             "type": "server_vad",
                             "interrupt_response": True,

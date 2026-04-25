@@ -29,3 +29,19 @@ class RealtimeClientSecretResponse(BaseModel):
     voice: str
     modalities: list[str]
     tools: list[dict]
+
+
+class RealtimeToolRequest(BaseModel):
+    session_id: str
+    tool_name: str
+    arguments: dict
+
+
+class RealtimePhotoInsightRequest(BaseModel):
+    session_id: str
+    image_data_url: str
+    file_name: str | None = None
+
+
+class RealtimePhotoInsightResponse(BaseModel):
+    text: str

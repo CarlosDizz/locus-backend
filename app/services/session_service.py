@@ -218,6 +218,19 @@ class SessionService:
             row.active_poi_json = poi.model_dump() if poi else None
             return self._serialize(row)
 
+    def reset_conversation(self, session_id: str) -> SessionState:
+        with session_scope() as db:
+            row = db.get(AppSession, session_id.upper())
+            if row is None:
+                raise ValueError(f"Session {session_id} not found")
+            row.memory_json = []
+            row.active_poi_json = None
+            metadata = dict(row.metadata_json or {})
+            metadata["ephemeral_map_pois"] = []
+            metadata["last_chat_response_id"] = ""
+            row.metadata_json = metadata
+            return self._serialize(row)
+
     def set_metadata_value(self, session_id: str, key: str, value) -> SessionState:
         with session_scope() as db:
             row = db.get(AppSession, session_id.upper())

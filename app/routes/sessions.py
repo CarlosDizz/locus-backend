@@ -28,6 +28,15 @@ async def get_session(session_id: str) -> SessionResponse:
     return SessionResponse(session=session)
 
 
+@router.post("/{session_id}/reset", response_model=SessionResponse)
+async def reset_session(session_id: str) -> SessionResponse:
+    session = session_service.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = session_service.reset_conversation(session_id)
+    return SessionResponse(session=session)
+
+
 @router.put("/{session_id}", response_model=SessionResponse)
 async def update_session(
     session_id: str,

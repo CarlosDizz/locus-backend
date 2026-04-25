@@ -38,6 +38,9 @@ class Settings:
     openai_realtime_model: str = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
     openai_realtime_voice: str = os.getenv("OPENAI_REALTIME_VOICE", "marin")
     openai_realtime_secret_ttl_seconds: int = int(os.getenv("OPENAI_REALTIME_SECRET_TTL_SECONDS", "600"))
+    openai_realtime_max_output_tokens: int = int(os.getenv("OPENAI_REALTIME_MAX_OUTPUT_TOKENS", "1400"))
+    openai_realtime_input_transcription_model: str = os.getenv("OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe")
+    openai_realtime_input_transcription_language: str = os.getenv("OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE", "es")
 
     maps_api_key: str = os.getenv("MAPS_API_KEY", "")
     wikipedia_language: str = os.getenv("WIKIPEDIA_LANGUAGE", "es")

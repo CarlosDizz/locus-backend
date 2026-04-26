@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import dotenv_values, load_dotenv
@@ -63,9 +63,11 @@ class Settings:
     port: int = int(os.getenv("PORT", "8000"))
     log_level: str = os.getenv("LOG_LEVEL", "info")
     auth_token_ttl_days: int = int(os.getenv("AUTH_TOKEN_TTL_DAYS", "30"))
-    cors_allowed_origins: list[str] = _csv_env(
-        "CORS_ALLOWED_ORIGINS",
-        "http://localhost:8100,http://127.0.0.1:8100,https://locus-backend-production.up.railway.app",
+    cors_allowed_origins: list[str] = field(
+        default_factory=lambda: _csv_env(
+            "CORS_ALLOWED_ORIGINS",
+            "http://localhost:8100,http://127.0.0.1:8100,https://locus-backend-production.up.railway.app",
+        )
     )
 
     db_driver: str = _env("DB_DRIVER", default="mysql+pymysql")

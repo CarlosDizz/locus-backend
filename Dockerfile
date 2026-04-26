@@ -9,8 +9,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
-COPY alembic ./alembic
-COPY alembic.ini .
 COPY main.py .
 COPY .env.example .env.example
 COPY docker-entrypoint.sh .

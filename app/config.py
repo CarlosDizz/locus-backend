@@ -1,10 +1,45 @@
 import os
 from dataclasses import dataclass
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 
-load_dotenv()
+_ORIGINAL_ENV = dict(os.environ)
+load_dotenv(".env")
+
+for _key, _value in dotenv_values(".env.local").items():
+    if _value is None:
+        continue
+    if _key not in _ORIGINAL_ENV:
+        os.environ[_key] = _value
+
+
+def _env(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and value != "":
+            return value
+    return default
+
+
+def _normalize_database_url(raw_url: str) -> str:
+    if raw_url.startswith("mysql://"):
+        return raw_url.replace("mysql://", "mysql+pymysql://", 1)
+    return raw_url
+
+
+def _build_database_url() -> str:
+    direct_url = _env("DATABASE_URL", "MYSQL_URL", default="")
+    if direct_url:
+        return _normalize_database_url(direct_url)
+
+    driver = _env("DB_DRIVER", default="mysql+pymysql")
+    host = _env("DB_HOST", "MYSQLHOST", default="localhost")
+    port = _env("DB_PORT", "MYSQLPORT", default="3306")
+    name = _env("DB_NAME", "MYSQLDATABASE", "MYSQL_DATABASE", default="locus")
+    user = _env("DB_USER", "MYSQLUSER", "MYSQL_USER", default="locus")
+    password = _env("DB_PASSWORD", "MYSQLPASSWORD", "MYSQL_PASSWORD", "MYSQL_ROOT_PASSWORD", default="")
+    return f"{driver}://{user}:{password}@{host}:{port}/{name}"
 
 
 @dataclass(frozen=True)
@@ -17,19 +52,13 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", "info")
     auth_token_ttl_days: int = int(os.getenv("AUTH_TOKEN_TTL_DAYS", "30"))
 
-    db_driver: str = os.getenv("DB_DRIVER", "mysql+pymysql")
-    db_host: str = os.getenv("DB_HOST", "localhost")
-    db_port: int = int(os.getenv("DB_PORT", "3306"))
-    db_name: str = os.getenv("DB_NAME", "locus")
-    db_user: str = os.getenv("DB_USER", "locus")
-    db_password: str = os.getenv("DB_PASSWORD", "")
-    database_url: str = os.getenv(
-        "DATABASE_URL",
-        f"{os.getenv('DB_DRIVER', 'mysql+pymysql')}://"
-        f"{os.getenv('DB_USER', 'locus')}:{os.getenv('DB_PASSWORD', '')}@"
-        f"{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '3306')}/"
-        f"{os.getenv('DB_NAME', 'locus')}",
-    )
+    db_driver: str = _env("DB_DRIVER", default="mysql+pymysql")
+    db_host: str = _env("DB_HOST", "MYSQLHOST", default="localhost")
+    db_port: int = int(_env("DB_PORT", "MYSQLPORT", default="3306"))
+    db_name: str = _env("DB_NAME", "MYSQLDATABASE", "MYSQL_DATABASE", default="locus")
+    db_user: str = _env("DB_USER", "MYSQLUSER", "MYSQL_USER", default="locus")
+    db_password: str = _env("DB_PASSWORD", "MYSQLPASSWORD", "MYSQL_PASSWORD", "MYSQL_ROOT_PASSWORD", default="")
+    database_url: str = _build_database_url()
 
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")

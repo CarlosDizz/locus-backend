@@ -86,6 +86,8 @@ class RealtimeService:
 
     def analyze_photo(self, data: RealtimePhotoInsightRequest) -> RealtimePhotoInsightResponse:
         session = session_service.get_or_create(data.session_id)
+        if session.user_id is not None:
+            billing_service.ensure_user_can_consume(session.user_id)
         active_poi_name = session.active_poi.name if session.active_poi else ""
         nearby_names = ", ".join(poi.name for poi in session.nearby_pois[:6])
         ephemeral_names = ", ".join(poi.name for poi in session.ephemeral_map_pois[:4])
@@ -141,6 +143,17 @@ class RealtimeService:
         if not text:
             raise OpenAIClientError("No se pudo extraer una respuesta útil para la foto")
 
+        if session.user_id is not None:
+            billing_service.record_usage(
+                user_id=session.user_id,
+                session_id=data.session_id,
+                provider="openai",
+                endpoint="responses",
+                model=self.openai.chat_model(),
+                response_id=payload.get("id", ""),
+                usage=payload.get("usage", {}) or {},
+                metadata={"source": "realtime_photo_insight"},
+            )
         session_service.append_memory(data.session_id, "assistant", text)
         return RealtimePhotoInsightResponse(text=text)
 

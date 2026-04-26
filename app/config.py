@@ -35,6 +35,11 @@ def _normalize_database_url(raw_url: str) -> str:
     return raw_url
 
 
+def _csv_env(name: str, default: str = "") -> list[str]:
+    raw = os.getenv(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 def _build_database_url() -> str:
     direct_url = _env("MYSQL_PUBLIC_URL", "DATABASE_PUBLIC_URL", "MYSQL_URL", "DATABASE_URL", default="")
     if direct_url:
@@ -58,6 +63,10 @@ class Settings:
     port: int = int(os.getenv("PORT", "8000"))
     log_level: str = os.getenv("LOG_LEVEL", "info")
     auth_token_ttl_days: int = int(os.getenv("AUTH_TOKEN_TTL_DAYS", "30"))
+    cors_allowed_origins: list[str] = _csv_env(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:8100,http://127.0.0.1:8100,https://locus-backend-production.up.railway.app",
+    )
 
     db_driver: str = _env("DB_DRIVER", default="mysql+pymysql")
     db_host: str = _env("DB_HOST", "MYSQLHOST", default="localhost")

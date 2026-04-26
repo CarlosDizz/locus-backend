@@ -5,6 +5,7 @@ RUN_MIGRATIONS="${RUN_MIGRATIONS:-true}"
 MIGRATION_MODE="${MIGRATION_MODE:-auto}"
 MIGRATION_MAX_ATTEMPTS="${MIGRATION_MAX_ATTEMPTS:-20}"
 MIGRATION_RETRY_DELAY="${MIGRATION_RETRY_DELAY:-3}"
+MIGRATION_BLOCKING="${MIGRATION_BLOCKING:-false}"
 
 get_alembic_revision() {
   command_output="$1"
@@ -37,6 +38,39 @@ migrations_pending() {
 }
 
 if [ "$RUN_MIGRATIONS" = "true" ]; then
+  if [ "$MIGRATION_BLOCKING" != "true" ]; then
+    echo "Starting application without blocking on migrations (MIGRATION_BLOCKING=false)."
+    (
+      attempt=1
+      while [ "$attempt" -le "$MIGRATION_MAX_ATTEMPTS" ]; do
+        should_run_migrations="true"
+        if [ "$MIGRATION_MODE" = "auto" ] && ! migrations_pending; then
+          should_run_migrations="false"
+        fi
+
+        if [ "$should_run_migrations" = "false" ]; then
+          exit 0
+        fi
+
+        echo "Running database migrations in background (attempt $attempt/$MIGRATION_MAX_ATTEMPTS, mode=$MIGRATION_MODE)..."
+        if alembic upgrade head; then
+          echo "Database migrations completed."
+          exit 0
+        fi
+
+        if [ "$attempt" -eq "$MIGRATION_MAX_ATTEMPTS" ]; then
+          echo "Database migrations failed after $MIGRATION_MAX_ATTEMPTS attempts."
+          exit 1
+        fi
+
+        echo "Database not ready yet. Retrying in ${MIGRATION_RETRY_DELAY}s..."
+        attempt=$((attempt + 1))
+        sleep "$MIGRATION_RETRY_DELAY"
+      done
+    ) &
+    exec "$@"
+  fi
+
   attempt=1
   while [ "$attempt" -le "$MIGRATION_MAX_ATTEMPTS" ]; do
     should_run_migrations="true"

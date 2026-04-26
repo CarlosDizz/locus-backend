@@ -99,4 +99,5 @@ if [ "$RUN_MIGRATIONS" = "true" ]; then
   done
 fi
 
+echo "Starting application process: $*"
 exec "$@"

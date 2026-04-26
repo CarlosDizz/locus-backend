@@ -29,7 +29,7 @@ def _normalize_database_url(raw_url: str) -> str:
 
 
 def _build_database_url() -> str:
-    direct_url = _env("DATABASE_URL", "MYSQL_URL", default="")
+    direct_url = _env("MYSQL_URL", "DATABASE_URL", default="")
     if direct_url:
         return _normalize_database_url(direct_url)
 

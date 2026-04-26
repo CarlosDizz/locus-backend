@@ -4,6 +4,8 @@ from app.deps.auth import get_current_user_required
 from app.schemas.auth import UserResponse
 from app.schemas.catalog import (
     CityBootstrapRequest,
+    CityBootstrapFromLocationRequest,
+    CityBootstrapFromLocationResponse,
     CityCreateRequest,
     CityPoiImportRequest,
     CityPoiImportResponse,
@@ -54,6 +56,31 @@ async def bootstrap_city(
         return catalog_service.bootstrap_city(payload.name, payload.country_code)
     except CatalogError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/cities/bootstrap-from-location", response_model=CityBootstrapFromLocationResponse)
+async def bootstrap_city_from_location(
+    payload: CityBootstrapFromLocationRequest,
+    _current_user: UserResponse = Depends(get_current_user_required),
+) -> CityBootstrapFromLocationResponse:
+    try:
+        city, imported_count, updated_count, skipped_count, stats, pois = catalog_service.bootstrap_city_from_location(
+            lat=payload.lat,
+            lng=payload.lng,
+            radius_km=payload.radius_km,
+            limit=payload.limit,
+            use_ai_candidates=payload.use_ai_candidates,
+        )
+    except CatalogError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return CityBootstrapFromLocationResponse(
+        city=city,
+        imported_count=imported_count,
+        updated_count=updated_count,
+        skipped_count=skipped_count,
+        stats=stats,
+        pois=pois,
+    )
 
 
 @router.get("/pois", response_model=list[PoiResponse])

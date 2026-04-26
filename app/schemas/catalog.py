@@ -17,6 +17,14 @@ class CityBootstrapRequest(BaseModel):
     country_code: str = ""
 
 
+class CityBootstrapFromLocationRequest(BaseModel):
+    lat: float
+    lng: float
+    radius_km: float = Field(default=8.0, gt=0, le=50)
+    limit: int = Field(default=80, gt=0, le=150)
+    use_ai_candidates: bool = True
+
+
 class CityResponse(BaseModel):
     id: int
     slug: str
@@ -108,6 +116,15 @@ class CityPoiImportRequest(BaseModel):
 class CityPoiImportResponse(BaseModel):
     city_id: int
     city_name: str
+    imported_count: int
+    updated_count: int
+    skipped_count: int
+    stats: dict = Field(default_factory=dict)
+    pois: list[PoiResponse]
+
+
+class CityBootstrapFromLocationResponse(BaseModel):
+    city: CityResponse
     imported_count: int
     updated_count: int
     skipped_count: int

@@ -7,6 +7,7 @@ import threading
 import time
 from decimal import Decimal
 
+import requests
 from requests import RequestException
 from sqlalchemy import Select, or_, select
 
@@ -415,6 +416,74 @@ class CatalogService:
                 source="wikidata",
             )
         )
+
+    def _resolve_city_name_from_coords(self, lat: float, lng: float) -> tuple[str, str]:
+        try:
+            response = requests.get(
+                "https://nominatim.openstreetmap.org/reverse",
+                params={
+                    "format": "jsonv2",
+                    "lat": lat,
+                    "lon": lng,
+                    "zoom": 10,
+                    "addressdetails": 1,
+                },
+                headers={"User-Agent": "LocusBackend/1.0"},
+                timeout=12,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            raise CatalogError(f"No he podido resolver la ciudad desde la ubicación: {exc}") from exc
+
+        address = payload.get("address", {}) or {}
+        city_name = (
+            address.get("city")
+            or address.get("town")
+            or address.get("village")
+            or address.get("municipality")
+            or address.get("county")
+            or ""
+        )
+        country_code = str(address.get("country_code") or "").upper()
+
+        city_name = clean_text(city_name)
+        if not city_name:
+            raise CatalogError("No he podido deducir una ciudad válida desde tu ubicación")
+        return city_name, country_code
+
+    def bootstrap_city_from_location(
+        self,
+        *,
+        lat: float,
+        lng: float,
+        radius_km: float = 8.0,
+        limit: int = 80,
+        use_ai_candidates: bool = True,
+    ) -> tuple[CityResponse, int, int, int, dict, list[PoiResponse]]:
+        city_name, country_code = self._resolve_city_name_from_coords(lat, lng)
+        slug = slugify(city_name)
+
+        with session_scope() as db:
+            existing = db.scalar(select(City).where(City.slug == slug))
+            city = self._city_to_schema(existing) if existing is not None else None
+
+        if city is None:
+            city = self.bootstrap_city(city_name, country_code)
+
+        pois = self.list_pois(city_id=city.id, limit=limit)
+        if pois:
+            return city, 0, 0, 0, {"source": "existing_catalog"}, pois
+
+        imported_count, updated_count, skipped_count, stats, pois, _city_name = self.import_city_pois(
+            city_id=city.id,
+            radius_km=radius_km,
+            limit=limit,
+            use_ai_candidates=use_ai_candidates,
+        )
+        if use_ai_candidates:
+            self.start_pending_enrichment(city.id, min(limit, 150))
+        return city, imported_count, updated_count, skipped_count, stats, pois
 
     def list_pois(
         self,

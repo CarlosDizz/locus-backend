@@ -1,17 +1,24 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import dotenv_values, load_dotenv
 
 
 _ORIGINAL_ENV = dict(os.environ)
-load_dotenv(".env")
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_PRODUCTION_ENV_PATH = _PROJECT_ROOT / "env.pro"
 
-for _key, _value in dotenv_values(".env.local").items():
-    if _value is None:
-        continue
-    if _key not in _ORIGINAL_ENV:
-        os.environ[_key] = _value
+if _PRODUCTION_ENV_PATH.exists():
+    load_dotenv(_PRODUCTION_ENV_PATH)
+else:
+    load_dotenv(_PROJECT_ROOT / ".env")
+
+    for _key, _value in dotenv_values(_PROJECT_ROOT / ".env.local").items():
+        if _value is None:
+            continue
+        if _key not in _ORIGINAL_ENV:
+            os.environ[_key] = _value
 
 
 def _env(*names: str, default: str = "") -> str:
@@ -29,7 +36,7 @@ def _normalize_database_url(raw_url: str) -> str:
 
 
 def _build_database_url() -> str:
-    direct_url = _env("MYSQL_URL", "DATABASE_URL", default="")
+    direct_url = _env("MYSQL_PUBLIC_URL", "DATABASE_PUBLIC_URL", "MYSQL_URL", "DATABASE_URL", default="")
     if direct_url:
         return _normalize_database_url(direct_url)
 

@@ -1,5 +1,6 @@
 .env
 .env.local
+env.pro
 .venv/
 __pycache__/
 .pycache/

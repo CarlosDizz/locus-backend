@@ -14,12 +14,120 @@ from app.services.tool_runtime_service import tool_runtime_service
 from app.tools.knowledge_tools import get_knowledge_tool_manifest
 from app.tools.poi_tools import get_poi_tool_manifest
 from app.tools.session_tools import get_session_tool_manifest
-from app.utils.text import clean_text
+from app.utils.text import clean_text, slugify
 
 
 class ChatService:
     def __init__(self) -> None:
         self.openai = OpenAIClient()
+
+    def _message_suggests_missing_landmark(self, message: str) -> bool:
+        lowered = clean_text(message).lower()
+        if not lowered:
+            return False
+        markers = [
+            "no lo encuentro",
+            "no la encuentro",
+            "no aparece",
+            "no esta en el mapa",
+            "no está en el mapa",
+            "falta en el mapa",
+            "me extraña",
+            "entre las sugerencias",
+            "entre los puntos de interes",
+            "entre los puntos de interés",
+            "en el mapa",
+        ]
+        return any(marker in lowered for marker in markers)
+
+    def _message_suggests_visit_intent(self, message: str) -> bool:
+        lowered = clean_text(message).lower()
+        markers = [
+            "quiero visitar",
+            "me gustaria visitar",
+            "me gustaría visitar",
+            "me gustaria verlo",
+            "me gustaría verlo",
+            "quiero verlo",
+            "verlo por fuera",
+            "visitarlo",
+        ]
+        return any(marker in lowered for marker in markers)
+
+    def _select_catalog_promotion_candidate(self, session, user_message: str) -> POI | None:
+        message_slug = slugify(user_message)
+        message_tokens = {token for token in message_slug.split("-") if len(token) > 2}
+
+        candidates: list[POI] = []
+        if session.active_poi is not None:
+            candidates.append(session.active_poi)
+        candidates.extend(session.ephemeral_map_pois)
+
+        raw_tool_candidates = session.metadata.get(tool_runtime_service.TOOL_CANDIDATES_METADATA_KEY) or []
+        for item in raw_tool_candidates:
+            try:
+                candidates.append(POI(**item))
+            except Exception:
+                continue
+
+        seen: set[str] = set()
+        deduped: list[POI] = []
+        for poi in candidates:
+            key = slugify(poi.name)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(poi)
+
+        if not deduped:
+            return None
+
+        if len(deduped) == 1 and (self._message_suggests_missing_landmark(user_message) or self._message_suggests_visit_intent(user_message)):
+            return deduped[0]
+
+        ranked: list[tuple[int, POI]] = []
+        for poi in deduped:
+            poi_tokens = {token for token in slugify(poi.name).split("-") if len(token) > 2}
+            overlap = len(message_tokens & poi_tokens)
+            score = overlap * 10
+            if poi == session.active_poi:
+                score += 4
+            if poi.is_ephemeral:
+                score += 2
+            if "teatro" in poi_tokens or "museo" in poi_tokens or "catedral" in poi_tokens or "circo" in poi_tokens:
+                score += 1
+            ranked.append((score, poi))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return ranked[0][1] if ranked and ranked[0][0] > 0 else None
+
+    def _maybe_promote_candidate_to_catalog(self, session_id: str, user_message: str) -> dict | None:
+        session = session_service.get_or_create(session_id)
+        should_try = self._message_suggests_missing_landmark(user_message) or self._message_suggests_visit_intent(user_message)
+        if not should_try:
+            return None
+
+        candidate = self._select_catalog_promotion_candidate(session, user_message)
+        if candidate is None:
+            return None
+
+        try:
+            result = json.loads(
+                tool_runtime_service.execute(
+                    session_id,
+                    "promote_poi_to_catalog",
+                    {
+                        "poi_name": candidate.name,
+                        "reason": "El usuario lo echa en falta en el mapa o quiere visitarlo como punto importante de la ciudad.",
+                    },
+                )
+            )
+        except Exception:
+            return None
+
+        if not result.get("ok"):
+            return result
+        return result
 
     def _format_nearby_pois(self, pois: list[POI], limit: int = 8) -> str:
         if not pois:
@@ -237,6 +345,14 @@ class ChatService:
                 if session.user_id is not None:
                     billing_service.ensure_user_can_consume(session.user_id)
                 reply, final_response = self._run_openai_chat(session.session_id, clean_message)
+                promotion_result = self._maybe_promote_candidate_to_catalog(session.session_id, clean_message)
+                if promotion_result and promotion_result.get("ok"):
+                    promoted_name = clean_text(str(promotion_result.get("poi_name", "")))
+                    if promoted_name:
+                        reply = (
+                            f"{reply}\n\n"
+                            f"Además, ya te lo he incorporado también como punto de interés normal del mapa para que puedas abrir su ficha y usarlo como visita."
+                        )
                 final_session = session_service.get_or_create(session.session_id)
                 if final_session.user_id is not None:
                     billing_service.record_usage(

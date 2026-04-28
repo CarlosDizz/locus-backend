@@ -266,7 +266,7 @@ class ToolRuntimeService:
             poi_type_code="",
             description=row.short_description or row.long_description or "",
             summary=row.long_description or row.short_description or "",
-            source_of_truth=row.source_of_truth or "catalog",
+            source_of_truth="catalog",
             is_ephemeral=False,
             google_place_id=row.google_place_id or "",
             context_kind="catalog",
@@ -463,13 +463,14 @@ class ToolRuntimeService:
                     lng=float(candidate.lng),
                     short_description=clean_text(candidate.description or candidate.summary)[:500],
                     long_description="",
-                    source_of_truth="google_places" if candidate.source_of_truth == "google_places" else "manual_curated",
+                    source_of_truth="manual_curated",
                     google_place_id=candidate.google_place_id,
                     metadata={
                         "promoted_from_chat": True,
                         "promotion_reason": reason,
                         "session_id": session_id,
                         "source_context_kind": candidate.context_kind,
+                        "promoted_original_source": candidate.source_of_truth,
                     },
                 )
             )
@@ -489,7 +490,7 @@ class ToolRuntimeService:
             poi_type_code=created.poi_type_code or self._infer_catalog_type_code(candidate),
             description=created.short_description or candidate.description,
             summary=created.long_description or created.short_description or candidate.summary,
-            source_of_truth=created.source_of_truth or "catalog",
+            source_of_truth="catalog",
             is_ephemeral=False,
             google_place_id=created.google_place_id or candidate.google_place_id,
             context_kind="catalog",

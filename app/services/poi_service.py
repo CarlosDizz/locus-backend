@@ -57,7 +57,7 @@ class POIService:
             poi_type_code="",
             description=description,
             summary=summary,
-            source_of_truth=poi.source_of_truth or "catalog",
+            source_of_truth="catalog",
             is_ephemeral=False,
             google_place_id=poi.google_place_id or "",
             context_kind="catalog",

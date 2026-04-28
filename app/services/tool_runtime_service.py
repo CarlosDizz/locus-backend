@@ -3,9 +3,16 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from sqlalchemy import or_, select
+
+from app.db.models import City, Poi
+from app.db.session import session_scope
 from app.schemas.poi import POI
+from app.schemas.catalog import CityCreateRequest, PoiCreateRequest
+from app.services.catalog_service import CatalogError, catalog_service
 from app.services.poi_service import poi_service
 from app.services.session_service import session_service
+from app.utils.text import clean_text, slugify
 
 
 class ToolRuntimeService:
@@ -20,6 +27,7 @@ class ToolRuntimeService:
             "search_contextual_recommendations": self._search_contextual_recommendations,
             "identify_map_landmark": self._identify_map_landmark,
             "mark_pois_on_map": self._mark_pois_on_map,
+            "promote_poi_to_catalog": self._promote_poi_to_catalog,
             "get_poi_summary": self._get_poi_summary,
             "resolve_poi_facts": self._resolve_poi_facts,
             "search_wikipedia": self._search_wikipedia,
@@ -137,6 +145,152 @@ class ToolRuntimeService:
                 seen.add(key)
         return resolved
 
+    def _resolve_single_candidate(self, session_id: str, poi_name: str) -> POI | None:
+        session = session_service.get_or_create(session_id)
+        wanted = clean_text(poi_name).lower()
+        if not wanted:
+            return None
+
+        for poi in [
+            *self._load_tool_candidates(session_id),
+            *session.ephemeral_map_pois,
+            *session.nearby_pois,
+        ]:
+            if clean_text(poi.name).lower() == wanted:
+                return poi
+        return None
+
+    def _resolve_session_city(self, session_id: str) -> dict[str, Any] | None:
+        session = session_service.get_or_create(session_id)
+        if session.location.lat is None or session.location.lng is None:
+            return None
+
+        lat = float(session.location.lat)
+        lng = float(session.location.lng)
+
+        with session_scope() as db:
+            cities = list(db.scalars(select(City).where(City.lat.is_not(None), City.lng.is_not(None))).all())
+
+        def distance_km(city: City) -> float:
+            return poi_service._distance_km(lat, lng, float(city.lat), float(city.lng))  # type: ignore[arg-type]
+
+        if cities:
+            nearest = min(cities, key=distance_km)
+            if distance_km(nearest) <= 20:
+                return {
+                    "id": nearest.id,
+                    "name": nearest.name,
+                    "country_code": nearest.country_code,
+                }
+
+        try:
+            city, _imported_count, _updated_count, _skipped_count, _stats, _pois = catalog_service.bootstrap_city_from_location(
+                lat=lat,
+                lng=lng,
+                radius_km=8,
+                limit=40,
+                use_ai_candidates=False,
+            )
+            return {
+                "id": city.id,
+                "name": city.name,
+                "country_code": city.country_code,
+            }
+        except CatalogError:
+            slug = slugify(f"zona-{lat:.3f}-{lng:.3f}")
+            fallback = catalog_service.create_city(
+                CityCreateRequest(
+                    name="Zona actual",
+                    slug=slug,
+                    country_code="",
+                    lat=lat,
+                    lng=lng,
+                    source="session_fallback",
+                )
+            )
+            return {
+                "id": fallback.id,
+                "name": fallback.name,
+                "country_code": fallback.country_code,
+            }
+
+    def _candidate_looks_catalog_worthy(self, poi: POI) -> tuple[bool, str]:
+        name = clean_text(poi.name).lower()
+        description = clean_text(poi.description or poi.summary).lower()
+        combined = f"{name} {description}".strip()
+
+        if not name:
+            return False, "missing_name"
+        if poi.lat == 0.0 and poi.lng == 0.0:
+            return False, "missing_coords"
+        if poi_service._is_hospitality_or_service_label(combined):
+            return False, "service_or_hospitality"
+
+        positive_terms = [
+            "teatro", "teatre", "theatre", "theater", "circo", "museo", "museum",
+            "catedral", "cathedral", "iglesia", "church", "plaza", "square",
+            "palacio", "palace", "castillo", "castle", "puerta", "gate",
+            "monumento", "monument", "alcázar", "alcazar", "foro", "anfiteatro",
+            "arqueológico", "arqueologico", "archaeological",
+        ]
+        if any(term in combined for term in positive_terms):
+            return True, "landmark_keyword"
+
+        if poi.source_of_truth in {"catalog", "wikidata", "google_places"} and len(name) >= 6:
+            return True, "trusted_source_candidate"
+
+        return False, "not_distinctive_enough"
+
+    def _infer_catalog_type_code(self, poi: POI) -> str:
+        combined = clean_text(f"{poi.name} {poi.description} {poi.summary}").lower()
+        if any(token in combined for token in ["teatro", "theatre", "theater", "palacio", "palace", "edificio"]):
+            return "building"
+        if any(token in combined for token in ["museo", "museum", "galería", "galeria", "gallery"]):
+            return "museum"
+        if any(token in combined for token in ["catedral", "iglesia", "church", "basílica", "basilica", "sinagoga", "synagogue"]):
+            return "church"
+        if any(token in combined for token in ["plaza", "square"]):
+            return "square"
+        if any(token in combined for token in ["castillo", "castle", "monumento", "monument", "puerta", "gate", "alcázar", "alcazar"]):
+            return "monument"
+        if any(token in combined for token in ["anfiteatro", "foro", "arqueológico", "arqueologico", "archaeological", "circo romano"]):
+            return "archaeological_site"
+        return "building"
+
+    def _catalog_row_to_runtime_poi(self, row: Poi) -> POI:
+        return POI(
+            id=str(row.id),
+            name=row.name,
+            lat=float(row.lat) if row.lat is not None else 0.0,
+            lng=float(row.lng) if row.lng is not None else 0.0,
+            poi_type_code="",
+            description=row.short_description or row.long_description or "",
+            summary=row.long_description or row.short_description or "",
+            source_of_truth=row.source_of_truth or "catalog",
+            is_ephemeral=False,
+            google_place_id=row.google_place_id or "",
+            context_kind="catalog",
+        )
+
+    def _upsert_session_catalog_poi(self, session_id: str, runtime_poi: POI) -> None:
+        session = session_service.get_or_create(session_id)
+        merged: list[POI] = []
+        seen: set[str] = set()
+        for poi in [runtime_poi, *session.nearby_pois]:
+            key = slugify(poi.name)
+            if key in seen:
+                continue
+            merged.append(poi.model_copy(update={"is_ephemeral": False, "context_kind": "catalog"}))
+            seen.add(key)
+        session_service.set_nearby_pois(session_id, merged[:12])
+
+        filtered_ephemeral = [
+            poi for poi in session.ephemeral_map_pois
+            if slugify(poi.name) != slugify(runtime_poi.name)
+        ]
+        session_service.set_ephemeral_map_pois(session_id, filtered_ephemeral)
+        session_service.set_active_poi(session_id, runtime_poi)
+
     def _merge_ephemeral_pois(self, existing: list[POI], new: list[POI]) -> list[POI]:
         merged: list[POI] = []
         seen: set[str] = set()
@@ -241,6 +395,116 @@ class ToolRuntimeService:
             "marked_pois": [poi.model_dump() for poi in marked],
             "map_action": "ephemeral_pois_marked_on_locus_map",
             "persistence_policy": "ephemeral_only_do_not_persist",
+        }
+
+    def _promote_poi_to_catalog(self, session_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        poi_name = clean_text(arguments.get("poi_name") or "")
+        reason = clean_text(arguments.get("reason") or "")
+        if not poi_name:
+            return {"ok": False, "error": "poi_name is required"}
+
+        session = session_service.get_or_create(session_id)
+        candidate = self._resolve_single_candidate(session_id, poi_name)
+
+        with session_scope() as db:
+            existing = db.scalar(
+                select(Poi).where(
+                    Poi.is_active.is_(True),
+                    or_(Poi.name.ilike(poi_name), Poi.slug == slugify(poi_name)),
+                )
+            )
+            if existing is not None:
+                runtime_poi = self._catalog_row_to_runtime_poi(existing)
+                self._upsert_session_catalog_poi(session_id, runtime_poi)
+                return {
+                    "ok": True,
+                    "poi_name": existing.name,
+                    "status": "already_in_catalog",
+                    "catalog_poi": runtime_poi.model_dump(),
+                    "map_action": "catalog_poi_available_in_base_map",
+                    "persistence_policy": "catalog_fixed_poi",
+                }
+
+        if candidate is None:
+            return {
+                "ok": False,
+                "poi_name": poi_name,
+                "error": "candidate_not_found",
+                "message": "No tengo un candidato resoluble con ese nombre en el contexto actual.",
+            }
+
+        worthy, decision_reason = self._candidate_looks_catalog_worthy(candidate)
+        if not worthy:
+            return {
+                "ok": False,
+                "poi_name": candidate.name,
+                "error": "not_catalog_worthy",
+                "reason": decision_reason,
+                "message": "No cumple criterios suficientes para subirlo como POI fijo del catálogo.",
+            }
+
+        city = self._resolve_session_city(session_id)
+        if city is None:
+            return {
+                "ok": False,
+                "poi_name": candidate.name,
+                "error": "city_not_resolved",
+                "message": "No he podido asociar el lugar a una ciudad del catálogo.",
+            }
+
+        try:
+            created = catalog_service.create_poi(
+                PoiCreateRequest(
+                    city_id=int(city["id"]),
+                    poi_type_code=self._infer_catalog_type_code(candidate),
+                    slug=slugify(candidate.name),
+                    name=candidate.name,
+                    lat=float(candidate.lat),
+                    lng=float(candidate.lng),
+                    short_description=clean_text(candidate.description or candidate.summary)[:500],
+                    long_description="",
+                    source_of_truth="google_places" if candidate.source_of_truth == "google_places" else "manual_curated",
+                    google_place_id=candidate.google_place_id,
+                    metadata={
+                        "promoted_from_chat": True,
+                        "promotion_reason": reason,
+                        "session_id": session_id,
+                        "source_context_kind": candidate.context_kind,
+                    },
+                )
+            )
+        except CatalogError as exc:
+            return {
+                "ok": False,
+                "poi_name": candidate.name,
+                "error": "catalog_create_failed",
+                "message": str(exc),
+            }
+
+        runtime_poi = POI(
+            id=str(created.id),
+            name=created.name,
+            lat=float(created.lat) if created.lat is not None else float(candidate.lat),
+            lng=float(created.lng) if created.lng is not None else float(candidate.lng),
+            poi_type_code=created.poi_type_code or self._infer_catalog_type_code(candidate),
+            description=created.short_description or candidate.description,
+            summary=created.long_description or created.short_description or candidate.summary,
+            source_of_truth=created.source_of_truth or "catalog",
+            is_ephemeral=False,
+            google_place_id=created.google_place_id or candidate.google_place_id,
+            context_kind="catalog",
+        )
+        self._upsert_session_catalog_poi(session_id, runtime_poi)
+
+        return {
+            "ok": True,
+            "poi_name": runtime_poi.name,
+            "status": "promoted_to_catalog",
+            "catalog_poi": runtime_poi.model_dump(),
+            "city_id": city["id"],
+            "city_name": city["name"],
+            "map_action": "catalog_poi_added_and_base_map_refreshed",
+            "persistence_policy": "catalog_fixed_poi",
         }
 
     def _get_poi_summary(self, session_id: str, arguments: dict[str, Any]) -> dict[str, Any]:

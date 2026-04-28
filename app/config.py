@@ -83,7 +83,7 @@ class Settings:
     openai_chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.2")
     openai_response_timeout_seconds: int = int(os.getenv("OPENAI_RESPONSE_TIMEOUT_SECONDS", "180"))
     openai_realtime_model: str = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
-    openai_realtime_voice: str = os.getenv("OPENAI_REALTIME_VOICE", "marin")
+    openai_realtime_voice: str = os.getenv("OPENAI_REALTIME_VOICE", "cedar")
     openai_realtime_secret_ttl_seconds: int = int(os.getenv("OPENAI_REALTIME_SECRET_TTL_SECONDS", "600"))
     openai_realtime_max_output_tokens: int = int(os.getenv("OPENAI_REALTIME_MAX_OUTPUT_TOKENS", "1400"))
     openai_realtime_input_transcription_model: str = os.getenv("OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe")

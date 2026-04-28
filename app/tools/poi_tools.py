@@ -90,6 +90,21 @@ def get_poi_tool_manifest() -> list[dict]:
         },
         {
             "type": "function",
+            "name": "promote_poi_to_catalog",
+            "description": "Convierte un candidato o recomendación efímera en POI fijo del catálogo si cumple criterios mínimos: relevancia turística/cultural, coordenadas fiables y encaje real en la ciudad activa. Úsala cuando el usuario pida que un lugar pase a ser una visita fija, aparezca entre los POIs normales o se pueda abrir como visita/llamada desde ficha. Si no se puede promocionar con seguridad, devuelve el motivo y no finjas que ya se ha añadido.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "poi_name": {"type": "string"},
+                    "reason": {"type": "string"}
+                },
+                "required": ["poi_name"],
+                "additionalProperties": False
+            },
+            "strict": False,
+        },
+        {
+            "type": "function",
             "name": "get_poi_summary",
             "description": "Obtiene un resumen prudente de un POI a partir de una fuente documental.",
             "parameters": {

@@ -66,7 +66,7 @@ class Settings:
     cors_allowed_origins: list[str] = field(
         default_factory=lambda: _csv_env(
             "CORS_ALLOWED_ORIGINS",
-            "http://localhost:8100,http://127.0.0.1:8100,https://locus-backend-production.up.railway.app",
+            "http://localhost:8100,http://127.0.0.1:8100,https://localhost,capacitor://localhost,ionic://localhost,https://locus-backend-production.up.railway.app",
         )
     )
 

@@ -5,11 +5,17 @@ from pathlib import Path
 class PromptService:
     def __init__(self) -> None:
         self.base_path = Path(__file__).resolve().parent.parent / "prompts"
+        self._cache: dict[str, dict] = {}
 
     def load_prompt(self, name: str) -> dict:
+        cached = self._cache.get(name)
+        if cached is not None:
+            return cached
         path = self.base_path / name
         with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
+            prompt = json.load(handle)
+        self._cache[name] = prompt
+        return prompt
 
     def render(self, prompt_name: str, context: dict) -> str:
         shared = self.load_prompt("shared_rules.json")

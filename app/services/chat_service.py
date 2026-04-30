@@ -194,8 +194,8 @@ class ChatService:
     def _format_recent_memory(self, session) -> str:
         return "\n".join(f"{item['role'].upper()}: {item['text']}" for item in session.memory[-8:])
 
-    def _build_instructions(self, session_id: str) -> str:
-        session = session_service.get_or_create(session_id)
+    def _build_instructions(self, session_id: str, session=None) -> str:
+        session = session or session_service.get_or_create(session_id)
         return prompt_service.render(
             "chat_agent.json",
             {
@@ -252,9 +252,8 @@ class ChatService:
     def _run_openai_chat(self, session_id: str, user_message: str) -> tuple[str, dict, dict]:
         flow_started_at = perf_counter()
         context_started_at = perf_counter()
-        self._ensure_session_map_context(session_id)
-        instructions = self._build_instructions(session_id)
-        session = session_service.get_or_create(session_id)
+        session = self._ensure_session_map_context(session_id)
+        instructions = self._build_instructions(session_id, session)
         metrics = {
             "context_ms": round((perf_counter() - context_started_at) * 1000, 1),
             "openai_ms": 0.0,
@@ -362,7 +361,6 @@ class ChatService:
             data.session_id,
             SessionUpdateRequest(user_id=data.user_id, lat=data.lat, lng=data.lng),
         )
-        session = self._ensure_session_map_context(session.session_id)
         session_ms = round((perf_counter() - session_started_at) * 1000, 1)
 
         clean_message = clean_text(data.message)
@@ -415,11 +413,9 @@ class ChatService:
             reply = "Ahora mismo no he podido responder bien. Inténtalo otra vez en un momento."
 
         finalize_started_at = perf_counter()
-        latest_session = session_service.get_or_create(session.session_id)
+        latest_session = session_service.append_memory(session.session_id, "assistant", reply)
         pois = latest_session.nearby_pois
         ephemeral_pois = list(latest_session.ephemeral_map_pois)
-        prompt_preview = self._build_instructions(session.session_id)
-        session_service.append_memory(session.session_id, "assistant", reply)
         finalize_ms = round((perf_counter() - finalize_started_at) * 1000, 1)
         total_ms = round((perf_counter() - turn_started_at) * 1000, 1)
         timing_line = (
@@ -444,7 +440,7 @@ class ChatService:
             reply=reply,
             pois=pois,
             ephemeral_pois=ephemeral_pois,
-            prompt_preview=prompt_preview,
+            prompt_preview="",
         )
 
 

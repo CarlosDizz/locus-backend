@@ -422,21 +422,23 @@ class ChatService:
         session_service.append_memory(session.session_id, "assistant", reply)
         finalize_ms = round((perf_counter() - finalize_started_at) * 1000, 1)
         total_ms = round((perf_counter() - turn_started_at) * 1000, 1)
-        self.logger.info(
-            "chat_turn session=%s outcome=%s total_ms=%.1f session_ms=%.1f context_ms=%.1f openai_ms=%.1f rounds=%s tool_batches=%s tool_calls=%s tools_ms=%.1f promotion_ms=%.1f finalize_ms=%.1f",
-            session.session_id,
-            outcome,
-            total_ms,
-            session_ms,
-            chat_metrics["context_ms"],
-            chat_metrics["openai_ms"],
-            chat_metrics["openai_rounds"],
-            chat_metrics["tool_batches"],
-            chat_metrics["tool_calls"],
-            chat_metrics["tools_ms"],
-            promotion_ms,
-            finalize_ms,
+        timing_line = (
+            "chat_turn "
+            f"session={session.session_id} "
+            f"outcome={outcome} "
+            f"total_ms={total_ms:.1f} "
+            f"session_ms={session_ms:.1f} "
+            f"context_ms={chat_metrics['context_ms']:.1f} "
+            f"openai_ms={chat_metrics['openai_ms']:.1f} "
+            f"rounds={chat_metrics['openai_rounds']} "
+            f"tool_batches={chat_metrics['tool_batches']} "
+            f"tool_calls={chat_metrics['tool_calls']} "
+            f"tools_ms={chat_metrics['tools_ms']:.1f} "
+            f"promotion_ms={promotion_ms:.1f} "
+            f"finalize_ms={finalize_ms:.1f}"
         )
+        self.logger.warning(timing_line)
+        print(timing_line, flush=True)
         return ChatResponse(
             session_id=session.session_id,
             reply=reply,

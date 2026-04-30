@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from time import perf_counter
 
 from app.clients.openai_client import OpenAIClient, OpenAIClientError
 from app.schemas.chat import ChatMessageRequest, ChatResponse, ChatSetupRequest
@@ -14,12 +15,14 @@ from app.services.tool_runtime_service import tool_runtime_service
 from app.tools.knowledge_tools import get_knowledge_tool_manifest
 from app.tools.poi_tools import get_poi_tool_manifest
 from app.tools.session_tools import get_session_tool_manifest
+from app.utils.logging import get_logger
 from app.utils.text import clean_text, slugify
 
 
 class ChatService:
     def __init__(self) -> None:
         self.openai = OpenAIClient()
+        self.logger = get_logger(__name__)
 
     def _message_suggests_missing_landmark(self, message: str) -> bool:
         lowered = clean_text(message).lower()
@@ -246,11 +249,22 @@ class ChatService:
     def _extract_function_calls(self, response: dict) -> list[dict]:
         return [item for item in response.get("output", []) if item.get("type") == "function_call"]
 
-    def _run_openai_chat(self, session_id: str, user_message: str) -> tuple[str, dict]:
+    def _run_openai_chat(self, session_id: str, user_message: str) -> tuple[str, dict, dict]:
+        flow_started_at = perf_counter()
+        context_started_at = perf_counter()
         self._ensure_session_map_context(session_id)
         instructions = self._build_instructions(session_id)
         session = session_service.get_or_create(session_id)
+        metrics = {
+            "context_ms": round((perf_counter() - context_started_at) * 1000, 1),
+            "openai_ms": 0.0,
+            "tools_ms": 0.0,
+            "openai_rounds": 0,
+            "tool_calls": 0,
+            "tool_batches": 0,
+        }
 
+        openai_started_at = perf_counter()
         response = self.openai.create_response(
             model=self.openai.chat_model(),
             instructions=instructions,
@@ -259,14 +273,20 @@ class ChatService:
             previous_response_id=session.metadata.get("last_chat_response_id"),
             max_output_tokens=300,
         )
+        metrics["openai_ms"] += round((perf_counter() - openai_started_at) * 1000, 1)
+        metrics["openai_rounds"] += 1
 
         while True:
             function_calls = self._extract_function_calls(response)
             if not function_calls:
                 session_service.set_metadata_value(session_id, "last_chat_response_id", response.get("id", ""))
-                return self._extract_response_text(response), response
+                metrics["flow_ms"] = round((perf_counter() - flow_started_at) * 1000, 1)
+                return self._extract_response_text(response), response, metrics
 
+            metrics["tool_batches"] += 1
+            metrics["tool_calls"] += len(function_calls)
             tool_outputs = []
+            tools_started_at = perf_counter()
             for call in function_calls:
                 try:
                     arguments = json.loads(call.get("arguments", "{}") or "{}")
@@ -280,7 +300,9 @@ class ChatService:
                         "output": output,
                     }
                 )
+            metrics["tools_ms"] += round((perf_counter() - tools_started_at) * 1000, 1)
 
+            openai_started_at = perf_counter()
             response = self.openai.create_response(
                 model=self.openai.chat_model(),
                 instructions=instructions,
@@ -288,6 +310,8 @@ class ChatService:
                 tools=self._tool_manifest(),
                 previous_response_id=response.get("id"),
             )
+            metrics["openai_ms"] += round((perf_counter() - openai_started_at) * 1000, 1)
+            metrics["openai_rounds"] += 1
 
     def setup_chat(self, data: ChatSetupRequest) -> ChatResponse:
         session = session_service.create_session(
@@ -330,6 +354,8 @@ class ChatService:
         )
 
     def handle_message(self, data: ChatMessageRequest) -> ChatResponse:
+        turn_started_at = perf_counter()
+        session_started_at = perf_counter()
         if data.user_id is not None:
             session_service.attach_user(data.session_id, data.user_id)
         session = session_service.update_session(
@@ -337,15 +363,29 @@ class ChatService:
             SessionUpdateRequest(user_id=data.user_id, lat=data.lat, lng=data.lng),
         )
         session = self._ensure_session_map_context(session.session_id)
+        session_ms = round((perf_counter() - session_started_at) * 1000, 1)
 
         clean_message = clean_text(data.message)
         session_service.append_memory(session.session_id, "user", clean_message)
+        chat_metrics = {
+            "context_ms": 0.0,
+            "openai_ms": 0.0,
+            "tools_ms": 0.0,
+            "openai_rounds": 0,
+            "tool_calls": 0,
+            "tool_batches": 0,
+            "flow_ms": 0.0,
+        }
+        promotion_ms = 0.0
+        outcome = "ok"
         try:
             if self.openai.is_configured():
                 if session.user_id is not None:
                     billing_service.ensure_user_can_consume(session.user_id)
-                reply, final_response = self._run_openai_chat(session.session_id, clean_message)
+                reply, final_response, chat_metrics = self._run_openai_chat(session.session_id, clean_message)
+                promotion_started_at = perf_counter()
                 promotion_result = self._maybe_promote_candidate_to_catalog(session.session_id, clean_message)
+                promotion_ms = round((perf_counter() - promotion_started_at) * 1000, 1)
                 if promotion_result and promotion_result.get("ok"):
                     promoted_name = clean_text(str(promotion_result.get("poi_name", "")))
                     if promoted_name:
@@ -368,15 +408,35 @@ class ChatService:
             else:
                 raise OpenAIClientError("OpenAI no configurado")
         except BillingError:
+            outcome = "billing_blocked"
             reply = "Tu saldo actual no permite iniciar una nueva interacción. Recarga saldo para seguir usando Locus."
         except OpenAIClientError:
+            outcome = "openai_error"
             reply = "Ahora mismo no he podido responder bien. Inténtalo otra vez en un momento."
 
+        finalize_started_at = perf_counter()
         latest_session = session_service.get_or_create(session.session_id)
         pois = latest_session.nearby_pois
         ephemeral_pois = list(latest_session.ephemeral_map_pois)
         prompt_preview = self._build_instructions(session.session_id)
         session_service.append_memory(session.session_id, "assistant", reply)
+        finalize_ms = round((perf_counter() - finalize_started_at) * 1000, 1)
+        total_ms = round((perf_counter() - turn_started_at) * 1000, 1)
+        self.logger.info(
+            "chat_turn session=%s outcome=%s total_ms=%.1f session_ms=%.1f context_ms=%.1f openai_ms=%.1f rounds=%s tool_batches=%s tool_calls=%s tools_ms=%.1f promotion_ms=%.1f finalize_ms=%.1f",
+            session.session_id,
+            outcome,
+            total_ms,
+            session_ms,
+            chat_metrics["context_ms"],
+            chat_metrics["openai_ms"],
+            chat_metrics["openai_rounds"],
+            chat_metrics["tool_batches"],
+            chat_metrics["tool_calls"],
+            chat_metrics["tools_ms"],
+            promotion_ms,
+            finalize_ms,
+        )
         return ChatResponse(
             session_id=session.session_id,
             reply=reply,

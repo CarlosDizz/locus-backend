@@ -80,7 +80,7 @@ class Settings:
 
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    openai_chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.2")
+    openai_chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.4-mini")
     openai_response_timeout_seconds: int = int(os.getenv("OPENAI_RESPONSE_TIMEOUT_SECONDS", "180"))
     openai_realtime_model: str = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
     openai_realtime_voice: str = os.getenv("OPENAI_REALTIME_VOICE", "cedar")
@@ -90,6 +90,12 @@ class Settings:
     openai_realtime_input_transcription_language: str = os.getenv("OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE", "es")
 
     maps_api_key: str = os.getenv("MAPS_API_KEY", "")
+    web_search_provider: str = os.getenv("WEB_SEARCH_PROVIDER", "brave")
+    web_search_api_key: str = _env("WEB_SEARCH_API_KEY", "BRAVE_SEARCH_API_KEY", default="")
+    web_search_base_url: str = os.getenv("WEB_SEARCH_BASE_URL", "https://api.search.brave.com/res/v1")
+    web_search_timeout_seconds: int = int(os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "10"))
+    web_search_country: str = os.getenv("WEB_SEARCH_COUNTRY", "ES")
+    web_search_language: str = os.getenv("WEB_SEARCH_LANGUAGE", "es")
     wikipedia_language: str = os.getenv("WIKIPEDIA_LANGUAGE", "es")
     wikidata_base_url: str = os.getenv("WIKIDATA_BASE_URL", "https://www.wikidata.org")
     wikidata_language: str = os.getenv("WIKIDATA_LANGUAGE", "es")

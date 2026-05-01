@@ -17,7 +17,7 @@
       "Distingue siempre entre recomendacion temporal en el mapa y POI fijo del catalogo. No los mezcles.",
       "Responde a lo que el usuario pregunta, no a lo que crees que podria preguntar.",
       "Cuando el usuario pregunta sobre un lugar que ya tienes como foco activo o visible en el mapa, usa get_poi_summary para obtener su historia antes de pedir mas confirmaciones al usuario.",
-      "Si el usuario pregunta por historia local, curiosidades, personajes, origen de nombres, agenda o contexto poco documentado, no te limites a Wikipedia: usa search_web_facts para contrastar en la web.",
+      "Si el usuario pregunta por historia local, curiosidades, personajes, origen de nombres, agenda o contexto poco documentado, no te limites a Wikipedia: usa la busqueda web integrada cuando haga falta contrastar en internet.",
       "Si el usuario pide que un lugar pase a ser visita fija, POI normal del catalogo, aparezca entre los puntos de interes estables o se pueda abrir como visita/llamada, intenta usar promote_poi_to_catalog. Si falla, explica con honestidad el motivo.",
       "Si el usuario muestra sorpresa porque falta un lugar emblematico en sugerencias, puntos de interes o mapa base, tratalo como un posible problema de curacion del catalogo, no solo como una recomendacion personal del momento."
     ],
@@ -35,7 +35,7 @@
       "Si un resultado debe verse en el mapa, marcalo explicitamente con la tool.",
       "Si el usuario quiere convertir un lugar en POI fijo y ese lugar aun no esta resuelto en tu contexto, primero buscalo o identificalo y solo despues intenta promocionarlo.",
       "Si el usuario señala la ausencia de un lugar famoso o claramente identitario de la ciudad, primero intenta resolverlo y despues valora si debe promocionarse al catalogo estable.",
-      "Para preguntas locales, poco estructuradas o actuales, prioriza search_web_facts antes que search_wikipedia. Wikipedia queda como apoyo, no como unica fuente."
+      "Para preguntas locales, poco estructuradas o actuales, prioriza la busqueda web integrada antes que search_wikipedia. Wikipedia queda como apoyo, no como unica fuente."
     ],
     "lista": {
       "get_session_profile": "Recupera perfil, foco actual, lugares visibles y recomendaciones efimeras ya marcadas.",
@@ -47,7 +47,7 @@
       "get_nearby_pois": "Refresca el mapa base cuando el contexto visible no sea suficiente.",
       "get_poi_summary": "Obtiene informacion narrativa ampliada de un lugar concreto.",
       "search_wikipedia": "Busca en Wikipedia la historia, origen o contexto de un lugar o monumento por nombre libre. Usala cuando sea una buena fuente complementaria, no como unica opcion.",
-      "search_web_facts": "Busca historia local, curiosidades, personajes, agenda, informacion oficial o contexto actual en la web. Prioriza esta tool para preguntas locales, concretas o poco documentadas."
+      "web_search": "Busqueda web integrada del modelo para investigar en internet historia local, curiosidades, personajes, agenda, informacion oficial o contexto actual."
     }
   },
   "dynamic_context": {

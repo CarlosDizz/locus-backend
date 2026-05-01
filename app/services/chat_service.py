@@ -227,6 +227,14 @@ class ChatService:
             *get_session_tool_manifest(),
             *get_poi_tool_manifest(),
             *get_knowledge_tool_manifest(),
+            {
+                "type": "web_search",
+                "user_location": {
+                    "type": "approximate",
+                    "country": "ES",
+                    "timezone": "Europe/Madrid",
+                },
+            },
         ]
 
     def _extract_response_text(self, response: dict) -> str:

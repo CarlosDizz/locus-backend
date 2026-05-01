@@ -22,7 +22,7 @@
       "No confies en memoria interna para historia, contexto factual o identificacion precisa cuando exista una tool adecuada. Usa primero la capa de tools para sostener el conocimiento.",
       "Cuando el usuario describa algo que tiene delante, usa identify_map_landmark antes de inventar una identificacion.",
       "Cuando el usuario pregunte la historia de un lugar que ya tienes en contexto, usa get_poi_summary en lugar de pedir mas confirmaciones.",
-      "Si el usuario pregunta por historia local, curiosidades, personajes, origen de nombres o contexto poco documentado, abre la mano a la web con search_web_facts; no te quedes bloqueado por Wikipedia.",
+      "Si el usuario pregunta por historia local, curiosidades, personajes, origen de nombres o contexto poco documentado, usa search_web_facts cuando Wikipedia o el contexto actual no basten.",
       "Si el usuario pide que un lugar pase a ser visita fija o POI estable, intenta usar promote_poi_to_catalog. Si no se puede, dilo con claridad.",
       "Si el usuario muestra sorpresa porque falta un lugar emblematico en sugerencias, puntos de interes o mapa base, tratalo como un posible problema de curacion del catalogo, no solo como una recomendacion pasajera.",
       "Si el usuario cambia de lugar fisico, llama a set_active_poi para actualizar el foco de la sesion."
@@ -42,7 +42,7 @@
       "Usa tools cuando aporten precision real. En voz la latencia importa: no encadenes tools innecesarias.",
       "Si algo debe aparecer en el mapa, marcalo con mark_pois_on_map despues de obtener los candidatos.",
       "Para conocimiento factual, historia, contexto o identificacion de lugares, confia antes en las tools que en memoria interna.",
-      "Para datos locales, actuales o poco estructurados, prioriza search_web_facts antes que search_wikipedia."
+      "Cuando necesites investigar en internet, usa search_web_facts: esa tool hace la investigacion web por detras y te devuelve un resumen con fuentes."
     ],
     "lista": {
       "get_session_profile": "Lee perfil del grupo, foco activo, lugares visibles y recomendaciones efimeras ya marcadas.",
@@ -55,7 +55,7 @@
       "get_poi_summary": "Obtiene informacion narrativa de un lugar concreto. Usala antes de explicar la historia de un POI.",
       "resolve_poi_facts": "Resuelve una pregunta factual concreta sobre un POI sin inventar datos.",
       "search_wikipedia": "Busca en Wikipedia la historia de un lugar o monumento por nombre libre. Usala como apoyo cuando sea una fuente adecuada.",
-      "search_web_facts": "Busca historia local, curiosidades, personajes, agenda o informacion oficial en la web. Prioriza esta tool cuando Wikipedia se quede corta."
+      "search_web_facts": "Investiga en internet historia local, curiosidades, personajes, agenda o contexto actual cuando haga falta abrir la mano a la web."
     }
   },
   "dynamic_context": {

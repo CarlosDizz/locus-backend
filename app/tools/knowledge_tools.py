@@ -35,24 +35,24 @@ def get_knowledge_tool_manifest() -> list[dict]:
         {
             "type": "function",
             "name": "search_web_facts",
-            "description": "Busca informacion en la web sobre historia local, curiosidades, personajes, agenda, web oficial o contexto actual de un lugar. Prefierela a Wikipedia cuando la pregunta sea local, poco documentada, actual o muy concreta.",
+            "description": "Investiga en internet historia local, curiosidades, personajes, agenda o contexto actual de un lugar cuando Wikipedia se quede corta o la pregunta requiera abrir la mano a la web.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Consulta libre. Incluye nombre local, ciudad o tipo de dato si ayuda a afinar."
+                        "description": "Consulta libre sobre el lugar, persona o curiosidad que quieres investigar."
                     },
                     "preferred_domains": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Dominios preferidos si quieres priorizar web oficial, turismo local, prensa local o una institucion concreta."
+                        "description": "Dominios a priorizar si quieres favorecer fuentes oficiales, turismo local o prensa local fiable."
                     },
                     "max_results": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 8,
-                        "description": "Numero maximo de resultados utiles a devolver."
+                        "description": "Numero maximo de fuentes a devolver en el resumen."
                     }
                 },
                 "required": ["query"],

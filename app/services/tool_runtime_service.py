@@ -5,7 +5,7 @@ from typing import Any
 
 from sqlalchemy import or_, select
 
-from app.clients.web_search_client import WebSearchClient
+from app.clients.openai_client import OpenAIClient, OpenAIClientError
 from app.db.models import City, Poi
 from app.db.session import session_scope
 from app.schemas.poi import POI
@@ -39,6 +39,49 @@ class ToolRuntimeService:
             return json.dumps({"ok": False, "error": f"Unknown tool: {tool_name}"}, ensure_ascii=False)
         result = handler(session_id, arguments)
         return json.dumps(result, ensure_ascii=False)
+
+    def _extract_openai_response_text(self, response: dict[str, Any]) -> str:
+        output_text = str(response.get("output_text") or "").strip()
+        if output_text:
+            return output_text
+
+        texts: list[str] = []
+        for item in response.get("output", []) or []:
+            if item.get("type") != "message":
+                continue
+            for content in item.get("content", []) or []:
+                if content.get("type") in {"output_text", "text"} and content.get("text"):
+                    texts.append(str(content["text"]).strip())
+        return clean_text(" ".join(texts))
+
+    def _extract_openai_web_sources(self, response: dict[str, Any]) -> list[dict[str, str]]:
+        collected: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        for item in response.get("output", []) or []:
+            if item.get("type") == "web_search_call":
+                action = item.get("action") or {}
+                for source in action.get("sources", []) or []:
+                    url = clean_text(str(source.get("url") or ""))
+                    title = clean_text(str(source.get("title") or ""))
+                    if not url or url in seen:
+                        continue
+                    seen.add(url)
+                    collected.append({"title": title, "url": url})
+            if item.get("type") != "message":
+                continue
+            for content in item.get("content", []) or []:
+                for annotation in content.get("annotations", []) or []:
+                    if annotation.get("type") != "url_citation":
+                        continue
+                    url = clean_text(str(annotation.get("url") or ""))
+                    title = clean_text(str(annotation.get("title") or ""))
+                    if not url or url in seen:
+                        continue
+                    seen.add(url)
+                    collected.append({"title": title, "url": url})
+
+        return collected
 
     def _get_session_profile(self, session_id: str, _arguments: dict[str, Any]) -> dict[str, Any]:
         session = session_service.get_or_create(session_id)
@@ -563,33 +606,77 @@ class ToolRuntimeService:
         if not isinstance(preferred_domains, list):
             return {"ok": False, "error": "preferred_domains must be an array when provided"}
 
-        client = WebSearchClient()
-        if not client.is_enabled():
+        client = OpenAIClient()
+        if not client.is_configured():
             return {
                 "ok": False,
                 "error": "web_search_not_configured",
-                "message": "La busqueda web no esta configurada en este entorno.",
+                "message": "La busqueda web de OpenAI no esta configurada en este entorno.",
             }
 
-        results = client.search_web(
-            query=query,
-            preferred_domains=[clean_text(str(domain)) for domain in preferred_domains if clean_text(str(domain))],
-            max_results=max(1, min(max_results, 8)),
-        )
-        if not results:
+        allowed_domains = [clean_text(str(domain)) for domain in preferred_domains if clean_text(str(domain))]
+        web_tool: dict[str, Any] = {
+            "type": "web_search",
+            "user_location": {
+                "type": "approximate",
+                "country": "ES",
+                "timezone": "Europe/Madrid",
+            },
+        }
+        if allowed_domains:
+            web_tool["filters"] = {"allowed_domains": allowed_domains[:20]}
+
+        try:
+            response = client.create_response(
+                model=client.chat_model(),
+                instructions=(
+                    "Investiga en internet con prudencia. Debes usar la busqueda web para responder. "
+                    "Prioriza fuentes oficiales, institucionales, turismo local y prensa local fiable. "
+                    "Devuelve un resumen breve y factual en espanol, sin inventar ni adornar."
+                ),
+                input_items=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    f"Investiga esta consulta: {query}\n"
+                                    "Si hay dudas o versiones distintas, indicalo con cautela."
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                tools=[web_tool],
+                max_output_tokens=350,
+                extra_payload={"include": ["web_search_call.action.sources"]},
+            )
+        except OpenAIClientError as exc:
+            return {
+                "ok": False,
+                "query": query,
+                "error": "web_search_failed",
+                "message": str(exc),
+            }
+
+        summary = self._extract_openai_response_text(response)
+        sources = self._extract_openai_web_sources(response)
+        if not summary:
             return {
                 "ok": False,
                 "query": query,
                 "error": "no_results",
-                "message": "No he encontrado resultados web utiles para esa consulta.",
+                "message": "No he podido extraer una respuesta util desde la busqueda web.",
             }
 
         return {
             "ok": True,
             "query": query,
-            "preferred_domains": preferred_domains,
-            "results": results,
-            "source_policy": "Prioriza webs oficiales, turismo institucional, patrimonio local y prensa local fiable. Si las fuentes discrepan, dilo con prudencia y no inventes.",
+            "preferred_domains": allowed_domains,
+            "summary": summary,
+            "sources": sources[: max(1, min(max_results, 8))],
+            "source_policy": "Resumen apoyado en busqueda web integrada de OpenAI. Prioriza fuentes oficiales, turismo institucional, patrimonio local y prensa local fiable. Si las fuentes discrepan, dilo con prudencia y no inventes.",
         }
 
 

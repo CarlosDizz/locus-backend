@@ -653,6 +653,9 @@ class ToolRuntimeService:
                 extra_payload={"include": ["web_search_call.action.sources"]},
             )
         except OpenAIClientError as exc:
+            # Log raw provider rejection so we can tune payload/model support without
+            # leaving the caller blind when web research fails in production.
+            print(f"search_web_facts_failed query={query} error={exc}", flush=True)
             return {
                 "ok": False,
                 "query": query,

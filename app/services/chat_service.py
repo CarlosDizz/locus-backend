@@ -4,6 +4,7 @@ import json
 from time import perf_counter
 
 from app.clients.openai_client import OpenAIClient, OpenAIClientError
+from app.config import settings
 from app.schemas.chat import ChatMessageRequest, ChatResponse, ChatSetupRequest
 from app.schemas.poi import POI
 from app.schemas.session import SessionCreateRequest, SessionUpdateRequest
@@ -54,6 +55,31 @@ class ChatService:
             "quiero verlo",
             "verlo por fuera",
             "visitarlo",
+        ]
+        return any(marker in lowered for marker in markers)
+
+    def _message_suggests_web_research(self, message: str) -> bool:
+        lowered = clean_text(message).lower()
+        if not lowered:
+            return False
+        markers = [
+            "quien era",
+            "quién era",
+            "quien fue",
+            "quién fue",
+            "historia de",
+            "curiosidad",
+            "curiosidades",
+            "por que se llama",
+            "por qué se llama",
+            "origen del nombre",
+            "investiga",
+            "busca informacion",
+            "busca información",
+            "cuentame mas",
+            "cuéntame más",
+            "que sabes de",
+            "qué sabes de",
         ]
         return any(marker in lowered for marker in markers)
 
@@ -222,20 +248,64 @@ class ChatService:
         )
         return session_service.set_nearby_pois(session_id, pois)
 
-    def _tool_manifest(self) -> list[dict]:
-        return [
+    def _tool_manifest(self, *, include_web_search: bool = False) -> list[dict]:
+        tools: list[dict] = [
             *get_session_tool_manifest(),
             *get_poi_tool_manifest(),
             *get_knowledge_tool_manifest(),
-            {
-                "type": "web_search",
-                "user_location": {
-                    "type": "approximate",
-                    "country": "ES",
-                    "timezone": "Europe/Madrid",
-                },
-            },
         ]
+        if include_web_search:
+            tools.append(
+                {
+                    "type": "web_search",
+                    "user_location": {
+                        "type": "approximate",
+                        "country": "ES",
+                        "timezone": "Europe/Madrid",
+                    },
+                }
+            )
+        return tools
+
+    def _create_chat_response(
+        self,
+        *,
+        instructions: str,
+        input_items: list[dict],
+        previous_response_id: str | None,
+        include_web_search: bool = False,
+        max_output_tokens: int = 700,
+    ) -> dict:
+        tools = self._tool_manifest(include_web_search=include_web_search)
+        try:
+            return self.openai.create_response(
+                model=self.openai.chat_model(),
+                instructions=instructions,
+                input_items=input_items,
+                tools=tools,
+                previous_response_id=previous_response_id,
+                max_output_tokens=max_output_tokens,
+            )
+        except OpenAIClientError as exc:
+            has_web_search = any(tool.get("type") == "web_search" for tool in tools)
+            if not has_web_search:
+                raise
+
+            fallback_tools = [tool for tool in tools if tool.get("type") != "web_search"]
+            self.logger.warning(
+                "chat_turn retry_without_web_search session_previous_response_id=%s model=%s error=%s",
+                previous_response_id or "",
+                self.openai.chat_model(),
+                str(exc),
+            )
+            return self.openai.create_response(
+                model=self.openai.chat_model(),
+                instructions=instructions,
+                input_items=input_items,
+                tools=fallback_tools,
+                previous_response_id=previous_response_id,
+                max_output_tokens=max_output_tokens,
+            )
 
     def _extract_response_text(self, response: dict) -> str:
         output_text = response.get("output_text")
@@ -270,14 +340,14 @@ class ChatService:
             "tool_calls": 0,
             "tool_batches": 0,
         }
+        include_web_search = settings.openai_chat_enable_web_search and self._message_suggests_web_research(user_message)
 
         openai_started_at = perf_counter()
-        response = self.openai.create_response(
-            model=self.openai.chat_model(),
+        response = self._create_chat_response(
             instructions=instructions,
             input_items=[{"role": "user", "content": [{"type": "input_text", "text": user_message}]}],
-            tools=self._tool_manifest(),
             previous_response_id=session.metadata.get("last_chat_response_id"),
+            include_web_search=include_web_search,
             max_output_tokens=300,
         )
         metrics["openai_ms"] += round((perf_counter() - openai_started_at) * 1000, 1)
@@ -310,12 +380,11 @@ class ChatService:
             metrics["tools_ms"] += round((perf_counter() - tools_started_at) * 1000, 1)
 
             openai_started_at = perf_counter()
-            response = self.openai.create_response(
-                model=self.openai.chat_model(),
+            response = self._create_chat_response(
                 instructions=instructions,
                 input_items=tool_outputs,
-                tools=self._tool_manifest(),
                 previous_response_id=response.get("id"),
+                include_web_search=include_web_search,
             )
             metrics["openai_ms"] += round((perf_counter() - openai_started_at) * 1000, 1)
             metrics["openai_rounds"] += 1

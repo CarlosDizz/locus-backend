@@ -88,7 +88,7 @@ class Settings:
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     openai_chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.4-mini")
-    openai_chat_enable_web_search: bool = _bool_env("OPENAI_CHAT_ENABLE_WEB_SEARCH", False)
+    openai_chat_enable_web_search: bool = _bool_env("OPENAI_CHAT_ENABLE_WEB_SEARCH", True)
     openai_response_timeout_seconds: int = int(os.getenv("OPENAI_RESPONSE_TIMEOUT_SECONDS", "180"))
     openai_realtime_model: str = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
     openai_realtime_voice: str = os.getenv("OPENAI_REALTIME_VOICE", "cedar")

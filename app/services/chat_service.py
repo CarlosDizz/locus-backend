@@ -276,36 +276,49 @@ class ChatService:
         include_web_search: bool = False,
         max_output_tokens: int = 700,
     ) -> dict:
-        tools = self._tool_manifest(include_web_search=include_web_search)
-        try:
-            return self.openai.create_response(
-                model=self.openai.chat_model(),
-                instructions=instructions,
-                input_items=input_items,
-                tools=tools,
-                previous_response_id=previous_response_id,
-                max_output_tokens=max_output_tokens,
-            )
-        except OpenAIClientError as exc:
-            has_web_search = any(tool.get("type") == "web_search" for tool in tools)
-            if not has_web_search:
-                raise
+        full_tools = self._tool_manifest(include_web_search=include_web_search)
+        no_web_tools = [tool for tool in full_tools if tool.get("type") != "web_search"]
+        attempts = [
+            ("full", full_tools, previous_response_id),
+            ("no_web_search", no_web_tools, previous_response_id),
+            ("fresh_context", no_web_tools, None),
+            ("no_tools", None, None),
+        ]
+        last_error: OpenAIClientError | None = None
 
-            fallback_tools = [tool for tool in tools if tool.get("type") != "web_search"]
-            self.logger.warning(
-                "chat_turn retry_without_web_search session_previous_response_id=%s model=%s error=%s",
-                previous_response_id or "",
-                self.openai.chat_model(),
-                str(exc),
-            )
-            return self.openai.create_response(
-                model=self.openai.chat_model(),
-                instructions=instructions,
-                input_items=input_items,
-                tools=fallback_tools,
-                previous_response_id=previous_response_id,
-                max_output_tokens=max_output_tokens,
-            )
+        for label, tools, prev_id in attempts:
+            if label == "no_web_search" and tools == full_tools:
+                continue
+            try:
+                if label != "full":
+                    self.logger.warning(
+                        "chat_turn retry strategy=%s previous_response_id=%s model=%s",
+                        label,
+                        prev_id or "",
+                        self.openai.chat_model(),
+                    )
+                return self.openai.create_response(
+                    model=self.openai.chat_model(),
+                    instructions=instructions,
+                    input_items=input_items,
+                    tools=tools,
+                    previous_response_id=prev_id,
+                    max_output_tokens=max_output_tokens,
+                )
+            except OpenAIClientError as exc:
+                last_error = exc
+                self.logger.warning(
+                    "chat_turn openai_attempt_failed strategy=%s previous_response_id=%s model=%s error=%s",
+                    label,
+                    prev_id or "",
+                    self.openai.chat_model(),
+                    str(exc),
+                )
+                continue
+
+        if last_error is not None:
+            raise last_error
+        raise OpenAIClientError("Responses API failed without a captured error")
 
     def _extract_response_text(self, response: dict) -> str:
         output_text = response.get("output_text")

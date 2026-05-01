@@ -252,7 +252,7 @@ class ChatService:
         tools: list[dict] = [
             *get_session_tool_manifest(),
             *get_poi_tool_manifest(),
-            *get_knowledge_tool_manifest(),
+            *get_knowledge_tool_manifest(include_web_research_tool=False),
         ]
         if include_web_search:
             tools.append(

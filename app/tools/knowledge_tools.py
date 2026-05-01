@@ -1,5 +1,5 @@
-def get_knowledge_tool_manifest() -> list[dict]:
-    return [
+def get_knowledge_tool_manifest(*, include_web_research_tool: bool = True) -> list[dict]:
+    tools = [
         {
             "type": "function",
             "name": "resolve_poi_facts",
@@ -32,7 +32,10 @@ def get_knowledge_tool_manifest() -> list[dict]:
             },
             "strict": True,
         },
-        {
+    ]
+    if include_web_research_tool:
+        tools.append(
+            {
             "type": "function",
             "name": "search_web_facts",
             "description": "Investiga en internet historia local, curiosidades, personajes, agenda o contexto actual de un lugar cuando Wikipedia se quede corta o la pregunta requiera abrir la mano a la web.",
@@ -44,20 +47,21 @@ def get_knowledge_tool_manifest() -> list[dict]:
                         "description": "Consulta libre sobre el lugar, persona o curiosidad que quieres investigar."
                     },
                     "preferred_domains": {
-                        "type": "array",
+                        "type": ["array", "null"],
                         "items": {"type": "string"},
                         "description": "Dominios a priorizar si quieres favorecer fuentes oficiales, turismo local o prensa local fiable."
                     },
                     "max_results": {
-                        "type": "integer",
+                        "type": ["integer", "null"],
                         "minimum": 1,
                         "maximum": 8,
                         "description": "Numero maximo de fuentes a devolver en el resumen."
                     }
                 },
-                "required": ["query"],
+                "required": ["query", "preferred_domains", "max_results"],
                 "additionalProperties": False
             },
             "strict": True,
-        },
-    ]
+            },
+        )
+    return tools

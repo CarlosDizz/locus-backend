@@ -40,7 +40,7 @@ class RealtimeService:
         raw_tools = [
             *get_session_tool_manifest(),
             *get_poi_tool_manifest(),
-            *get_knowledge_tool_manifest(),
+            *get_knowledge_tool_manifest(include_web_research_tool=True),
         ]
         tools = [{k: v for k, v in tool.items() if k != "strict"} for tool in raw_tools]
         return RealtimeSessionResponse(

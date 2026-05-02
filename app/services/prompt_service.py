@@ -51,7 +51,10 @@ class PromptService:
             value = context.get(key)
             dynamic_lines.append(f"{label}:\n{value or '(sin dato)'}")
         sections.append("CONTEXTO DINAMICO:\n" + "\n\n".join(dynamic_lines))
-        return "\n\n".join(sections)
+        result = "\n\n".join(sections)
+        for key, value in context.items():
+            result = result.replace("{{" + key + "}}", value or "")
+        return result
 
 
 prompt_service = PromptService()

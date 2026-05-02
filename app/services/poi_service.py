@@ -202,6 +202,23 @@ class POIService:
     def get_poi_documentation(self, poi_name: str) -> dict:
         catalog_poi = self._find_catalog_poi(poi_name)
         effective_name = catalog_poi.name if catalog_poi is not None else poi_name
+
+        if catalog_poi and catalog_poi.long_description and catalog_poi.short_description:
+            summary = f"{catalog_poi.short_description} {catalog_poi.long_description}".strip()
+            return {
+                "poi_name": catalog_poi.name,
+                "summary": summary,
+                "wikidata": None,
+                "facts": {},
+                "sources": ["catalog"],
+                "catalog_poi": {
+                    "id": catalog_poi.id,
+                    "name": catalog_poi.name,
+                    "wikidata_id": catalog_poi.wikidata_id,
+                    "wikipedia_title": catalog_poi.wikipedia_title,
+                },
+            }
+
         wiki_query = catalog_poi.wikipedia_title if catalog_poi and catalog_poi.wikipedia_title else effective_name
         wiki_summary = self.wikipedia_client.get_summary(wiki_query)
         entity_match = None

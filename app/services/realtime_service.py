@@ -8,6 +8,7 @@ from app.schemas.realtime import (
     RealtimeSessionResponse,
 )
 from app.services.billing_service import billing_service
+from app.services.poi_service import poi_service
 from app.services.prompt_service import prompt_service
 from app.services.session_service import session_service
 from app.tools.knowledge_tools import get_knowledge_tool_manifest
@@ -26,12 +27,20 @@ class RealtimeService:
             session_service.attach_user(data.session_id, data.user_id)
         session = session_service.get_or_create(data.session_id)
         active_poi_name = data.active_poi_name or (session.active_poi.name if session.active_poi else "")
+        visit_context = data.visit_context or ""
+        if active_poi_name:
+            try:
+                summary = poi_service.get_poi_summary(active_poi_name)
+                if summary:
+                    visit_context = summary
+            except Exception:
+                pass
         instructions = prompt_service.render(
             "realtime_agent.json",
             {
                 "session_profile": session.profile.raw_context,
                 "active_poi": active_poi_name,
-                "visit_context": data.visit_context,
+                "visit_context": visit_context,
                 "recent_memory": "\n".join(
                     f"{item['role'].upper()}: {item['text']}" for item in session.memory[-8:]
                 ),

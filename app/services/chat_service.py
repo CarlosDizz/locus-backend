@@ -234,12 +234,22 @@ class ChatService:
             },
         )
 
+    def _poi_centroid_distance_km(self, lat: float, lng: float, pois: list) -> float:
+        avg_lat = sum(p.lat for p in pois) / len(pois)
+        avg_lng = sum(p.lng for p in pois) / len(pois)
+        from math import cos, radians, sqrt
+        lat_km = (lat - avg_lat) * 111.32
+        lng_km = (lng - avg_lng) * 111.32 * max(cos(radians(lat)), 0.2)
+        return sqrt(lat_km ** 2 + lng_km ** 2)
+
     def _ensure_session_map_context(self, session_id: str):
         session = session_service.get_or_create(session_id)
-        if session.nearby_pois:
-            return session
         if session.location.lat is None or session.location.lng is None:
             return session
+        if session.nearby_pois:
+            dist = self._poi_centroid_distance_km(session.location.lat, session.location.lng, session.nearby_pois)
+            if dist < 10.0:
+                return session
         pois = poi_service.search_nearby_pois(
             query="lugares turisticos",
             lat=session.location.lat,

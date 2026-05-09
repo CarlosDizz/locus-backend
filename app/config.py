@@ -70,6 +70,12 @@ class Settings:
     port: int = int(os.getenv("PORT", "8000"))
     log_level: str = os.getenv("LOG_LEVEL", "info")
     auth_token_ttl_days: int = int(os.getenv("AUTH_TOKEN_TTL_DAYS", "30"))
+    google_auth_client_ids: list[str] = field(
+        default_factory=lambda: _csv_env(
+            "GOOGLE_AUTH_CLIENT_IDS",
+            _env("GOOGLE_AUTH_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_ID", default=""),
+        )
+    )
     cors_allowed_origins: list[str] = field(
         default_factory=lambda: _csv_env(
             "CORS_ALLOWED_ORIGINS",
@@ -90,7 +96,7 @@ class Settings:
     openai_chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.4-mini")
     openai_chat_enable_web_search: bool = _bool_env("OPENAI_CHAT_ENABLE_WEB_SEARCH", True)
     openai_response_timeout_seconds: int = int(os.getenv("OPENAI_RESPONSE_TIMEOUT_SECONDS", "180"))
-    openai_realtime_model: str = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
+    openai_realtime_model: str = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2")
     openai_realtime_voice: str = os.getenv("OPENAI_REALTIME_VOICE", "cedar")
     openai_realtime_secret_ttl_seconds: int = int(os.getenv("OPENAI_REALTIME_SECRET_TTL_SECONDS", "600"))
     openai_realtime_max_output_tokens: int = int(os.getenv("OPENAI_REALTIME_MAX_OUTPUT_TOKENS", "1400"))

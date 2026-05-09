@@ -14,8 +14,11 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(512))
+    password_hash: Mapped[str] = mapped_column(String(512), default="")
     display_name: Mapped[str] = mapped_column(String(255), default="")
+    auth_provider: Mapped[str] = mapped_column(String(32), default="local", index=True)
+    google_sub: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
+    avatar_url: Mapped[str] = mapped_column(String(1024), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)

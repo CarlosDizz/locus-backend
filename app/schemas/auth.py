@@ -12,10 +12,16 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class GoogleAuthRequest(BaseModel):
+    id_token: str = Field(min_length=20)
+
+
 class UserResponse(BaseModel):
     id: int
     email: str
     display_name: str
+    auth_provider: str
+    avatar_url: str
     is_active: bool
 
 

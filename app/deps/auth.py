@@ -22,7 +22,14 @@ def get_current_user_optional(authorization: str | None = Header(default=None)) 
     user = auth_service.get_user_from_token(token)
     if user is None:
         return None
-    return UserResponse(id=user.id, email=user.email, display_name=user.display_name, is_active=user.is_active)
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        auth_provider=user.auth_provider,
+        avatar_url=user.avatar_url,
+        is_active=user.is_active,
+    )
 
 
 def get_current_user_required(authorization: str | None = Header(default=None)) -> UserResponse:

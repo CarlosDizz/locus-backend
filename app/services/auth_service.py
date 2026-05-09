@@ -4,8 +4,11 @@ import base64
 import hashlib
 import hmac
 import secrets
+from typing import Any
 from datetime import datetime, timedelta, UTC
 
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from sqlalchemy import select
 
 from app.config import settings
@@ -51,44 +54,10 @@ class AuthService:
             id=user.id,
             email=user.email,
             display_name=user.display_name,
+            auth_provider=user.auth_provider,
+            avatar_url=user.avatar_url,
             is_active=user.is_active,
         )
-
-    def register_user(self, email: str, password: str, display_name: str = "") -> tuple[str, UserResponse]:
-        normalized_email = self._normalize_email(email)
-        with session_scope() as db:
-            existing = db.scalar(select(User).where(User.email == normalized_email))
-            if existing is not None:
-                raise AuthError("Ya existe un usuario con ese email")
-
-            user = User(
-                email=normalized_email,
-                password_hash=self._hash_password(password),
-                display_name=display_name.strip(),
-                is_active=True,
-            )
-            db.add(user)
-            db.flush()
-
-            wallet = Wallet(user_id=user.id, currency="EUR", balance_cents=0)
-            db.add(wallet)
-            db.flush()
-
-            token_value, token_row = self._build_token(user.id)
-            db.add(token_row)
-            from app.services.billing_service import billing_service
-
-            billing_service.add_ledger_entry(
-                db=db,
-                wallet=wallet,
-                user_id=user.id,
-                entry_type="signup_bonus",
-                amount_cents=settings.billing_signup_bonus_cents,
-                description="Saldo promocional de bienvenida",
-                reference_type="user",
-                reference_id=str(user.id),
-            )
-            return token_value, self._user_to_schema(user)
 
     def _build_token(self, user_id: int) -> tuple[str, AuthToken]:
         raw_token = secrets.token_urlsafe(32)
@@ -99,15 +68,173 @@ class AuthService:
         )
         return raw_token, token
 
+    def _issue_token(self, user: User) -> tuple[str, UserResponse, AuthToken]:
+        token_value, token_row = self._build_token(user.id)
+        return token_value, self._user_to_schema(user), token_row
+
+    def _create_user(
+        self,
+        *,
+        email: str,
+        password_hash: str,
+        display_name: str,
+        auth_provider: str,
+        google_sub: str | None = None,
+        avatar_url: str = "",
+    ) -> User:
+        return User(
+            email=email,
+            password_hash=password_hash,
+            display_name=display_name.strip(),
+            auth_provider=auth_provider,
+            google_sub=google_sub,
+            avatar_url=avatar_url.strip(),
+            is_active=True,
+        )
+
+    def _grant_signup_bonus(self, db, wallet: Wallet, user_id: int) -> None:
+        from app.services.billing_service import billing_service
+
+        billing_service.add_ledger_entry(
+            db=db,
+            wallet=wallet,
+            user_id=user_id,
+            entry_type="signup_bonus",
+            amount_cents=settings.billing_signup_bonus_cents,
+            description="Saldo promocional de bienvenida",
+            reference_type="user",
+            reference_id=str(user_id),
+        )
+
+    def _create_wallet_for_user(self, db, user_id: int) -> Wallet:
+        wallet = Wallet(user_id=user_id, currency="EUR", balance_cents=0)
+        db.add(wallet)
+        db.flush()
+        self._grant_signup_bonus(db, wallet, user_id)
+        return wallet
+
+    def _verify_google_token(self, raw_id_token: str) -> dict[str, Any]:
+        client_ids = {client_id for client_id in settings.google_auth_client_ids if client_id}
+        if not client_ids:
+            raise AuthError("El acceso con Google no está configurado en el backend")
+
+        try:
+            token_info = google_id_token.verify_oauth2_token(raw_id_token, google_requests.Request())
+        except ValueError as exc:
+            raise AuthError("No he podido verificar la cuenta de Google") from exc
+
+        audience = str(token_info.get("aud", "")).strip()
+        if audience not in client_ids:
+            raise AuthError("El token de Google no pertenece a esta aplicación")
+
+        email = str(token_info.get("email", "")).strip()
+        sub = str(token_info.get("sub", "")).strip()
+        email_verified = bool(token_info.get("email_verified"))
+
+        if not email or not sub or not email_verified:
+            raise AuthError("La cuenta de Google no tiene un email verificado")
+
+        return token_info
+
+    def _sync_google_profile(
+        self,
+        *,
+        db,
+        user: User,
+        email: str,
+        google_sub: str,
+        display_name: str,
+        avatar_url: str,
+    ) -> None:
+        if user.google_sub and user.google_sub != google_sub:
+            raise AuthError("Esta cuenta ya está vinculada a otro acceso de Google")
+
+        if user.email != email:
+            email_owner = db.scalar(select(User).where(User.email == email).where(User.id != user.id))
+            if email_owner is not None:
+                raise AuthError("El email de Google ya pertenece a otra cuenta")
+            user.email = email
+
+        user.google_sub = google_sub
+        if display_name and not user.display_name:
+            user.display_name = display_name
+        if avatar_url:
+            user.avatar_url = avatar_url
+
+    def register_user(self, email: str, password: str, display_name: str = "") -> tuple[str, UserResponse]:
+        normalized_email = self._normalize_email(email)
+        with session_scope() as db:
+            existing = db.scalar(select(User).where(User.email == normalized_email))
+            if existing is not None:
+                raise AuthError("Ya existe un usuario con ese email")
+
+            user = self._create_user(
+                email=normalized_email,
+                password_hash=self._hash_password(password),
+                display_name=display_name,
+                auth_provider="local",
+            )
+            db.add(user)
+            db.flush()
+
+            self._create_wallet_for_user(db, user.id)
+            token_value, user_schema, token_row = self._issue_token(user)
+            db.add(token_row)
+            return token_value, user_schema
+
     def login(self, email: str, password: str) -> tuple[str, UserResponse]:
         normalized_email = self._normalize_email(email)
         with session_scope() as db:
             user = db.scalar(select(User).where(User.email == normalized_email))
-            if user is None or not user.is_active or not self._verify_password(password, user.password_hash):
+            if user is None or not user.is_active:
                 raise AuthError("Credenciales no válidas")
-            token_value, token_row = self._build_token(user.id)
+            if not user.password_hash:
+                raise AuthError("Esta cuenta usa acceso con Google")
+            if not self._verify_password(password, user.password_hash):
+                raise AuthError("Credenciales no válidas")
+            token_value, user_schema, token_row = self._issue_token(user)
             db.add(token_row)
-            return token_value, self._user_to_schema(user)
+            return token_value, user_schema
+
+    def authenticate_google(self, raw_id_token: str) -> tuple[str, UserResponse]:
+        token_info = self._verify_google_token(raw_id_token)
+        normalized_email = self._normalize_email(str(token_info["email"]))
+        google_sub = str(token_info["sub"]).strip()
+        display_name = str(token_info.get("name", "")).strip()
+        avatar_url = str(token_info.get("picture", "")).strip()
+
+        with session_scope() as db:
+            user = db.scalar(select(User).where(User.google_sub == google_sub))
+            if user is None:
+                user = db.scalar(select(User).where(User.email == normalized_email))
+
+            if user is None:
+                user = self._create_user(
+                    email=normalized_email,
+                    password_hash="",
+                    display_name=display_name,
+                    auth_provider="google",
+                    google_sub=google_sub,
+                    avatar_url=avatar_url,
+                )
+                db.add(user)
+                db.flush()
+                self._create_wallet_for_user(db, user.id)
+            else:
+                if not user.is_active:
+                    raise AuthError("Esta cuenta está desactivada")
+                self._sync_google_profile(
+                    db=db,
+                    user=user,
+                    email=normalized_email,
+                    google_sub=google_sub,
+                    display_name=display_name,
+                    avatar_url=avatar_url,
+                )
+
+            token_value, user_schema, token_row = self._issue_token(user)
+            db.add(token_row)
+            return token_value, user_schema
 
     def get_user_from_token(self, token: str) -> User | None:
         token = token.strip()

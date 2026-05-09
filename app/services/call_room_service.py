@@ -187,18 +187,17 @@ class RealtimeBridge:
                             "instructions": prepared["instructions"],
                             "tools": prepared["tools"],
                             "tool_choice": "auto",
-                            "output_modalities": ["audio"],
+                            "modalities": ["audio"],
+                            "voice": settings.openai_realtime_voice,
+                            "input_audio_format": "pcm16",
+                            "output_audio_format": "pcm16",
+                            "input_audio_transcription": {
+                                "model": settings.openai_realtime_input_transcription_model,
+                                "language": settings.openai_realtime_input_transcription_language,
+                            },
+                            "turn_detection": None,
                             "audio": {
-                                "input": {
-                                    "format": {"type": "audio/pcm", "rate": 24000},
-                                    "turn_detection": None,
-                                    "transcription": {
-                                        "model": settings.openai_realtime_input_transcription_model,
-                                        "language": settings.openai_realtime_input_transcription_language,
-                                    },
-                                },
                                 "output": {
-                                    "format": {"type": "audio/pcm"},
                                     "voice": settings.openai_realtime_voice,
                                 },
                             },

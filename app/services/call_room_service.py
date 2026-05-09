@@ -173,7 +173,6 @@ class RealtimeBridge:
         url = f"wss://api.openai.com/v1/realtime?model={realtime_service.openai.realtime_model()}"
         headers = [
             f"Authorization: Bearer {settings.openai_api_key}",
-            "OpenAI-Beta: realtime=v1",
         ]
         try:
             self.ws = websocket.create_connection(url, header=headers, timeout=5, enable_multithread=True)

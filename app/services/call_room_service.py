@@ -100,6 +100,8 @@ class RealtimeBridge:
         self.ws = None
         self.connected = threading.Event()
         self.closed = False
+        self.session_update_event_id = f"session_update_{secrets.token_hex(6)}"
+        self.initial_response_sent = False
 
     def start(self) -> None:
         if self.thread is not None:
@@ -164,6 +166,16 @@ class RealtimeBridge:
         )
         self.send({"type": "response.create"})
 
+    def handle_session_updated(self, event: dict[str, Any]) -> None:
+        if self.initial_response_sent:
+            return
+        if str(event.get("type") or "") != "session.updated":
+            return
+        if self.room.log:
+            return
+        self.initial_response_sent = True
+        self.send({"type": "response.create"})
+
     def send(self, payload: dict[str, Any]) -> None:
         if self.closed:
             return
@@ -182,6 +194,7 @@ class RealtimeBridge:
                 json.dumps(
                     {
                         "type": "session.update",
+                        "event_id": self.session_update_event_id,
                         "session": {
                             "type": "realtime",
                             "instructions": prepared["instructions"],
@@ -205,8 +218,6 @@ class RealtimeBridge:
                     }
                 )
             )
-            if not self.room.log:
-                self.ws.send(json.dumps({"type": "response.create"}))
             self.connected.set()
         except Exception as exc:
             asyncio.run_coroutine_threadsafe(self.service.handle_bridge_error(self.room.call_id, str(exc)), self.loop)
@@ -558,6 +569,10 @@ class CallRoomService:
             if room is None:
                 return
             event_type = str(event.get("type") or "")
+            if event_type == "session.updated":
+                if room.bridge is not None:
+                    room.bridge.handle_session_updated(event)
+                return
             if event_type == "response.output_audio.delta":
                 await self._broadcast(room, {"type": "assistant.audio_chunk", "audio": event.get("delta", "")})
                 return

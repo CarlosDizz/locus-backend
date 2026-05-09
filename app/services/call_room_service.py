@@ -206,6 +206,8 @@ class RealtimeBridge:
                     }
                 )
             )
+            if not self.room.log:
+                self.ws.send(json.dumps({"type": "response.create"}))
             self.connected.set()
         except Exception as exc:
             asyncio.run_coroutine_threadsafe(self.service.handle_bridge_error(self.room.call_id, str(exc)), self.loop)

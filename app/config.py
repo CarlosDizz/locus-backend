@@ -66,6 +66,7 @@ class Settings:
     app_name: str = os.getenv("APP_NAME", "Locus API")
     app_env: str = os.getenv("APP_ENV", "local")
     app_build: str = os.getenv("APP_BUILD", "v2-scaffold")
+    app_secret: str = os.getenv("APP_SECRET", "locus-dev-secret")
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
     log_level: str = os.getenv("LOG_LEVEL", "info")

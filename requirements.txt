@@ -8,3 +8,4 @@ python-dotenv>=1.0,<2.0
 requests>=2.32,<3.0
 wikipedia==1.4.0
 google-auth>=2.39,<3.0
+websocket-client>=1.8,<2.0

@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.routes.auth import router as auth_router
 from app.routes.billing import router as billing_router
+from app.routes.calls import router as calls_router
+from app.routes.calls import ws_router as calls_ws_router
 from app.routes.catalog import router as catalog_router
 from app.routes.chat import compat_router as chat_compat_router
 from app.routes.chat import router as chat_router
@@ -25,11 +27,13 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(billing_router)
+    app.include_router(calls_router)
     app.include_router(catalog_router)
     app.include_router(sessions_router)
     app.include_router(chat_router)
     app.include_router(realtime_router)
     app.include_router(chat_compat_router)
+    app.include_router(calls_ws_router)
     return app
 
 

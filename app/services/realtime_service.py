@@ -25,22 +25,44 @@ class RealtimeService:
     def prepare_session(self, data: RealtimeSessionRequest) -> RealtimeSessionResponse:
         if data.user_id is not None:
             session_service.attach_user(data.session_id, data.user_id)
-        session = session_service.get_or_create(data.session_id)
-        active_poi_name = data.active_poi_name or (session.active_poi.name if session.active_poi else "")
-        visit_context = data.visit_context or ""
-        if active_poi_name:
+        prepared = self.build_room_runtime(
+            session_id=data.session_id,
+            active_poi_name=data.active_poi_name,
+            visit_context=data.visit_context,
+        )
+        return RealtimeSessionResponse(
+            session_id=prepared["session_id"],
+            model=self.openai.realtime_model(),
+            transport="webrtc",
+            webrtc_api_url=self.WEBRTC_CALLS_API_URL,
+            instructions=prepared["instructions"],
+            modalities=["text", "audio", "image"],
+            tools=prepared["tools"],
+        )
+
+    def build_room_runtime(
+        self,
+        session_id: str,
+        active_poi_name: str | None = None,
+        visit_context: str = "",
+    ) -> dict:
+        session = session_service.get_or_create(session_id)
+        resolved_active_poi_name = active_poi_name or (session.active_poi.name if session.active_poi else "")
+        resolved_visit_context = visit_context or ""
+        if resolved_active_poi_name:
             try:
-                summary = poi_service.get_poi_summary(active_poi_name)
+                summary = poi_service.get_poi_summary(resolved_active_poi_name)
                 if summary:
-                    visit_context = summary
+                    resolved_visit_context = summary
             except Exception:
                 pass
+
         instructions = prompt_service.render(
             "realtime_agent.json",
             {
                 "session_profile": session.profile.raw_context,
-                "active_poi": active_poi_name,
-                "visit_context": visit_context,
+                "active_poi": resolved_active_poi_name,
+                "visit_context": resolved_visit_context,
                 "recent_memory": "\n".join(
                     f"{item['role'].upper()}: {item['text']}" for item in session.memory[-8:]
                 ),
@@ -52,15 +74,13 @@ class RealtimeService:
             *get_knowledge_tool_manifest(include_web_research_tool=True),
         ]
         tools = [{k: v for k, v in tool.items() if k != "strict"} for tool in raw_tools]
-        return RealtimeSessionResponse(
-            session_id=session.session_id,
-            model=self.openai.realtime_model(),
-            transport="webrtc",
-            webrtc_api_url=self.WEBRTC_CALLS_API_URL,
-            instructions=instructions,
-            modalities=["text", "audio", "image"],
-            tools=tools,
-        )
+        return {
+            "session_id": session.session_id,
+            "instructions": instructions,
+            "tools": tools,
+            "active_poi_name": resolved_active_poi_name,
+            "visit_context": resolved_visit_context,
+        }
 
     def create_client_secret(self, data: RealtimeSessionRequest) -> RealtimeClientSecretResponse:
         prepared = self.prepare_session(data)

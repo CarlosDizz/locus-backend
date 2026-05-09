@@ -1,8 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.deps.auth import get_current_user_optional
+from app.deps.auth import get_current_user_optional, get_current_user_required
 from app.schemas.auth import UserResponse
-from app.schemas.session import SessionCreateRequest, SessionResponse, SessionUpdateRequest
+from app.schemas.session import (
+    SessionCallLogRequest,
+    SessionCallStateRequest,
+    SessionCreateRequest,
+    SessionParticipantTouchRequest,
+    SessionResponse,
+    SessionUpdateRequest,
+)
 from app.services.session_service import session_service
 
 
@@ -46,4 +53,50 @@ async def update_session(
     if current_user is not None:
         payload.user_id = current_user.id
     session = session_service.update_session(session_id, payload)
+    return SessionResponse(session=session)
+
+
+@router.post("/{session_id}/presence", response_model=SessionResponse)
+async def touch_participant_presence(
+    session_id: str,
+    payload: SessionParticipantTouchRequest,
+    current_user: UserResponse = Depends(get_current_user_required),
+) -> SessionResponse:
+    session = session_service.touch_participant(session_id, current_user, active_call=payload.active_call)
+    return SessionResponse(session=session)
+
+
+@router.delete("/{session_id}/presence", response_model=SessionResponse)
+async def leave_participant_presence(
+    session_id: str,
+    current_user: UserResponse = Depends(get_current_user_required),
+) -> SessionResponse:
+    session = session_service.leave_participant(session_id, current_user)
+    return SessionResponse(session=session)
+
+
+@router.post("/{session_id}/call-state", response_model=SessionResponse)
+async def set_call_state(
+    session_id: str,
+    payload: SessionCallStateRequest,
+    current_user: UserResponse = Depends(get_current_user_required),
+) -> SessionResponse:
+    session = session_service.set_call_state(session_id, current_user, payload.status)
+    return SessionResponse(session=session)
+
+
+@router.post("/{session_id}/call-log", response_model=SessionResponse)
+async def append_call_log(
+    session_id: str,
+    payload: SessionCallLogRequest,
+    current_user: UserResponse = Depends(get_current_user_required),
+) -> SessionResponse:
+    session = session_service.append_call_log(
+        session_id,
+        user=current_user,
+        kind=payload.kind,
+        author=payload.author,
+        text=payload.text,
+        image_url=payload.image_url,
+    )
     return SessionResponse(session=session)

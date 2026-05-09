@@ -162,6 +162,8 @@ class AuthService:
             user.avatar_url = avatar_url
 
     def register_user(self, email: str, password: str, display_name: str = "") -> tuple[str, UserResponse]:
+        if not settings.auth_enable_password_auth:
+            raise AuthError("El acceso con email y contraseña está desactivado")
         normalized_email = self._normalize_email(email)
         with session_scope() as db:
             existing = db.scalar(select(User).where(User.email == normalized_email))
@@ -183,6 +185,8 @@ class AuthService:
             return token_value, user_schema
 
     def login(self, email: str, password: str) -> tuple[str, UserResponse]:
+        if not settings.auth_enable_password_auth:
+            raise AuthError("Usa el acceso con Google")
         normalized_email = self._normalize_email(email)
         with session_scope() as db:
             user = db.scalar(select(User).where(User.email == normalized_email))

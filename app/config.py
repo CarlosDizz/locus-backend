@@ -70,6 +70,7 @@ class Settings:
     port: int = int(os.getenv("PORT", "8000"))
     log_level: str = os.getenv("LOG_LEVEL", "info")
     auth_token_ttl_days: int = int(os.getenv("AUTH_TOKEN_TTL_DAYS", "30"))
+    auth_enable_password_auth: bool = _bool_env("AUTH_ENABLE_PASSWORD_AUTH", False)
     google_auth_client_ids: list[str] = field(
         default_factory=lambda: _csv_env(
             "GOOGLE_AUTH_CLIENT_IDS",

@@ -216,6 +216,7 @@ class RealtimeBridge:
                                 "output": {
                                     "format": {
                                         "type": "audio/pcm",
+                                        "rate": 24000,
                                     },
                                     "voice": settings.openai_realtime_voice,
                                 },

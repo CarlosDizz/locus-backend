@@ -200,17 +200,23 @@ class RealtimeBridge:
                             "instructions": prepared["instructions"],
                             "tools": prepared["tools"],
                             "tool_choice": "auto",
-                            "modalities": ["audio"],
-                            "voice": settings.openai_realtime_voice,
-                            "input_audio_format": "pcm16",
-                            "output_audio_format": "pcm16",
-                            "input_audio_transcription": {
-                                "model": settings.openai_realtime_input_transcription_model,
-                                "language": settings.openai_realtime_input_transcription_language,
-                            },
-                            "turn_detection": None,
+                            "output_modalities": ["audio"],
                             "audio": {
+                                "input": {
+                                    "format": {
+                                        "type": "audio/pcm",
+                                        "rate": 24000,
+                                    },
+                                    "transcription": {
+                                        "model": settings.openai_realtime_input_transcription_model,
+                                        "language": settings.openai_realtime_input_transcription_language,
+                                    },
+                                    "turn_detection": None,
+                                },
                                 "output": {
+                                    "format": {
+                                        "type": "audio/pcm",
+                                    },
                                     "voice": settings.openai_realtime_voice,
                                 },
                             },
@@ -610,7 +616,14 @@ class CallRoomService:
                 await self._handle_response_done(room, event)
                 return
             if event_type == "error":
-                message = str((event.get("error") or {}).get("message") or "Ha fallado la sesión realtime")
+                error = event.get("error") or {}
+                message = str(error.get("message") or "Ha fallado la sesión realtime")
+                param = str(error.get("param") or "").strip()
+                code = str(error.get("code") or "").strip()
+                if param:
+                    message = f"{message} ({param})"
+                if code:
+                    message = f"{message} [{code}]"
                 room.log.append(self._log_entry("error", "Sistema", message, None))
                 room.status = "idle"
                 room.speaker_user_id = None

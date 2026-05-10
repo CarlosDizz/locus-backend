@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from math import cos, radians, sqrt
+from urllib.parse import quote
 
 from sqlalchemy import Select, or_, select
 
@@ -272,6 +273,8 @@ class POIService:
             "coordinates": self._first_claim_value(claims, "P625") or "",
         }
         facts = {key: value for key, value in facts.items() if value}
+        image_name = self._first_claim_value(claims, "P18") or ""
+        image_url = f"https://commons.wikimedia.org/wiki/Special:FilePath/{quote(image_name)}" if image_name else ""
 
         label = (
             entity.get("labels", {})
@@ -325,6 +328,8 @@ class POIService:
                 "label": label,
                 "description": description,
                 "wikipedia_title": wikipedia_title,
+                "commons_image_name": image_name,
+                "image_url": image_url,
                 "url": f"{self.wikidata_client.base_url}/wiki/{entity_id}",
             },
             "facts": facts,

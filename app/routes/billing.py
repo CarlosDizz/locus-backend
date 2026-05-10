@@ -56,7 +56,7 @@ async def get_ledger(
                 usage_interaction_type=usage_event.interaction_type if usage_event is not None else None,
                 usage_source=usage_event.source if usage_event is not None else None,
                 usage_endpoint=usage_event.endpoint if usage_event is not None else None,
-                usage_call_id=str(usage_event.metadata_json.get("call_id") or "") if usage_event is not None else None,
+                usage_call_id=usage_event.call_id if usage_event is not None else None,
                 usage_audio_input_tokens=usage_event.audio_input_tokens if usage_event is not None else None,
                 usage_audio_output_tokens=usage_event.audio_output_tokens if usage_event is not None else None,
                 usage_image_input_tokens=usage_event.image_input_tokens if usage_event is not None else None,

@@ -127,6 +127,7 @@ class UsageEvent(Base):
     model: Mapped[str] = mapped_column(String(128), index=True)
     interaction_type: Mapped[str] = mapped_column(String(64), default="", index=True)
     source: Mapped[str] = mapped_column(String(64), default="", index=True)
+    call_id: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
     response_id: Mapped[str] = mapped_column(String(128), default="")
     dedupe_key: Mapped[str | None] = mapped_column(String(128), unique=True, index=True, nullable=True)
     price_snapshot_id: Mapped[int | None] = mapped_column(

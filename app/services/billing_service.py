@@ -141,10 +141,10 @@ class BillingService:
             .where(UsageEvent.bill_to_user_id == user_id)
             .where(UsageEvent.source == "call_room")
             .where(UsageEvent.interaction_type == "realtime_call")
+            .where(UsageEvent.call_id == call_id)
             .order_by(UsageEvent.id.asc())
         )
-        events = list(db.scalars(stmt).all())
-        return [event for event in events if str((event.metadata_json or {}).get("call_id") or "") == call_id]
+        return list(db.scalars(stmt).all())
 
     def _microusd_to_provider_eur_cents(self, provider_cost_microusd: int) -> int:
         provider_cost_usd = Decimal(provider_cost_microusd) / Decimal(1_000_000)
@@ -351,6 +351,7 @@ class BillingService:
                 model=model,
                 interaction_type=str(event_metadata.get("interaction_type") or endpoint).strip(),
                 source=str(event_metadata.get("source") or endpoint).strip(),
+                call_id=str(event_metadata.get("call_id") or "").strip() or None,
                 response_id=response_id,
                 dedupe_key=dedupe_key,
                 price_snapshot_id=price.id,

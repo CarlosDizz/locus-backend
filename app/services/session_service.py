@@ -105,6 +105,39 @@ class SessionService:
         stmt = select(AppSession).where(AppSession.session_id == session_id.upper()).with_for_update()
         return db.scalar(stmt)
 
+    def _coerce_poi(self, raw: dict | None, *, fallback_lat: float | None = None, fallback_lng: float | None = None) -> POI | None:
+        if not isinstance(raw, dict):
+            return None
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            return None
+
+        lat_raw = raw.get("lat", fallback_lat)
+        lng_raw = raw.get("lng", fallback_lng)
+        try:
+            lat = float(lat_raw) if lat_raw is not None else None
+            lng = float(lng_raw) if lng_raw is not None else None
+        except (TypeError, ValueError):
+            lat = None
+            lng = None
+
+        if lat is None or lng is None:
+            return None
+
+        return POI(
+            id=str(raw.get("id") or ""),
+            name=name,
+            lat=lat,
+            lng=lng,
+            poi_type_code=str(raw.get("poi_type_code") or ""),
+            description=str(raw.get("description") or ""),
+            summary=str(raw.get("summary") or ""),
+            source_of_truth=str(raw.get("source_of_truth") or "catalog"),
+            is_ephemeral=bool(raw.get("is_ephemeral", False)),
+            google_place_id=str(raw.get("google_place_id") or ""),
+            context_kind=str(raw.get("context_kind") or "catalog"),
+        )
+
     def _get_or_create_locked_row(self, db, session_id: str) -> AppSession:
         row = self._lock_row(db, session_id)
         if row is None:
@@ -122,10 +155,26 @@ class SessionService:
         return row
 
     def _serialize(self, row: AppSession) -> SessionState:
-        active_poi = POI(**row.active_poi_json) if row.active_poi_json else None
-        nearby_pois = [POI(**poi) for poi in (row.nearby_pois_json or [])]
+        fallback_lat = float(row.lat) if row.lat is not None else None
+        fallback_lng = float(row.lng) if row.lng is not None else None
+        active_poi = self._coerce_poi(row.active_poi_json, fallback_lat=fallback_lat, fallback_lng=fallback_lng)
+        nearby_pois = [
+            poi
+            for poi in (
+                self._coerce_poi(item)
+                for item in (row.nearby_pois_json or [])
+            )
+            if poi is not None
+        ]
         metadata = row.metadata_json or {}
-        ephemeral_map_pois = [POI(**poi) for poi in (metadata.get("ephemeral_map_pois") or [])]
+        ephemeral_map_pois = [
+            poi
+            for poi in (
+                self._coerce_poi(item)
+                for item in (metadata.get("ephemeral_map_pois") or [])
+            )
+            if poi is not None
+        ]
         participants = self._parse_participants(metadata)
         call_live = self._parse_call_live(metadata)
         call_log = self._parse_call_log(metadata)
@@ -227,6 +276,10 @@ class SessionService:
             if data.active_poi_name:
                 current = row.active_poi_json or {}
                 current["name"] = data.active_poi_name
+                if current.get("lat") is None and row.lat is not None:
+                    current["lat"] = float(row.lat)
+                if current.get("lng") is None and row.lng is not None:
+                    current["lng"] = float(row.lng)
                 row.active_poi_json = current
             if data.metadata:
                 row.metadata_json = {**(row.metadata_json or {}), **data.metadata}

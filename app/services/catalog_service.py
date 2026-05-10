@@ -27,6 +27,7 @@ class CatalogError(RuntimeError):
 
 class CatalogService:
     MIN_BOOTSTRAP_POI_COUNT = 12
+    SPARSE_CATALOG_RETRY_POI_COUNT = 6
 
     def __init__(self) -> None:
         self.logger = get_logger(__name__)
@@ -484,9 +485,34 @@ class CatalogService:
             limit=limit,
             use_ai_candidates=use_ai_candidates,
         )
-        stats["source"] = "existing_catalog_reimport" if existing_poi_count else "fresh_import"
-        stats["existing_poi_count"] = existing_poi_count
-        if use_ai_candidates:
+        used_ai_fallback = False
+        if (
+            not use_ai_candidates
+            and len(pois) < self.SPARSE_CATALOG_RETRY_POI_COUNT
+        ):
+            ai_imported, ai_updated, ai_skipped, ai_stats, ai_pois, _city_name = self.import_city_pois(
+                city_id=city.id,
+                radius_km=radius_km,
+                limit=limit,
+                use_ai_candidates=True,
+            )
+            imported_count += ai_imported
+            updated_count += ai_updated
+            skipped_count += ai_skipped
+            if ai_pois:
+                pois = ai_pois
+            stats = {
+                "source": "catalog_sources_then_ai_fallback",
+                "existing_poi_count": existing_poi_count,
+                "catalog_attempt": stats,
+                "ai_fallback": ai_stats,
+            }
+            used_ai_fallback = True
+
+        if not used_ai_fallback:
+            stats["source"] = "existing_catalog_reimport" if existing_poi_count else "fresh_import"
+            stats["existing_poi_count"] = existing_poi_count
+        if use_ai_candidates or used_ai_fallback:
             self.start_pending_enrichment(city.id, min(limit, 150))
         return city, imported_count, updated_count, skipped_count, stats, pois
 

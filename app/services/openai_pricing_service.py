@@ -64,6 +64,8 @@ class OpenAIPricingService:
         current: PriceSnapshot | None = None,
     ) -> PriceSnapshot:
         parsed = self._fetch_model_pricing(model)
+        if endpoint == "realtime":
+            parsed = self._normalize_realtime_pricing(parsed)
         latest = current or self._latest_snapshot(db, provider="openai", endpoint=endpoint, model=model)
         if latest is None:
             snapshot = PriceSnapshot(
@@ -123,6 +125,21 @@ class OpenAIPricingService:
         db.add(snapshot)
         db.flush()
         return snapshot
+
+    def _normalize_realtime_pricing(self, parsed: ParsedPricing) -> ParsedPricing:
+        # Some realtime model pages expose only generic input/output pricing even though
+        # the model is used for audio. When that happens, keep the documented general
+        # prices but mirror them into audio buckets so the billing engine does not
+        # accidentally value audio traffic at zero.
+        if (
+            parsed.audio_input_per_million <= Decimal("0")
+            and parsed.audio_cached_input_per_million <= Decimal("0")
+            and parsed.audio_output_per_million <= Decimal("0")
+        ):
+            parsed.audio_input_per_million = parsed.text_input_per_million
+            parsed.audio_cached_input_per_million = parsed.text_cached_input_per_million
+            parsed.audio_output_per_million = parsed.text_output_per_million
+        return parsed
 
     def _latest_snapshot(self, db: Session, *, provider: str, endpoint: str, model: str) -> PriceSnapshot | None:
         stmt = (

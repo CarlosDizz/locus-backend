@@ -38,37 +38,32 @@ async def get_ledger(
         if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit()
     ]
     usage_map = billing_service.get_usage_events_map(usage_ids)
-    return [
-        LedgerEntryResponse(
-            id=entry.id,
-            entry_type=entry.entry_type,
-            amount_cents=entry.amount_cents,
-            balance_after_cents=entry.balance_after_cents,
-            description=entry.description,
-            reference_type=entry.reference_type,
-            reference_id=entry.reference_id,
-            usage_interaction_type=usage_map.get(int(entry.reference_id)).interaction_type
-            if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit() and int(entry.reference_id) in usage_map
-            else None,
-            usage_source=usage_map.get(int(entry.reference_id)).source
-            if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit() and int(entry.reference_id) in usage_map
-            else None,
-            usage_endpoint=usage_map.get(int(entry.reference_id)).endpoint
-            if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit() and int(entry.reference_id) in usage_map
-            else None,
-            usage_audio_input_tokens=usage_map.get(int(entry.reference_id)).audio_input_tokens
-            if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit() and int(entry.reference_id) in usage_map
-            else None,
-            usage_audio_output_tokens=usage_map.get(int(entry.reference_id)).audio_output_tokens
-            if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit() and int(entry.reference_id) in usage_map
-            else None,
-            usage_image_input_tokens=usage_map.get(int(entry.reference_id)).image_input_tokens
-            if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit() and int(entry.reference_id) in usage_map
-            else None,
-            created_at=entry.created_at,
+    response: list[LedgerEntryResponse] = []
+    for entry in entries:
+        usage_event = None
+        if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit():
+            usage_event = usage_map.get(int(entry.reference_id))
+
+        response.append(
+            LedgerEntryResponse(
+                id=entry.id,
+                entry_type=entry.entry_type,
+                amount_cents=entry.amount_cents,
+                balance_after_cents=entry.balance_after_cents,
+                description=entry.description,
+                reference_type=entry.reference_type,
+                reference_id=entry.reference_id,
+                usage_interaction_type=usage_event.interaction_type if usage_event is not None else None,
+                usage_source=usage_event.source if usage_event is not None else None,
+                usage_endpoint=usage_event.endpoint if usage_event is not None else None,
+                usage_call_id=str(usage_event.metadata_json.get("call_id") or "") if usage_event is not None else None,
+                usage_audio_input_tokens=usage_event.audio_input_tokens if usage_event is not None else None,
+                usage_audio_output_tokens=usage_event.audio_output_tokens if usage_event is not None else None,
+                usage_image_input_tokens=usage_event.image_input_tokens if usage_event is not None else None,
+                created_at=entry.created_at,
+            )
         )
-        for entry in entries
-    ]
+    return response
 
 
 @router.get("/usage-events", response_model=list[UsageEventResponse])

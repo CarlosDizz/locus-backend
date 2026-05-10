@@ -20,6 +20,7 @@ class LedgerEntryResponse(BaseModel):
     usage_interaction_type: str | None = None
     usage_source: str | None = None
     usage_endpoint: str | None = None
+    usage_call_id: str | None = None
     usage_audio_input_tokens: int | None = None
     usage_audio_output_tokens: int | None = None
     usage_image_input_tokens: int | None = None

@@ -119,7 +119,7 @@ class Settings:
     overpass_api_url: str = os.getenv("OVERPASS_API_URL", "https://overpass-api.de/api/interpreter")
     overpass_timeout_seconds: int = int(os.getenv("OVERPASS_TIMEOUT_SECONDS", "25"))
 
-    billing_margin_multiplier: float = float(os.getenv("BILLING_MARGIN_MULTIPLIER", "1.15"))
+    billing_margin_multiplier: float = float(os.getenv("BILLING_MARGIN_MULTIPLIER", "1.80"))
     billing_usd_to_eur: float = float(os.getenv("BILLING_USD_TO_EUR", "1.00"))
     billing_signup_bonus_cents: int = int(os.getenv("BILLING_SIGNUP_BONUS_CENTS", "200"))
     billing_min_reserve_cents: int = int(os.getenv("BILLING_MIN_RESERVE_CENTS", "25"))

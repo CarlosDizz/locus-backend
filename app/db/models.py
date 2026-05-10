@@ -99,6 +99,18 @@ class PriceSnapshot(Base):
     input_per_million: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
     cached_input_per_million: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
     output_per_million: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
+    text_input_per_million: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
+    text_cached_input_per_million: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
+    text_output_per_million: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
+    audio_input_per_million: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
+    audio_cached_input_per_million: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
+    audio_output_per_million: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
+    image_input_per_million: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
+    image_cached_input_per_million: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
+    source_url: Mapped[str] = mapped_column(String(2048), default="")
+    source_label: Mapped[str] = mapped_column(String(128), default="")
+    raw_source_hash: Mapped[str] = mapped_column(String(128), default="")
+    fetched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     active_from: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
@@ -108,11 +120,20 @@ class UsageEvent(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True)
+    bill_to_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True, nullable=True)
     session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     provider: Mapped[str] = mapped_column(String(64), index=True)
     endpoint: Mapped[str] = mapped_column(String(64), index=True)
     model: Mapped[str] = mapped_column(String(128), index=True)
+    interaction_type: Mapped[str] = mapped_column(String(64), default="", index=True)
+    source: Mapped[str] = mapped_column(String(64), default="", index=True)
     response_id: Mapped[str] = mapped_column(String(128), default="")
+    dedupe_key: Mapped[str | None] = mapped_column(String(128), unique=True, index=True, nullable=True)
+    price_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("price_snapshots.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
@@ -121,9 +142,12 @@ class UsageEvent(Base):
     audio_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     image_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     provider_cost_microusd: Mapped[int] = mapped_column(BigInteger, default=0)
+    provider_cost_eur_cents: Mapped[int] = mapped_column(Integer, default=0)
     charged_amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    gross_margin_cents: Mapped[int] = mapped_column(Integer, default=0)
     currency: Mapped[str] = mapped_column(String(3), default="EUR")
-    margin_multiplier: Mapped[Decimal] = mapped_column(Numeric(6, 3), default=Decimal("1.150"))
+    margin_multiplier: Mapped[Decimal] = mapped_column(Numeric(6, 3), default=Decimal("1.800"))
+    status: Mapped[str] = mapped_column(String(32), default="charged", index=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 

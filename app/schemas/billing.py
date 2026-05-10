@@ -51,3 +51,27 @@ class UsageRecordResponse(BaseModel):
     id: int
     charged_amount_cents: int
     balance_cents: int
+
+
+class UsageEventResponse(BaseModel):
+    id: int
+    session_id: str | None
+    provider: str
+    endpoint: str
+    model: str
+    interaction_type: str
+    source: str
+    response_id: str
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    reasoning_tokens: int
+    audio_input_tokens: int
+    audio_output_tokens: int
+    image_input_tokens: int
+    provider_cost_eur_cents: int
+    charged_amount_cents: int
+    gross_margin_cents: int
+    currency: str
+    status: str
+    created_at: datetime

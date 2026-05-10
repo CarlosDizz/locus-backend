@@ -181,7 +181,10 @@ class RealtimeService:
                 model=self.openai.chat_model(),
                 response_id=payload.get("id", ""),
                 usage=payload.get("usage", {}) or {},
-                metadata={"source": "realtime_photo_insight"},
+                metadata={
+                    "source": "realtime_photo_insight",
+                    "interaction_type": "realtime_photo",
+                },
             )
         session_service.append_memory(data.session_id, "assistant", text)
         return RealtimePhotoInsightResponse(text=text)

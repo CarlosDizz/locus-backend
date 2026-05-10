@@ -2,7 +2,15 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.deps.auth import get_current_user_required
 from app.schemas.auth import UserResponse
-from app.schemas.billing import LedgerEntryResponse, TopUpRequest, TopUpResponse, UsageRecordRequest, UsageRecordResponse, WalletResponse
+from app.schemas.billing import (
+    LedgerEntryResponse,
+    TopUpRequest,
+    TopUpResponse,
+    UsageEventResponse,
+    UsageRecordRequest,
+    UsageRecordResponse,
+    WalletResponse,
+)
 from app.services.billing_service import BillingError, billing_service
 
 
@@ -32,6 +40,37 @@ async def get_ledger(current_user: UserResponse = Depends(get_current_user_requi
             created_at=entry.created_at,
         )
         for entry in entries
+    ]
+
+
+@router.get("/usage-events", response_model=list[UsageEventResponse])
+async def get_usage_events(current_user: UserResponse = Depends(get_current_user_required)) -> list[UsageEventResponse]:
+    events = billing_service.list_usage_events(current_user.id)
+    return [
+        UsageEventResponse(
+            id=event.id,
+            session_id=event.session_id,
+            provider=event.provider,
+            endpoint=event.endpoint,
+            model=event.model,
+            interaction_type=event.interaction_type,
+            source=event.source,
+            response_id=event.response_id,
+            input_tokens=event.input_tokens,
+            cached_input_tokens=event.cached_input_tokens,
+            output_tokens=event.output_tokens,
+            reasoning_tokens=event.reasoning_tokens,
+            audio_input_tokens=event.audio_input_tokens,
+            audio_output_tokens=event.audio_output_tokens,
+            image_input_tokens=event.image_input_tokens,
+            provider_cost_eur_cents=event.provider_cost_eur_cents,
+            charged_amount_cents=event.charged_amount_cents,
+            gross_margin_cents=event.gross_margin_cents,
+            currency=event.currency,
+            status=event.status,
+            created_at=event.created_at,
+        )
+        for event in events
     ]
 
 

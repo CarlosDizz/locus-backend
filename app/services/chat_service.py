@@ -501,7 +501,10 @@ class ChatService:
                         model=self.openai.chat_model(),
                         response_id=final_response.get("id", ""),
                         usage=final_response.get("usage", {}) or {},
-                        metadata={"source": "chat_service"},
+                        metadata={
+                            "source": "chat_service",
+                            "interaction_type": "chat",
+                        },
                     )
             else:
                 raise OpenAIClientError("OpenAI no configurado")

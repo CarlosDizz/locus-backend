@@ -481,6 +481,13 @@ class CallRoomService:
         participant = room.participants.get(user.id)
         if participant is None or participant.websocket is None:
             return
+        try:
+            billing_service.ensure_user_can_consume(room.host_user.id)
+        except BillingError as exc:
+            room.log.append(self._log_entry("error", "Sistema", str(exc), None))
+            await participant.websocket.send_json({"type": "floor.denied", "reason": "billing_blocked"})
+            await self._broadcast_snapshot(room)
+            return
         if room.status == "idle":
             room.status = "user_speaking"
             room.speaker_user_id = user.id
@@ -545,6 +552,13 @@ class CallRoomService:
         if not capabilities.can_text:
             await participant.websocket.send_json({"type": "message.rejected", "reason": capabilities.reason})
             return
+        try:
+            billing_service.ensure_user_can_consume(room.host_user.id)
+        except BillingError as exc:
+            room.log.append(self._log_entry("error", "Sistema", str(exc), None))
+            await participant.websocket.send_json({"type": "message.rejected", "reason": "billing_blocked"})
+            await self._broadcast_snapshot(room)
+            return
         await self._ensure_bridge(room)
         room.log.append(self._log_entry("user-text", user.display_name, clean, user.id))
         room.status = "assistant_speaking"
@@ -562,6 +576,13 @@ class CallRoomService:
             return
         if not image_data_url.startswith("data:image/"):
             await participant.websocket.send_json({"type": "message.rejected", "reason": "invalid_image"})
+            return
+        try:
+            billing_service.ensure_user_can_consume(room.host_user.id)
+        except BillingError as exc:
+            room.log.append(self._log_entry("error", "Sistema", str(exc), None))
+            await participant.websocket.send_json({"type": "message.rejected", "reason": "billing_blocked"})
+            await self._broadcast_snapshot(room)
             return
         await self._ensure_bridge(room)
         room.log.append(self._log_entry("user-photo", user.display_name, "Ha enviado una foto.", user.id, image_data_url))
@@ -662,7 +683,11 @@ class CallRoomService:
                     model=realtime_service.openai.realtime_model(),
                     response_id=response_id,
                     usage=usage,
-                    metadata={"source": "call_room", "call_id": room.call_id},
+                    metadata={
+                        "source": "call_room",
+                        "interaction_type": "realtime_call",
+                        "call_id": room.call_id,
+                    },
                 )
             except BillingError:
                 room.log.append(self._log_entry("error", "Sistema", "Saldo insuficiente para continuar la llamada.", None))

@@ -48,7 +48,7 @@ def _bool_env(name: str, default: bool = False) -> bool:
 
 
 def _build_database_url() -> str:
-    direct_url = _env("DATABASE_URL", "MYSQL_URL", "DATABASE_PUBLIC_URL", "MYSQL_PUBLIC_URL", default="")
+    direct_url = _env("MYSQL_PUBLIC_URL", "DATABASE_PUBLIC_URL", "MYSQL_URL", "DATABASE_URL", default="")
     if direct_url:
         return _normalize_database_url(direct_url)
 

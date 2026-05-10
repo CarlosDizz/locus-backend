@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.deps.auth import get_current_user_required
 from app.schemas.auth import UserResponse
@@ -26,8 +26,12 @@ async def get_wallet(current_user: UserResponse = Depends(get_current_user_requi
 
 
 @router.get("/ledger", response_model=list[LedgerEntryResponse])
-async def get_ledger(current_user: UserResponse = Depends(get_current_user_required)) -> list[LedgerEntryResponse]:
-    entries = billing_service.list_ledger_entries(current_user.id)
+async def get_ledger(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    current_user: UserResponse = Depends(get_current_user_required),
+) -> list[LedgerEntryResponse]:
+    entries = billing_service.list_ledger_entries(current_user.id, limit=limit, offset=offset)
     return [
         LedgerEntryResponse(
             id=entry.id,

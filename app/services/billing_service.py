@@ -63,12 +63,13 @@ class BillingService:
             if wallet.balance_cents < settings.billing_min_reserve_cents:
                 raise BillingError("Saldo insuficiente para iniciar una nueva interacción")
 
-    def list_ledger_entries(self, user_id: int, limit: int = 50) -> list[LedgerEntry]:
+    def list_ledger_entries(self, user_id: int, limit: int = 50, offset: int = 0) -> list[LedgerEntry]:
         with session_scope() as db:
             stmt: Select[tuple[LedgerEntry]] = (
                 select(LedgerEntry)
                 .where(LedgerEntry.user_id == user_id)
                 .order_by(desc(LedgerEntry.id))
+                .offset(offset)
                 .limit(limit)
             )
             return list(db.scalars(stmt).all())

@@ -220,12 +220,23 @@ class ChatService:
     def _format_recent_memory(self, session) -> str:
         return "\n".join(f"{item['role'].upper()}: {item['text']}" for item in session.memory[-8:])
 
+    def _format_session_profile(self, session) -> str:
+        preferences = session.profile.preferences or {}
+        preferred_name = clean_text(str(preferences.get("preferred_name") or ""))
+        raw_context = clean_text(session.profile.raw_context or "")
+        parts: list[str] = []
+        if preferred_name:
+            parts.append(f"Quiere que le llames {preferred_name}.")
+        if raw_context:
+            parts.append(raw_context)
+        return " ".join(parts).strip() or "No hay preferencias personales guardadas todavía."
+
     def _build_instructions(self, session_id: str, session=None) -> str:
         session = session or session_service.get_or_create(session_id)
         return prompt_service.render(
             "chat_agent.json",
             {
-                "session_profile": session.profile.raw_context,
+                "session_profile": self._format_session_profile(session),
                 "active_poi": self._format_active_poi_context(session),
                 "session_location": self._format_location_context(session),
                 "nearby_pois": self._format_nearby_pois(session.nearby_pois),
@@ -429,7 +440,7 @@ class ChatService:
         prompt_preview = prompt_service.render(
             "chat_agent.json",
             {
-                "session_profile": session.profile.raw_context,
+                "session_profile": self._format_session_profile(session),
                 "active_poi": self._format_active_poi_context(session),
                 "session_location": self._format_location_context(session),
                 "nearby_pois": self._format_nearby_pois(session.nearby_pois),

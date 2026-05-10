@@ -71,6 +71,7 @@ class SessionCreateRequest(BaseModel):
 class SessionUpdateRequest(BaseModel):
     user_id: int | None = None
     profile_context: str | None = None
+    profile_preferences: dict[str, Any] | None = None
     lat: float | None = None
     lng: float | None = None
     active_poi_name: str | None = None

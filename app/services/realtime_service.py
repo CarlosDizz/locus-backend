@@ -14,6 +14,7 @@ from app.services.session_service import session_service
 from app.tools.knowledge_tools import get_knowledge_tool_manifest
 from app.tools.poi_tools import get_poi_tool_manifest
 from app.tools.session_tools import get_session_tool_manifest
+from app.utils.text import clean_text
 
 
 class RealtimeService:
@@ -57,10 +58,20 @@ class RealtimeService:
             except Exception:
                 pass
 
+        preferences = session.profile.preferences or {}
+        preferred_name = clean_text(str(preferences.get("preferred_name") or ""))
+        raw_context = clean_text(session.profile.raw_context or "")
+        session_profile = " ".join(
+            part for part in [
+                f"Quiere que le llames {preferred_name}." if preferred_name else "",
+                raw_context,
+            ] if part
+        ).strip() or "No hay preferencias personales guardadas todavía."
+
         instructions = prompt_service.render(
             "realtime_agent.json",
             {
-                "session_profile": session.profile.raw_context,
+                "session_profile": session_profile,
                 "active_poi": resolved_active_poi_name,
                 "visit_context": resolved_visit_context,
                 "recent_memory": "\n".join(

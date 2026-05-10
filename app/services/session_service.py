@@ -269,6 +269,8 @@ class SessionService:
                 row.user_id = data.user_id
             if data.profile_context is not None:
                 row.profile_context = data.profile_context
+            if data.profile_preferences is not None:
+                row.profile_preferences_json = data.profile_preferences
             if data.lat is not None:
                 row.lat = Decimal(str(data.lat))
             if data.lng is not None:

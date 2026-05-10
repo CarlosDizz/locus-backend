@@ -1264,7 +1264,7 @@ class CatalogService:
         return score
 
     def _is_map_candidate(self, score: int, type_code: str) -> bool:
-        threshold = 35 if type_code != "building" else 50
+        threshold = 35 if type_code != "building" else 45
         return score >= threshold
 
     def _is_featured_candidate(self, score: int, type_code: str) -> bool:
@@ -1272,8 +1272,8 @@ class CatalogService:
         return score >= threshold
 
     def _build_city_entity_import_query(self, city_entity_id: str, limit: int) -> str:
-        safe_limit = max(1, min(int(limit), 20))
-        fetch_limit = min(max(safe_limit * 4, 30), 80)
+        safe_limit = max(1, min(int(limit), 80))
+        fetch_limit = min(max(safe_limit * 3, 80), 240)
         return f"""
 PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX wdt: <http://www.wikidata.org/prop/direct/>
@@ -1323,9 +1323,9 @@ LIMIT {fetch_limit}
 """
 
     def _build_radius_import_query(self, city: City, radius_km: float, limit: int) -> str:
-        safe_limit = max(1, min(int(limit), 20))
-        fetch_limit = min(max(safe_limit * 3, 20), 60)
-        safe_radius = min(radius_km, 6.0)
+        safe_limit = max(1, min(int(limit), 80))
+        fetch_limit = min(max(safe_limit * 2, 80), 200)
+        safe_radius = min(radius_km, 12.0)
         return f"""
 PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX wdt: <http://www.wikidata.org/prop/direct/>
@@ -1373,18 +1373,22 @@ LIMIT {fetch_limit}
 """
 
     def _build_overpass_map_query(self, city: City, radius_km: float, limit: int) -> str:
-        safe_limit = max(10, min(int(limit) * 4, 80))
-        safe_radius_m = int(min(max(radius_km, 1.5), 4.0) * 1000)
+        safe_limit = max(20, min(int(limit) * 4, 180))
+        safe_radius_m = int(min(max(radius_km, 1.5), 8.0) * 1000)
         return f"""
 [out:json][timeout:20];
 (
   nwr(around:{safe_radius_m},{float(city.lat)},{float(city.lng)})["tourism"~"^(attraction|museum|gallery|artwork)$"]["name"];
   nwr(around:{safe_radius_m},{float(city.lat)},{float(city.lng)})["historic"~"^(monument|memorial|castle|archaeological_site|ruins)$"]["name"];
+  nwr(around:{safe_radius_m},{float(city.lat)},{float(city.lng)})["historic"~"^(yes|roman_road|citywalls|fort|aqueduct)$"]["name"];
   nwr(around:{safe_radius_m},{float(city.lat)},{float(city.lng)})["amenity"="place_of_worship"]["name"]["wikidata"];
   nwr(around:{safe_radius_m},{float(city.lat)},{float(city.lng)})["amenity"="place_of_worship"]["name"]["heritage"];
   nwr(around:{safe_radius_m},{float(city.lat)},{float(city.lng)})["building"~"^(cathedral|church|synagogue|chapel|monastery)$"]["name"]["wikidata"];
   nwr(around:{safe_radius_m},{float(city.lat)},{float(city.lng)})["building"~"^(cathedral|church|synagogue|chapel|monastery)$"]["name"]["wikipedia"];
+  nwr(around:{safe_radius_m},{float(city.lat)},{float(city.lng)})["building"~"^(palace|public|yes|historic)$"]["name"]["wikidata"];
+  nwr(around:{safe_radius_m},{float(city.lat)},{float(city.lng)})["building"~"^(palace|public|yes|historic)$"]["name"]["heritage"];
   nwr(around:{safe_radius_m},{float(city.lat)},{float(city.lng)})["place"="square"]["name"]["wikidata"];
+  nwr(around:{safe_radius_m},{float(city.lat)},{float(city.lng)})["place"="square"]["name"]["wikipedia"];
   nwr(around:{safe_radius_m},{float(city.lat)},{float(city.lng)})["heritage"]["name"];
 );
 out center {safe_limit};

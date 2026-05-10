@@ -195,8 +195,6 @@ class BillingService:
         audio_output_tokens = normalized["audio_output_tokens"]
         image_input_tokens = normalized["image_input_tokens"]
 
-        text_normal_input_tokens = max(text_input_tokens - cached_tokens, 0)
-
         text_input_rate = self._decimal_or_fallback(price.text_input_per_million, price.input_per_million)
         text_cached_rate = self._decimal_or_fallback(price.text_cached_input_per_million, price.cached_input_per_million)
         text_output_rate = self._decimal_or_fallback(price.text_output_per_million, price.output_per_million)
@@ -206,15 +204,47 @@ class BillingService:
         image_input_rate = self._decimal_or_fallback(price.image_input_per_million, text_input_rate)
         image_cached_rate = self._decimal_or_fallback(price.image_cached_input_per_million, text_cached_rate)
 
+        input_buckets = [
+            {
+                "tokens": audio_input_tokens,
+                "fresh_rate": audio_input_rate,
+                "cached_rate": audio_cached_rate,
+            },
+            {
+                "tokens": image_input_tokens,
+                "fresh_rate": image_input_rate,
+                "cached_rate": image_cached_rate,
+            },
+            {
+                "tokens": text_input_tokens,
+                "fresh_rate": text_input_rate,
+                "cached_rate": text_cached_rate,
+            },
+        ]
+
+        remaining_cached = max(cached_tokens, 0)
+        allocated_cached_total = 0
+        input_cost_usd = Decimal("0")
+
+        # If the provider only reports one cached_input_tokens bucket, allocate it first
+        # to the modalities with the largest savings. This avoids overcharging when
+        # realtime usage mixes text/audio cached context in one aggregate counter.
+        input_buckets.sort(key=lambda item: item["fresh_rate"] - item["cached_rate"], reverse=True)
+        for bucket in input_buckets:
+            bucket_tokens = int(bucket["tokens"])
+            if bucket_tokens <= 0:
+                continue
+            cached_here = min(remaining_cached, bucket_tokens)
+            fresh_here = bucket_tokens - cached_here
+            remaining_cached -= cached_here
+            allocated_cached_total += cached_here
+            input_cost_usd += (Decimal(fresh_here) / Decimal(1_000_000)) * bucket["fresh_rate"]
+            input_cost_usd += (Decimal(cached_here) / Decimal(1_000_000)) * bucket["cached_rate"]
+
         provider_cost_usd = (
-            (Decimal(text_normal_input_tokens) / Decimal(1_000_000)) * text_input_rate
-            + (Decimal(cached_tokens) / Decimal(1_000_000)) * text_cached_rate
+            input_cost_usd
             + (Decimal(text_output_tokens) / Decimal(1_000_000)) * text_output_rate
-            + (Decimal(audio_input_tokens) / Decimal(1_000_000)) * audio_input_rate
-            + (Decimal(0) / Decimal(1_000_000)) * audio_cached_rate
             + (Decimal(audio_output_tokens) / Decimal(1_000_000)) * audio_output_rate
-            + (Decimal(image_input_tokens) / Decimal(1_000_000)) * image_input_rate
-            + (Decimal(0) / Decimal(1_000_000)) * image_cached_rate
         )
         provider_cost_microusd = int((provider_cost_usd * Decimal(1_000_000)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
         provider_cost_eur_cents = int(
@@ -225,6 +255,8 @@ class BillingService:
         )
         charged_eur = provider_cost_usd * Decimal(str(settings.billing_usd_to_eur)) * Decimal(str(settings.billing_margin_multiplier))
         charged_amount_cents = int((charged_eur * Decimal(100)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        normalized["allocated_cached_input_tokens"] = allocated_cached_total
+        normalized["unallocated_cached_input_tokens"] = max(remaining_cached, 0)
         return provider_cost_microusd, provider_cost_eur_cents, charged_amount_cents, normalized
 
     def record_usage(

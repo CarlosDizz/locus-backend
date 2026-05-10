@@ -32,6 +32,12 @@ async def get_ledger(
     current_user: UserResponse = Depends(get_current_user_required),
 ) -> list[LedgerEntryResponse]:
     entries = billing_service.list_ledger_entries(current_user.id, limit=limit, offset=offset)
+    usage_ids = [
+        int(entry.reference_id)
+        for entry in entries
+        if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit()
+    ]
+    usage_map = billing_service.get_usage_events_map(usage_ids)
     return [
         LedgerEntryResponse(
             id=entry.id,
@@ -41,6 +47,24 @@ async def get_ledger(
             description=entry.description,
             reference_type=entry.reference_type,
             reference_id=entry.reference_id,
+            usage_interaction_type=usage_map.get(int(entry.reference_id)).interaction_type
+            if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit() and int(entry.reference_id) in usage_map
+            else None,
+            usage_source=usage_map.get(int(entry.reference_id)).source
+            if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit() and int(entry.reference_id) in usage_map
+            else None,
+            usage_endpoint=usage_map.get(int(entry.reference_id)).endpoint
+            if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit() and int(entry.reference_id) in usage_map
+            else None,
+            usage_audio_input_tokens=usage_map.get(int(entry.reference_id)).audio_input_tokens
+            if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit() and int(entry.reference_id) in usage_map
+            else None,
+            usage_audio_output_tokens=usage_map.get(int(entry.reference_id)).audio_output_tokens
+            if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit() and int(entry.reference_id) in usage_map
+            else None,
+            usage_image_input_tokens=usage_map.get(int(entry.reference_id)).image_input_tokens
+            if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit() and int(entry.reference_id) in usage_map
+            else None,
             created_at=entry.created_at,
         )
         for entry in entries

@@ -74,6 +74,14 @@ class BillingService:
             )
             return list(db.scalars(stmt).all())
 
+    def get_usage_events_map(self, usage_ids: list[int]) -> dict[int, UsageEvent]:
+        if not usage_ids:
+            return {}
+        with session_scope() as db:
+            stmt = select(UsageEvent).where(UsageEvent.id.in_(usage_ids))
+            events = list(db.scalars(stmt).all())
+            return {event.id: event for event in events}
+
     def list_usage_events(self, user_id: int, limit: int = 100) -> list[UsageEvent]:
         with session_scope() as db:
             stmt: Select[tuple[UsageEvent]] = (

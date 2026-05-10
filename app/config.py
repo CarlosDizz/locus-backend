@@ -123,6 +123,7 @@ class Settings:
     billing_usd_to_eur: float = float(os.getenv("BILLING_USD_TO_EUR", "1.00"))
     billing_signup_bonus_cents: int = int(os.getenv("BILLING_SIGNUP_BONUS_CENTS", "200"))
     billing_min_reserve_cents: int = int(os.getenv("BILLING_MIN_RESERVE_CENTS", "25"))
+    billing_min_realtime_call_charge_cents: int = int(os.getenv("BILLING_MIN_REALTIME_CALL_CHARGE_CENTS", "3"))
 
     legacy_gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     legacy_livekit_url: str = os.getenv("LIVEKIT_URL", "")

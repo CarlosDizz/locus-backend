@@ -129,6 +129,41 @@ class BillingService:
             )
             return topup
 
+    def _is_realtime_call_event(self, metadata: dict) -> bool:
+        return (
+            str(metadata.get("interaction_type") or "").strip() == "realtime_call"
+            and str(metadata.get("call_id") or "").strip() != ""
+        )
+
+    def _list_realtime_call_usage_events(self, db: Session, *, user_id: int, call_id: str) -> list[UsageEvent]:
+        stmt: Select[tuple[UsageEvent]] = (
+            select(UsageEvent)
+            .where(UsageEvent.bill_to_user_id == user_id)
+            .where(UsageEvent.source == "call_room")
+            .where(UsageEvent.interaction_type == "realtime_call")
+            .order_by(UsageEvent.id.asc())
+        )
+        events = list(db.scalars(stmt).all())
+        return [event for event in events if str((event.metadata_json or {}).get("call_id") or "") == call_id]
+
+    def _microusd_to_provider_eur_cents(self, provider_cost_microusd: int) -> int:
+        provider_cost_usd = Decimal(provider_cost_microusd) / Decimal(1_000_000)
+        return int(
+            (provider_cost_usd * Decimal(str(settings.billing_usd_to_eur)) * Decimal(100)).quantize(
+                Decimal("1"),
+                rounding=ROUND_HALF_UP,
+            )
+        )
+
+    def _microusd_to_charged_cents(self, provider_cost_microusd: int) -> int:
+        provider_cost_usd = Decimal(provider_cost_microusd) / Decimal(1_000_000)
+        return int(
+            (provider_cost_usd * Decimal(str(settings.billing_usd_to_eur)) * Decimal(str(settings.billing_margin_multiplier)) * Decimal(100)).quantize(
+                Decimal("1"),
+                rounding=ROUND_HALF_UP,
+            )
+        )
+
     def get_active_price(self, db: Session, provider: str, endpoint: str, model: str) -> PriceSnapshot | None:
         stmt = (
             select(PriceSnapshot)
@@ -286,6 +321,22 @@ class BillingService:
                 price=price,
                 usage=usage,
             )
+
+            if self._is_realtime_call_event(event_metadata):
+                call_id = str(event_metadata.get("call_id") or "").strip()
+                previous_events = self._list_realtime_call_usage_events(db, user_id=user_id, call_id=call_id)
+                previous_provider_cost_microusd = sum(int(event.provider_cost_microusd or 0) for event in previous_events)
+                previous_charged_cents = sum(int(event.charged_amount_cents or 0) for event in previous_events)
+                total_provider_cost_microusd = previous_provider_cost_microusd + provider_cost_microusd
+                total_call_charge_cents = self._microusd_to_charged_cents(total_provider_cost_microusd)
+                if total_provider_cost_microusd > 0:
+                    total_call_charge_cents = max(settings.billing_min_realtime_call_charge_cents, total_call_charge_cents)
+                charged_amount_cents = max(total_call_charge_cents - previous_charged_cents, 0)
+                event_metadata["call_charge_mode"] = "aggregated_by_call"
+                event_metadata["call_total_provider_cost_microusd"] = total_provider_cost_microusd
+                event_metadata["call_total_charge_cents"] = total_call_charge_cents
+                event_metadata["call_previous_charge_cents"] = previous_charged_cents
+
             if charged_amount_cents > wallet.balance_cents:
                 event_metadata["partial_charge"] = True
                 event_metadata["requested_charge_cents"] = charged_amount_cents

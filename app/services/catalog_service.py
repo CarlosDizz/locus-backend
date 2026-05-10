@@ -26,6 +26,8 @@ class CatalogError(RuntimeError):
 
 
 class CatalogService:
+    MIN_BOOTSTRAP_POI_COUNT = 12
+
     def __init__(self) -> None:
         self.logger = get_logger(__name__)
         self._enrichment_lock = threading.Lock()
@@ -472,8 +474,9 @@ class CatalogService:
             city = self.bootstrap_city(city_name, country_code)
 
         pois = self.list_pois(city_id=city.id, limit=limit)
-        if pois:
-            return city, 0, 0, 0, {"source": "existing_catalog"}, pois
+        existing_poi_count = len(pois)
+        if existing_poi_count >= self.MIN_BOOTSTRAP_POI_COUNT:
+            return city, 0, 0, 0, {"source": "existing_catalog", "existing_poi_count": existing_poi_count}, pois
 
         imported_count, updated_count, skipped_count, stats, pois, _city_name = self.import_city_pois(
             city_id=city.id,
@@ -481,6 +484,8 @@ class CatalogService:
             limit=limit,
             use_ai_candidates=use_ai_candidates,
         )
+        stats["source"] = "existing_catalog_reimport" if existing_poi_count else "fresh_import"
+        stats["existing_poi_count"] = existing_poi_count
         if use_ai_candidates:
             self.start_pending_enrichment(city.id, min(limit, 150))
         return city, imported_count, updated_count, skipped_count, stats, pois

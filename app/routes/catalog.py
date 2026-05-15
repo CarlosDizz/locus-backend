@@ -9,6 +9,7 @@ from app.schemas.catalog import (
     CityCreateRequest,
     CityPoiImportRequest,
     CityPoiImportResponse,
+    PoiAccessLinksResponse,
     CityResponse,
     PoiDocumentationResponse,
     PoiCreateRequest,
@@ -18,6 +19,7 @@ from app.schemas.catalog import (
 )
 from app.services.catalog_service import CatalogError, catalog_service
 from app.services.poi_service import poi_service
+from app.services.referral_service import referral_service
 
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
@@ -113,6 +115,20 @@ async def get_poi_documentation(poi_id: int) -> PoiDocumentationResponse:
         documentation=documentation,
         resolved_from_catalog=True,
     )
+
+
+@router.get("/pois/{poi_id}/access-links", response_model=PoiAccessLinksResponse)
+async def get_poi_access_links(poi_id: int) -> PoiAccessLinksResponse:
+    try:
+        poi = catalog_service.get_poi(poi_id)
+    except CatalogError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    city_name = ""
+    if poi.city_id is not None:
+        cities = catalog_service.list_cities(limit=500)
+        city_name = next((city.name for city in cities if city.id == poi.city_id), "")
+    return PoiAccessLinksResponse(**referral_service.poi_access_links(poi, city_name=city_name))
 
 
 @router.post("/pois", response_model=PoiResponse)

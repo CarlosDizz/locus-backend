@@ -107,6 +107,24 @@ class PoiDocumentationResponse(BaseModel):
     resolved_from_catalog: bool = False
 
 
+class PoiAccessLinkResponse(BaseModel):
+    title: str
+    description: str
+    url: str
+    kind: str
+    query: str
+    provider: str
+    tracking_status: str
+
+
+class PoiAccessLinksResponse(BaseModel):
+    poi_id: int
+    poi_name: str
+    eligible: bool
+    reason: str
+    links: list[PoiAccessLinkResponse] = Field(default_factory=list)
+
+
 class CityPoiImportRequest(BaseModel):
     radius_km: float = Field(default=8.0, gt=0, le=50)
     limit: int = Field(default=40, gt=0, le=150)

@@ -125,6 +125,11 @@ class Settings:
     billing_min_reserve_cents: int = int(os.getenv("BILLING_MIN_RESERVE_CENTS", "25"))
     billing_min_realtime_call_charge_cents: int = int(os.getenv("BILLING_MIN_REALTIME_CALL_CHARGE_CENTS", "3"))
 
+    getyourguide_referrals_enabled: bool = _bool_env("GETYOURGUIDE_REFERRALS_ENABLED", True)
+    getyourguide_partner_id: str = os.getenv("GETYOURGUIDE_PARTNER_ID", "")
+    getyourguide_referral_url_template: str = os.getenv("GETYOURGUIDE_REFERRAL_URL_TEMPLATE", "")
+    getyourguide_search_base_url: str = os.getenv("GETYOURGUIDE_SEARCH_BASE_URL", "https://www.getyourguide.com/s/")
+
     legacy_gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     legacy_livekit_url: str = os.getenv("LIVEKIT_URL", "")
     legacy_livekit_api_key: str = os.getenv("LIVEKIT_API_KEY", "")

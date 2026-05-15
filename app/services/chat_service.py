@@ -15,6 +15,7 @@ from app.services.session_service import session_service
 from app.services.tool_runtime_service import tool_runtime_service
 from app.tools.knowledge_tools import get_knowledge_tool_manifest
 from app.tools.poi_tools import get_poi_tool_manifest
+from app.tools.referral_tools import get_referral_tool_manifest
 from app.tools.session_tools import get_session_tool_manifest
 from app.utils.logging import get_logger
 from app.utils.text import clean_text, slugify
@@ -274,6 +275,7 @@ class ChatService:
             *get_session_tool_manifest(),
             *get_poi_tool_manifest(),
             *get_knowledge_tool_manifest(include_web_research_tool=False),
+            *get_referral_tool_manifest(),
         ]
         if include_web_search:
             tools.append(

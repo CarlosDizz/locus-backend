@@ -12,6 +12,7 @@ from app.schemas.poi import POI
 from app.schemas.catalog import CityCreateRequest, PoiCreateRequest
 from app.services.catalog_service import CatalogError, catalog_service
 from app.services.poi_service import poi_service
+from app.services.referral_service import referral_service
 from app.services.session_service import session_service
 from app.utils.text import clean_text, slugify
 
@@ -33,6 +34,7 @@ class ToolRuntimeService:
             "resolve_poi_facts": self._resolve_poi_facts,
             "search_wikipedia": self._search_wikipedia,
             "search_web_facts": self._search_web_facts,
+            "search_access_referrals": self._search_access_referrals,
         }
         handler = handlers.get(tool_name)
         if handler is None:
@@ -681,6 +683,16 @@ class ToolRuntimeService:
             "sources": sources[: max(1, min(max_results, 8))],
             "source_policy": "Resumen apoyado en busqueda web integrada de OpenAI. Prioriza fuentes oficiales, turismo institucional, patrimonio local y prensa local fiable. Si las fuentes discrepan, dilo con prudencia y no inventes.",
         }
+
+    def _search_access_referrals(self, session_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return referral_service.activity_referrals(
+            session_id=session_id,
+            query=clean_text(arguments.get("query") or ""),
+            poi_name=clean_text(arguments.get("poi_name") or ""),
+            city_name=clean_text(arguments.get("city_name") or ""),
+            intent=clean_text(arguments.get("intent") or ""),
+            max_results=int(arguments.get("max_results", 3) or 3),
+        )
 
 
 tool_runtime_service = ToolRuntimeService()

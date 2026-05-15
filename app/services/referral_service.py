@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+import re
+import unicodedata
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
+from app.clients.openai_client import OpenAIClient, OpenAIClientError
 from app.config import settings
 from app.schemas.catalog import PoiResponse
 from app.services.session_service import session_service
@@ -126,7 +129,7 @@ class ReferralService:
         clean_query = clean_text(query)
         clean_poi = clean_text(poi_name or (session.active_poi.name if session.active_poi else ""))
         clean_city = clean_text(city_name)
-        search_text = clean_text(" ".join(part for part in [clean_query, clean_poi, clean_city] if part))
+        search_text = self._compose_search_text(clean_query, clean_poi, clean_city)
         if not search_text:
             return {"ok": False, "error": "query_required", "message": "Falta una busqueda concreta."}
 
@@ -149,6 +152,25 @@ class ReferralService:
                 "ok": False,
                 "error": "guided_visit_competes_with_locus",
                 "message": "No recomiendes visitas guiadas culturales normales: esa experiencia la cubre Locus. Ofrece entradas, pases o transporte si aplica.",
+            }
+
+        web_links = self._search_getyourguide_product_links(
+            query=search_text,
+            poi_name=clean_poi,
+            city_name=clean_city,
+            intent=intent,
+            max_results=max_results,
+        )
+        if web_links:
+            return {
+                "ok": True,
+                "provider": "getyourguide_websearch",
+                "query": search_text,
+                "links": [link.__dict__ for link in web_links],
+                "policy": (
+                    "Estos enlaces vienen de paginas concretas encontradas en GetYourGuide mediante busqueda web. "
+                    "Presentalos por titulo, no como busqueda. Si dudas de encaje, ofrece tambien contrastar la web oficial."
+                ),
             }
 
         return {
@@ -254,6 +276,210 @@ class ReferralService:
         query.setdefault("partner_id", settings.getyourguide_partner_id)
         query.setdefault("utm_medium", "travel_agent")
         return urlunparse(parsed._replace(query=urlencode(query)))
+
+    def _search_getyourguide_product_links(
+        self,
+        *,
+        query: str,
+        poi_name: str,
+        city_name: str,
+        intent: str,
+        max_results: int,
+    ) -> list[AccessReferralLink]:
+        client = OpenAIClient()
+        if not client.is_configured():
+            return []
+
+        web_tool: dict = {
+            "type": "web_search",
+            "user_location": {
+                "type": "approximate",
+                "country": "ES",
+                "timezone": "Europe/Madrid",
+            },
+            "filters": {"allowed_domains": ["getyourguide.es", "getyourguide.com"]},
+        }
+        try:
+            response = client.create_response(
+                model=client.chat_model(),
+                instructions=(
+                    "Busca solo paginas concretas de producto en GetYourGuide para entradas, pases, tickets, "
+                    "transporte turistico o experiencias fisicas. No devuelvas paginas de busqueda, categorias, "
+                    "ciudades ni articulos. La ciudad indicada es obligatoria: si el producto no esta en esa ciudad "
+                    "o no menciona claramente el lugar buscado, no sirve. Evita visitas guiadas culturales normales "
+                    "si no aportan acceso fisico."
+                ),
+                input_items=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    f"Encuentra productos concretos de GetYourGuide para: {query}\n"
+                                    f"Ciudad obligatoria: {city_name or '(sin ciudad)'}\n"
+                                    f"Lugar/POI obligatorio: {poi_name or query}\n"
+                                    f"Intencion: {intent or 'access'}\n"
+                                    "Prioriza paginas de producto con entrada, pase, ticket, acceso sin cola, bus, barco, "
+                                    "tren turistico, teleferico o transporte. No devuelvas experiencias generales de la ciudad "
+                                    "si no son para el lugar/POI pedido. Si no hay producto claro de ese lugar en esa ciudad, no inventes."
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                tools=[web_tool],
+                max_output_tokens=220,
+                extra_payload={"include": ["web_search_call.action.sources"]},
+            )
+        except OpenAIClientError as exc:
+            print(f"getyourguide_websearch_failed query={query} error={exc}", flush=True)
+            return []
+
+        candidates = self._extract_web_sources(response)
+        links: list[AccessReferralLink] = []
+        seen_urls: set[str] = set()
+        for source in candidates:
+            url = clean_text(source.get("url", ""))
+            title = clean_text(source.get("title", ""))
+            if not self._is_getyourguide_product_url(url):
+                continue
+            if not self._source_matches_place(title=title, url=url, poi_name=poi_name, city_name=city_name, query=query):
+                continue
+            if self._looks_like_guided_visit(f"{title} {unquote(url)}"):
+                continue
+            final_url = self._decorate_url(url, provider="getyourguide")
+            if final_url in seen_urls:
+                continue
+            seen_urls.add(final_url)
+            links.append(
+                AccessReferralLink(
+                    title=title or self._title_from_url(url),
+                    description="Producto concreto encontrado en GetYourGuide.",
+                    url=final_url,
+                    kind=self._infer_link_kind(f"{intent} {title} {url}"),
+                    query=query,
+                    provider="getyourguide",
+                    tracking_status="tracked" if "partner_id=" in final_url else "untracked",
+                )
+            )
+            if len(links) >= max(1, min(max_results, 5)):
+                break
+        return links
+
+    def _extract_web_sources(self, response: dict) -> list[dict[str, str]]:
+        collected: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in response.get("output", []) or []:
+            if item.get("type") == "web_search_call":
+                action = item.get("action") or {}
+                for source in action.get("sources", []) or []:
+                    url = clean_text(str(source.get("url") or ""))
+                    if url and url not in seen:
+                        seen.add(url)
+                        collected.append({"title": clean_text(str(source.get("title") or "")), "url": url})
+            if item.get("type") != "message":
+                continue
+            for content in item.get("content", []) or []:
+                for annotation in content.get("annotations", []) or []:
+                    if annotation.get("type") != "url_citation":
+                        continue
+                    url = clean_text(str(annotation.get("url") or ""))
+                    if url and url not in seen:
+                        seen.add(url)
+                        collected.append({"title": clean_text(str(annotation.get("title") or "")), "url": url})
+        return collected
+
+    def _is_getyourguide_product_url(self, url: str) -> bool:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower()
+        if "getyourguide." not in host:
+            return False
+        if path.startswith("/s/") or path in {"", "/", "/es-es/"}:
+            return False
+        if "/c/" in path or re.search(r"/[a-z]{2}(?:-[a-z]{2})?/(?:all-activities|things-to-do|s)/", path):
+            return False
+        return bool(re.search(r"-t\d+(?:/|$)", path))
+
+    def _source_matches_place(self, *, title: str, url: str, poi_name: str, city_name: str, query: str) -> bool:
+        text = self._normalize_search_text(f"{title} {unquote(url)}")
+        city_aliases = self._city_aliases(city_name)
+        if city_aliases and not any(alias in text for alias in city_aliases):
+            return False
+
+        place_tokens = self._meaningful_tokens(poi_name) or self._meaningful_tokens(query)
+        if place_tokens and not self._has_enough_place_overlap(text, place_tokens):
+            return False
+        return True
+
+    def _city_aliases(self, city_name: str) -> list[str]:
+        city = self._normalize_search_text(city_name)
+        if not city:
+            return []
+        aliases = {
+            "roma": ["roma", "rome"],
+            "florencia": ["florencia", "florence", "firenze"],
+            "venecia": ["venecia", "venice", "venezia"],
+            "napoles": ["napoles", "napoli", "naples"],
+            "milan": ["milan", "milano"],
+        }
+        return aliases.get(city, [city])
+
+    def _meaningful_tokens(self, text: str) -> list[str]:
+        stopwords = {
+            "entrada", "entradas", "ticket", "tickets", "pase", "pases", "precio", "precios",
+            "tarifa", "tarifas", "comprar", "reserva", "reservar", "museo", "municipal",
+            "de", "del", "la", "el", "los", "las", "para", "por", "con", "sin", "y", "en",
+        }
+        normalized = self._normalize_search_text(text)
+        return [
+            token
+            for token in re.split(r"[^a-z0-9]+", normalized)
+            if len(token) >= 4 and token not in stopwords
+        ][:8]
+
+    def _has_enough_place_overlap(self, text: str, place_tokens: list[str]) -> bool:
+        if not place_tokens:
+            return True
+        matches = [token for token in place_tokens if token in text]
+        if len(place_tokens) == 1:
+            return bool(matches)
+        required = 2 if len(place_tokens) >= 2 else 1
+        return len(matches) >= required
+
+    def _normalize_search_text(self, text: str) -> str:
+        normalized = unicodedata.normalize("NFKD", clean_text(text).lower())
+        return "".join(char for char in normalized if not unicodedata.combining(char))
+
+    def _title_from_url(self, url: str) -> str:
+        path = unquote(urlparse(url).path)
+        slug = path.strip("/").split("/")[-1]
+        slug = re.sub(r"-t\d+$", "", slug)
+        words = [word for word in slug.split("-") if word]
+        if not words:
+            return "Entrada o acceso en GetYourGuide"
+        return " ".join(words[:12]).capitalize()
+
+    def _infer_link_kind(self, text: str) -> str:
+        lowered = text.lower()
+        if any(term in lowered for term in self.mobility_terms):
+            return "transport"
+        if any(term in lowered for term in self.attraction_terms):
+            return "pass"
+        return "ticket"
+
+    def _compose_search_text(self, query: str, poi_name: str, city_name: str) -> str:
+        parts: list[str] = []
+        for part in [query, poi_name, city_name]:
+            clean_part = clean_text(part)
+            if not clean_part:
+                continue
+            lowered_part = clean_part.lower()
+            if any(lowered_part in existing.lower() or existing.lower() in lowered_part for existing in parts):
+                continue
+            parts.append(clean_part)
+        return clean_text(" ".join(parts))
 
     def _looks_like_guided_visit(self, text: str) -> bool:
         lowered = text.lower()

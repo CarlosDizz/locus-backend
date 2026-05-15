@@ -9,6 +9,7 @@ from app.clients.openai_client import OpenAIClient, OpenAIClientError
 from app.config import settings
 from app.schemas.catalog import PoiResponse
 from app.services.session_service import session_service
+from app.utils.logging import get_logger
 from app.utils.text import clean_text
 
 
@@ -24,6 +25,9 @@ class AccessReferralLink:
 
 
 class ReferralService:
+    def __init__(self) -> None:
+        self.logger = get_logger(__name__)
+
     ticket_terms = [
         "museo",
         "museum",
@@ -118,7 +122,17 @@ class ReferralService:
         intent: str = "",
         max_results: int = 3,
     ) -> dict:
+        self._log(
+            "tool_start",
+            session_id=session_id,
+            query=query,
+            poi_name=poi_name,
+            city_name=city_name,
+            intent=intent,
+            max_results=max_results,
+        )
         if not settings.getyourguide_referrals_enabled:
+            self._log("tool_disabled", session_id=session_id)
             return {
                 "ok": False,
                 "error": "referrals_disabled",
@@ -130,7 +144,9 @@ class ReferralService:
         clean_poi = clean_text(poi_name or (session.active_poi.name if session.active_poi else ""))
         clean_city = clean_text(city_name)
         search_text = self._compose_search_text(clean_query, clean_poi, clean_city)
+        self._log("tool_context", session_id=session_id, search_text=search_text, clean_poi=clean_poi, clean_city=clean_city)
         if not search_text:
+            self._log("tool_error", session_id=session_id, error="query_required")
             return {"ok": False, "error": "query_required", "message": "Falta una busqueda concreta."}
 
         if session.active_poi is not None:
@@ -139,6 +155,7 @@ class ReferralService:
                 fallback_title=session.active_poi.name,
             )
             if curated_links:
+                self._log("tool_curated_links", session_id=session_id, count=len(curated_links))
                 return {
                     "ok": True,
                     "provider": "curated",
@@ -148,6 +165,7 @@ class ReferralService:
                 }
 
         if self._looks_like_guided_visit(search_text) and not self._looks_like_non_substitutable_experience(search_text):
+            self._log("tool_rejected", session_id=session_id, error="guided_visit_competes_with_locus", search_text=search_text)
             return {
                 "ok": False,
                 "error": "guided_visit_competes_with_locus",
@@ -162,6 +180,7 @@ class ReferralService:
             max_results=max_results,
         )
         if web_links:
+            self._log("tool_success", session_id=session_id, provider="getyourguide_websearch", count=len(web_links))
             return {
                 "ok": True,
                 "provider": "getyourguide_websearch",
@@ -173,6 +192,7 @@ class ReferralService:
                 ),
             }
 
+        self._log("tool_no_links", session_id=session_id, query=search_text)
         return {
             "ok": False,
             "error": "no_reliable_referral_link",
@@ -288,6 +308,7 @@ class ReferralService:
     ) -> list[AccessReferralLink]:
         client = OpenAIClient()
         if not client.is_configured():
+            self._log("websearch_skipped", reason="openai_not_configured", query=query)
             return []
 
         web_tool: dict = {
@@ -300,6 +321,7 @@ class ReferralService:
             "filters": {"allowed_domains": ["getyourguide.es", "getyourguide.com"]},
         }
         try:
+            self._log("websearch_start", query=query, poi_name=poi_name, city_name=city_name, intent=intent)
             response = client.create_response(
                 model=client.chat_model(),
                 instructions=(
@@ -333,25 +355,31 @@ class ReferralService:
                 extra_payload={"include": ["web_search_call.action.sources"]},
             )
         except OpenAIClientError as exc:
-            print(f"getyourguide_websearch_failed query={query} error={exc}", flush=True)
+            self._log("websearch_failed", query=query, error=str(exc))
             return []
 
         candidates = self._extract_web_sources(response)
+        self._log("websearch_sources", query=query, count=len(candidates), sources=[source.get("url", "") for source in candidates[:8]])
         links: list[AccessReferralLink] = []
         seen_urls: set[str] = set()
         for source in candidates:
             url = clean_text(source.get("url", ""))
             title = clean_text(source.get("title", ""))
             if not self._is_getyourguide_product_url(url):
+                self._log("candidate_rejected", reason="not_product_url", title=title, url=url)
                 continue
             if not self._source_matches_place(title=title, url=url, poi_name=poi_name, city_name=city_name, query=query):
+                self._log("candidate_rejected", reason="place_mismatch", title=title, url=url, poi_name=poi_name, city_name=city_name)
                 continue
             if self._looks_like_guided_visit(f"{title} {unquote(url)}"):
+                self._log("candidate_rejected", reason="guided_visit", title=title, url=url)
                 continue
             final_url = self._decorate_url(url, provider="getyourguide")
             if final_url in seen_urls:
+                self._log("candidate_rejected", reason="duplicate", title=title, url=url)
                 continue
             seen_urls.add(final_url)
+            self._log("candidate_accepted", title=title or self._title_from_url(url), url=final_url)
             links.append(
                 AccessReferralLink(
                     title=title or self._title_from_url(url),
@@ -366,6 +394,11 @@ class ReferralService:
             if len(links) >= max(1, min(max_results, 5)):
                 break
         return links
+
+    def _log(self, event: str, **payload) -> None:
+        message = "referral_tool " + " ".join(f"{key}={value!r}" for key, value in payload.items())
+        self.logger.warning("%s %s", event, message)
+        print(f"{event} {message}", flush=True)
 
     def _extract_web_sources(self, response: dict) -> list[dict[str, str]]:
         collected: list[dict[str, str]] = []

@@ -418,7 +418,34 @@ class ChatService:
                     arguments = json.loads(call.get("arguments", "{}") or "{}")
                 except json.JSONDecodeError:
                     arguments = {}
+                tool_name = call.get("name", "")
+                self.logger.warning(
+                    "chat_tool_call session=%s tool=%s arguments=%s",
+                    session_id,
+                    tool_name,
+                    json.dumps(arguments, ensure_ascii=False)[:1000],
+                )
+                print(
+                    "chat_tool_call "
+                    f"session={session_id} "
+                    f"tool={tool_name} "
+                    f"arguments={json.dumps(arguments, ensure_ascii=False)[:1000]}",
+                    flush=True,
+                )
                 output = tool_runtime_service.execute(session_id, call.get("name", ""), arguments)
+                self.logger.warning(
+                    "chat_tool_output session=%s tool=%s output=%s",
+                    session_id,
+                    tool_name,
+                    output[:1200],
+                )
+                print(
+                    "chat_tool_output "
+                    f"session={session_id} "
+                    f"tool={tool_name} "
+                    f"output={output[:1200]}",
+                    flush=True,
+                )
                 tool_outputs.append(
                     {
                         "type": "function_call_output",

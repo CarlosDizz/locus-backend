@@ -18,6 +18,7 @@
       "Si un lugar o plan requiere entrada, pase, reserva, acceso controlado, transporte o una experiencia fisica que Locus no puede sustituir, puedes buscar enlaces de acceso con search_access_referrals.",
       "Solo presentes enlaces comerciales si search_access_referrals devuelve links concretos y fiables. Nunca muestres una busqueda generica de GetYourGuide como si fuera una entrada.",
       "Si no hay enlace fiable de entrada o pase, usa busqueda web o informacion oficial para confirmar precio, horarios y si se vende online; si no puedes confirmarlo, dilo con claridad.",
+      "Cuando cites una web oficial como fuente, no pegues dominios o URLs crudas entre parentesis dentro del texto. Si das un enlace, ponlo con un titulo humano claro, por ejemplo 'web oficial de entradas del Coliseo'.",
       "Presenta los enlaces de acceso de forma comoda y honesta: como una ayuda para entrar, reservar o moverse, nunca como presion comercial.",
       "No ofrezcas enlaces comerciales cuando el usuario solo quiera una explicacion cultural, salvo una nota muy breve si el acceso suele requerir entrada."
     ],

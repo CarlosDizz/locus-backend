@@ -84,9 +84,14 @@ class ReferralService:
         "tour a pie",
         "walking tour",
         "visita guiada",
+        "visita en grupo",
         "guía privado",
         "guia privado",
+        "guia privada",
+        "guia exclusiva",
         "guided tour",
+        "tour sin colas",
+        "tour expres",
     ]
 
     def poi_access_links(self, poi: PoiResponse, *, city_name: str = "") -> dict:
@@ -161,7 +166,10 @@ class ReferralService:
                     "provider": "curated",
                     "query": search_text,
                     "links": [link.__dict__ for link in curated_links[: max(1, min(max_results, 5))]],
-                    "policy": "Estos son enlaces curados. Presentalos como acceso concreto, no como busqueda generica.",
+                    "policy": (
+                        "Estos son enlaces curados. Presentalos como acceso concreto, no como busqueda generica. "
+                        "Usa enlaces Markdown clicables con titulo humano: [titulo](url)."
+                    ),
                 }
 
         if self._looks_like_guided_visit(search_text) and not self._looks_like_non_substitutable_experience(search_text):
@@ -188,7 +196,8 @@ class ReferralService:
                 "links": [link.__dict__ for link in web_links],
                 "policy": (
                     "Estos enlaces vienen de paginas concretas encontradas en GetYourGuide mediante busqueda web. "
-                    "Presentalos por titulo, no como busqueda. Si dudas de encaje, ofrece tambien contrastar la web oficial."
+                    "Presentalos como enlaces Markdown clicables con titulo humano: [titulo](url), no como busqueda. "
+                    "No uses backticks para sustituir el enlace. Si dudas de encaje, ofrece tambien contrastar la web oficial."
                 ),
             }
 
@@ -289,12 +298,28 @@ class ReferralService:
         return links
 
     def _decorate_url(self, url: str, *, provider: str) -> str:
-        if provider != "getyourguide" or not settings.getyourguide_partner_id:
+        if provider != "getyourguide":
             return url
         parsed = urlparse(url)
-        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        query.setdefault("partner_id", settings.getyourguide_partner_id)
-        query.setdefault("utm_medium", "travel_agent")
+        ignored_tracking_keys = {
+            "visitor-id",
+            "utm_source",
+            "utm_campaign",
+            "utm_content",
+            "utm_term",
+            "cmp",
+            "currency",
+            "psrc",
+            "partner_id",
+        }
+        query = {
+            key: value
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key.lower() not in ignored_tracking_keys
+        }
+        if settings.getyourguide_partner_id:
+            query["partner_id"] = settings.getyourguide_partner_id
+            query["utm_medium"] = "travel_agent"
         return urlunparse(parsed._replace(query=urlencode(query)))
 
     def _search_getyourguide_product_links(
@@ -371,7 +396,8 @@ class ReferralService:
             if not self._source_matches_place(title=title, url=url, poi_name=poi_name, city_name=city_name, query=query):
                 self._log("candidate_rejected", reason="place_mismatch", title=title, url=url, poi_name=poi_name, city_name=city_name)
                 continue
-            if self._looks_like_guided_visit(f"{title} {unquote(url)}"):
+            candidate_text = f"{title} {unquote(url)}"
+            if self._looks_like_guided_visit(candidate_text) and not self._looks_like_non_substitutable_experience(candidate_text):
                 self._log("candidate_rejected", reason="guided_visit", title=title, url=url)
                 continue
             final_url = self._decorate_url(url, provider="getyourguide")
@@ -442,7 +468,8 @@ class ReferralService:
             return False
 
         place_tokens = self._meaningful_tokens(poi_name) or self._meaningful_tokens(query)
-        if place_tokens and not self._has_enough_place_overlap(text, place_tokens):
+        expanded_place_tokens = self._expand_place_tokens(place_tokens)
+        if place_tokens and not self._has_enough_place_overlap(text, expanded_place_tokens, original_token_count=len(place_tokens)):
             return False
         return True
 
@@ -472,13 +499,34 @@ class ReferralService:
             if len(token) >= 4 and token not in stopwords
         ][:8]
 
-    def _has_enough_place_overlap(self, text: str, place_tokens: list[str]) -> bool:
+    def _expand_place_tokens(self, tokens: list[str]) -> list[str]:
+        aliases = {
+            "coliseo": ["coliseo", "colosseo", "colosseum", "coliseum"],
+            "colosseo": ["coliseo", "colosseo", "colosseum", "coliseum"],
+            "colosseum": ["coliseo", "colosseo", "colosseum", "coliseum"],
+            "coliseum": ["coliseo", "colosseo", "colosseum", "coliseum"],
+            "foro": ["foro", "forum"],
+            "forum": ["foro", "forum"],
+            "palatino": ["palatino", "palatine"],
+            "palatine": ["palatino", "palatine"],
+            "maggiore": ["maggiore", "mayor"],
+            "quirinale": ["quirinale", "quirinal"],
+        }
+        expanded: list[str] = []
+        for token in tokens:
+            for alias in aliases.get(token, [token]):
+                if alias not in expanded:
+                    expanded.append(alias)
+        return expanded
+
+    def _has_enough_place_overlap(self, text: str, place_tokens: list[str], *, original_token_count: int | None = None) -> bool:
         if not place_tokens:
             return True
         matches = [token for token in place_tokens if token in text]
-        if len(place_tokens) == 1:
+        token_count = original_token_count or len(place_tokens)
+        if token_count == 1:
             return bool(matches)
-        required = 2 if len(place_tokens) >= 2 else 1
+        required = 2 if token_count >= 2 else 1
         return len(matches) >= required
 
     def _normalize_search_text(self, text: str) -> str:
@@ -515,8 +563,12 @@ class ReferralService:
         return clean_text(" ".join(parts))
 
     def _looks_like_guided_visit(self, text: str) -> bool:
-        lowered = text.lower()
-        return any(term in lowered for term in self.guided_terms)
+        lowered = re.sub(r"[^a-z0-9]+", " ", self._normalize_search_text(text))
+        if any(re.sub(r"[^a-z0-9]+", " ", self._normalize_search_text(term)) in lowered for term in self.guided_terms):
+            return True
+        if re.search(r"\btour\b", lowered):
+            return True
+        return bool(re.search(r"\bcon\s+guia\b", lowered))
 
     def _looks_like_non_substitutable_experience(self, text: str) -> bool:
         lowered = text.lower()

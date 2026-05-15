@@ -279,6 +279,11 @@ class ToolRuntimeService:
             "palacio", "palace", "castillo", "castle", "puerta", "gate",
             "monumento", "monument", "alcázar", "alcazar", "foro", "anfiteatro",
             "arqueológico", "arqueologico", "archaeological",
+            "centro de interpretación", "centro de interpretacion", "interpretation centre",
+            "interpretation center", "centro de visitantes", "visitor centre", "visitor center",
+            "mirador", "viewpoint", "patrimonio", "heritage", "depósito", "deposito",
+            "depósitos", "depositos", "museo del agua", "industrial", "hidráulico",
+            "hidraulico", "sala de exposiciones", "exhibition hall",
         ]
         if any(term in combined for term in positive_terms):
             return True, "landmark_keyword"
@@ -290,15 +295,17 @@ class ToolRuntimeService:
 
     def _infer_catalog_type_code(self, poi: POI) -> str:
         combined = clean_text(f"{poi.name} {poi.description} {poi.summary}").lower()
+        if any(token in combined for token in ["centro de interpretación", "centro de interpretacion", "centro de visitantes", "visitor centre", "visitor center", "museo", "museum", "galería", "galeria", "gallery"]):
+            return "museum"
+        if any(token in combined for token in ["mirador", "viewpoint"]):
+            return "monument"
         if any(token in combined for token in ["teatro", "theatre", "theater", "palacio", "palace", "edificio"]):
             return "building"
-        if any(token in combined for token in ["museo", "museum", "galería", "galeria", "gallery"]):
-            return "museum"
         if any(token in combined for token in ["catedral", "iglesia", "church", "basílica", "basilica", "sinagoga", "synagogue"]):
             return "church"
         if any(token in combined for token in ["plaza", "square"]):
             return "square"
-        if any(token in combined for token in ["castillo", "castle", "monumento", "monument", "puerta", "gate", "alcázar", "alcazar"]):
+        if any(token in combined for token in ["castillo", "castle", "monumento", "monument", "puerta", "gate", "alcázar", "alcazar", "patrimonio", "depósito", "deposito", "depósitos", "depositos"]):
             return "monument"
         if any(token in combined for token in ["anfiteatro", "foro", "arqueológico", "arqueologico", "archaeological", "circo romano"]):
             return "archaeological_site"

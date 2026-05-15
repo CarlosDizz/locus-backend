@@ -37,11 +37,17 @@ class ChatService:
             "no esta en el mapa",
             "no está en el mapa",
             "falta en el mapa",
+            "falta este sitio",
+            "falta este lugar",
+            "deberia estar",
+            "debería estar",
             "me extraña",
             "entre las sugerencias",
             "entre los puntos de interes",
             "entre los puntos de interés",
             "en el mapa",
+            "punto de interes",
+            "punto de interés",
         ]
         return any(marker in lowered for marker in markers)
 
@@ -56,6 +62,19 @@ class ChatService:
             "quiero verlo",
             "verlo por fuera",
             "visitarlo",
+            "hacer una visita",
+            "hacer visita",
+            "se puede visitar",
+            "puedo visitarlo",
+            "puedo visitarla",
+            "merece la pena",
+            "vale la pena",
+            "voy a ir",
+            "ir al",
+            "ir a la",
+            "turistico",
+            "turístico",
+            "cultural",
         ]
         return any(marker in lowered for marker in markers)
 
@@ -137,8 +156,13 @@ class ChatService:
                 score += 4
             if poi.is_ephemeral:
                 score += 2
-            if "teatro" in poi_tokens or "museo" in poi_tokens or "catedral" in poi_tokens or "circo" in poi_tokens:
-                score += 1
+            cultural_tokens = {
+                "teatro", "museo", "catedral", "circo", "interpretacion", "interpretación",
+                "visitantes", "mirador", "patrimonio", "agua", "depositos", "depósitos",
+                "centro", "cultural", "arqueologico", "arqueológico",
+            }
+            if poi_tokens & cultural_tokens:
+                score += 2
             ranked.append((score, poi))
 
         ranked.sort(key=lambda item: item[0], reverse=True)

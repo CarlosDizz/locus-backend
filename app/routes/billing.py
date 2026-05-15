@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.deps.auth import get_current_user_required
 from app.schemas.auth import UserResponse
 from app.schemas.billing import (
+    GooglePlayTopUpRequest,
     LedgerEntryResponse,
     TopUpRequest,
     TopUpResponse,
@@ -109,6 +110,33 @@ async def create_topup(
             provider=payload.provider,
             provider_reference=payload.provider_reference,
             metadata=payload.metadata,
+        )
+    except BillingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return TopUpResponse(
+        id=topup.id,
+        amount_cents=topup.amount_cents,
+        bonus_cents=topup.bonus_cents,
+        provider=topup.provider,
+        provider_reference=topup.provider_reference,
+        status=topup.status,
+        created_at=topup.created_at,
+    )
+
+
+@router.post("/google-play/topups/confirm", response_model=TopUpResponse)
+async def confirm_google_play_topup(
+    payload: GooglePlayTopUpRequest,
+    current_user: UserResponse = Depends(get_current_user_required),
+) -> TopUpResponse:
+    try:
+        topup = billing_service.confirm_google_play_topup(
+            user_id=current_user.id,
+            product_id=payload.product_id,
+            purchase_token=payload.purchase_token,
+            order_id=payload.order_id,
+            package_name=payload.package_name,
+            raw_purchase=payload.raw_purchase,
         )
     except BillingError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

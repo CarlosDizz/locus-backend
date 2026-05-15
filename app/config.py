@@ -124,6 +124,10 @@ class Settings:
     billing_signup_bonus_cents: int = int(os.getenv("BILLING_SIGNUP_BONUS_CENTS", "200"))
     billing_min_reserve_cents: int = int(os.getenv("BILLING_MIN_RESERVE_CENTS", "25"))
     billing_min_realtime_call_charge_cents: int = int(os.getenv("BILLING_MIN_REALTIME_CALL_CHARGE_CENTS", "3"))
+    google_play_package_name: str = os.getenv("GOOGLE_PLAY_PACKAGE_NAME", "com.carlos.locusia")
+    google_play_verify_purchases: bool = _bool_env("GOOGLE_PLAY_VERIFY_PURCHASES", False)
+    google_play_service_account_json: str = os.getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "")
+    google_play_service_account_file: str = os.getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_FILE", "")
 
     getyourguide_referrals_enabled: bool = _bool_env("GETYOURGUIDE_REFERRALS_ENABLED", True)
     getyourguide_partner_id: str = os.getenv("GETYOURGUIDE_PARTNER_ID", "")

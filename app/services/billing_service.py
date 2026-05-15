@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
+import requests
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import service_account
 from sqlalchemy import Select, desc, select
 from sqlalchemy.orm import Session
 
@@ -18,6 +22,14 @@ class BillingError(RuntimeError):
 
 
 class BillingService:
+    google_play_topup_products = {
+        "locus_topup_1": 100,
+        "locus_topup_3": 300,
+        "locus_topup_5": 500,
+        "locus_topup_10": 1000,
+        "locus_topup_50": 5000,
+    }
+
     def get_wallet(self, user_id: int) -> Wallet | None:
         with session_scope() as db:
             return db.scalar(select(Wallet).where(Wallet.user_id == user_id))
@@ -127,7 +139,99 @@ class BillingService:
                 reference_id=str(topup.id),
                 metadata=metadata,
             )
+            db.refresh(topup)
             return topup
+
+    def confirm_google_play_topup(
+        self,
+        *,
+        user_id: int,
+        product_id: str,
+        purchase_token: str,
+        order_id: str = "",
+        package_name: str = "",
+        raw_purchase: dict | None = None,
+    ) -> TopUp:
+        amount_cents = self.google_play_topup_products.get(product_id)
+        if amount_cents is None:
+            raise BillingError("Producto de recarga no reconocido")
+        if not purchase_token.strip():
+            raise BillingError("Falta el token de compra de Google Play")
+
+        effective_package_name = package_name or settings.google_play_package_name
+        verification_payload = self._verify_google_play_purchase(
+            product_id=product_id,
+            purchase_token=purchase_token,
+            package_name=effective_package_name,
+        )
+
+        with session_scope() as db:
+            existing = db.scalar(
+                select(TopUp)
+                .where(TopUp.provider == "google_play")
+                .where(TopUp.provider_reference == purchase_token)
+            )
+            if existing is not None:
+                if existing.user_id != user_id:
+                    raise BillingError("Esta compra ya fue aplicada a otra cuenta")
+                db.refresh(existing)
+                return existing
+
+        return self.create_topup(
+            user_id=user_id,
+            amount_cents=amount_cents,
+            provider="google_play",
+            provider_reference=purchase_token,
+            metadata={
+                "product_id": product_id,
+                "order_id": order_id,
+                "package_name": effective_package_name,
+                "raw_purchase": raw_purchase or {},
+                "verification": verification_payload,
+            },
+        )
+
+    def _verify_google_play_purchase(self, *, product_id: str, purchase_token: str, package_name: str) -> dict:
+        if not settings.google_play_verify_purchases:
+            return {"status": "skipped", "reason": "GOOGLE_PLAY_VERIFY_PURCHASES=false"}
+
+        credentials = self._google_play_credentials()
+        credentials.refresh(GoogleAuthRequest())
+        url = (
+            "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/"
+            f"{package_name}/purchases/products/{product_id}/tokens/{purchase_token}"
+        )
+        response = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {credentials.token}"},
+            timeout=10,
+        )
+        if response.status_code >= 400:
+            raise BillingError(f"Google Play no ha validado la compra ({response.status_code})")
+
+        payload = response.json()
+        if payload.get("purchaseState") not in (None, 0):
+            raise BillingError("La compra de Google Play no esta completada")
+        return {
+            "status": "verified",
+            "purchase_state": payload.get("purchaseState"),
+            "consumption_state": payload.get("consumptionState"),
+            "acknowledgement_state": payload.get("acknowledgementState"),
+            "order_id": payload.get("orderId", ""),
+            "purchase_time_millis": payload.get("purchaseTimeMillis", ""),
+        }
+
+    def _google_play_credentials(self):
+        scopes = ["https://www.googleapis.com/auth/androidpublisher"]
+        if settings.google_play_service_account_json:
+            info = json.loads(settings.google_play_service_account_json)
+            return service_account.Credentials.from_service_account_info(info, scopes=scopes)
+        if settings.google_play_service_account_file:
+            return service_account.Credentials.from_service_account_file(
+                settings.google_play_service_account_file,
+                scopes=scopes,
+            )
+        raise BillingError("Faltan credenciales de Google Play para verificar compras")
 
     def _is_realtime_call_event(self, metadata: dict) -> bool:
         return (

@@ -44,6 +44,14 @@ class TopUpResponse(BaseModel):
     created_at: datetime
 
 
+class GooglePlayTopUpRequest(BaseModel):
+    product_id: str
+    purchase_token: str
+    order_id: str = ""
+    package_name: str = ""
+    raw_purchase: dict = Field(default_factory=dict)
+
+
 class UsageRecordRequest(BaseModel):
     session_id: str | None = None
     provider: str = "openai"

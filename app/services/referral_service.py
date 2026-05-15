@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import quote_plus, urlencode
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from app.config import settings
 from app.schemas.catalog import PoiResponse
@@ -84,26 +84,24 @@ class ReferralService:
 
     def poi_access_links(self, poi: PoiResponse, *, city_name: str = "") -> dict:
         profile = self._infer_poi_access_profile(poi)
-        if profile is None:
+        links = self._curated_links_from_metadata(poi.metadata or {}, fallback_title=poi.name)
+        if not links:
             return {
                 "poi_id": poi.id,
                 "poi_name": poi.name,
                 "eligible": False,
-                "reason": "Este POI parece mejor cubierto por la guia de Locus sin compra de acceso.",
+                "reason": (
+                    "No hay enlace de entrada o acceso curado para este POI. "
+                    "Mejor consultar fuente oficial antes que mostrar una busqueda generica."
+                ),
                 "links": [],
             }
 
-        links = self._build_links(
-            base_query=f"{profile['query_prefix']} {poi.name} {city_name}".strip(),
-            city_name=city_name,
-            limit=2,
-            kinds=[profile["kind"], "access"],
-        )
         return {
             "poi_id": poi.id,
             "poi_name": poi.name,
             "eligible": True,
-            "reason": profile["reason"],
+            "reason": profile["reason"] if profile else "Este POI tiene enlaces de acceso curados.",
             "links": [link.__dict__ for link in links],
         }
 
@@ -132,6 +130,20 @@ class ReferralService:
         if not search_text:
             return {"ok": False, "error": "query_required", "message": "Falta una busqueda concreta."}
 
+        if session.active_poi is not None:
+            curated_links = self._curated_links_from_metadata(
+                getattr(session.active_poi, "metadata", None) or {},
+                fallback_title=session.active_poi.name,
+            )
+            if curated_links:
+                return {
+                    "ok": True,
+                    "provider": "curated",
+                    "query": search_text,
+                    "links": [link.__dict__ for link in curated_links[: max(1, min(max_results, 5))]],
+                    "policy": "Estos son enlaces curados. Presentalos como acceso concreto, no como busqueda generica.",
+                }
+
         if self._looks_like_guided_visit(search_text) and not self._looks_like_non_substitutable_experience(search_text):
             return {
                 "ok": False,
@@ -139,21 +151,16 @@ class ReferralService:
                 "message": "No recomiendes visitas guiadas culturales normales: esa experiencia la cubre Locus. Ofrece entradas, pases o transporte si aplica.",
             }
 
-        kinds = self._kinds_for_intent(f"{intent} {search_text}")
-        links = self._build_links(
-            base_query=search_text,
-            city_name=clean_city,
-            limit=max_results,
-            kinds=kinds,
-        )
         return {
-            "ok": True,
-            "provider": "getyourguide",
+            "ok": False,
+            "error": "no_reliable_referral_link",
+            "provider": "curated",
             "query": search_text,
-            "links": [link.__dict__ for link in links],
-            "policy": (
-                "Presenta estos enlaces como acceso, pase o experiencia fisica que Locus no puede sustituir. "
-                "No los vendas como visita guiada cultural ni los fuerces si el usuario solo quiere contexto."
+            "links": [],
+            "message": (
+                "No tengo un enlace concreto y fiable de entrada/pase para este lugar. "
+                "No muestres busquedas genericas de GetYourGuide como si fueran entradas. "
+                "Consulta informacion oficial o busqueda web para precio, horarios y venta online."
             ),
         }
 
@@ -198,52 +205,55 @@ class ReferralService:
             }
         return None
 
-    def _build_links(self, *, base_query: str, city_name: str, limit: int, kinds: list[str]) -> list[AccessReferralLink]:
-        templates = {
-            "ticket": ("Entradas", "Busca entradas, acceso o reserva para este lugar.", "entradas {query}"),
-            "pass": ("Pases", "Opciones de pase o acceso para la atraccion.", "pases entradas {query}"),
-            "transport": ("Transporte y experiencias", "Actividades con transporte o experiencia fisica.", "{query} transporte tickets"),
-            "access": ("Acceso", "Comprueba disponibilidad antes de ir.", "{query} tickets"),
-        }
-        normalized_kinds = [kind for kind in kinds if kind in templates]
-        if not normalized_kinds:
-            normalized_kinds = ["ticket"]
+    def _curated_links_from_metadata(self, metadata: dict, *, fallback_title: str) -> list[AccessReferralLink]:
+        raw_links = metadata.get("access_links") or metadata.get("ticket_links") or []
+        if not isinstance(raw_links, list):
+            raw_links = []
+        single_url = clean_text(str(metadata.get("ticket_url") or metadata.get("official_ticket_url") or metadata.get("getyourguide_url") or ""))
+        if single_url:
+            raw_links = [
+                *raw_links,
+                {
+                    "title": f"Entradas para {fallback_title}",
+                    "description": "Enlace de acceso curado para este lugar.",
+                    "url": single_url,
+                    "kind": "ticket",
+                    "provider": "getyourguide" if "getyourguide." in single_url else "official",
+                },
+            ]
 
         links: list[AccessReferralLink] = []
-        seen_queries: set[str] = set()
-        for kind in normalized_kinds:
-            title, description, query_template = templates[kind]
-            query = clean_text(query_template.format(query=base_query, city=city_name))
-            if query.lower() in seen_queries:
+        seen_urls: set[str] = set()
+        for item in raw_links:
+            if not isinstance(item, dict):
                 continue
-            seen_queries.add(query.lower())
+            url = clean_text(str(item.get("url") or ""))
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            provider = clean_text(str(item.get("provider") or ("getyourguide" if "getyourguide." in url else "official")))
+            final_url = self._decorate_url(url, provider=provider)
             links.append(
                 AccessReferralLink(
-                    title=title,
-                    description=description,
-                    url=self._referral_url(query),
-                    kind=kind,
-                    query=query,
-                    tracking_status="tracked" if self._has_tracking_template() else "untracked",
+                    title=clean_text(str(item.get("title") or f"Entradas para {fallback_title}")),
+                    description=clean_text(str(item.get("description") or "Consulta acceso, precio y disponibilidad.")),
+                    url=final_url,
+                    kind=clean_text(str(item.get("kind") or "ticket")),
+                    query="",
+                    provider=provider,
+                    tracking_status="tracked" if provider == "getyourguide" and "partner_id=" in final_url else "official",
                 )
             )
-            if len(links) >= max(1, min(limit, 5)):
-                break
         return links
 
-    def _referral_url(self, query: str) -> str:
-        if self._has_tracking_template():
-            return settings.getyourguide_referral_url_template.format(
-                query=quote_plus(query),
-                partner_id=quote_plus(settings.getyourguide_partner_id),
-            )
-
-        separator = "&" if "?" in settings.getyourguide_search_base_url else "?"
-        return f"{settings.getyourguide_search_base_url}{separator}{urlencode({'q': query})}"
-
-    @staticmethod
-    def _has_tracking_template() -> bool:
-        return bool(settings.getyourguide_referral_url_template and settings.getyourguide_partner_id)
+    def _decorate_url(self, url: str, *, provider: str) -> str:
+        if provider != "getyourguide" or not settings.getyourguide_partner_id:
+            return url
+        parsed = urlparse(url)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query.setdefault("partner_id", settings.getyourguide_partner_id)
+        query.setdefault("utm_medium", "travel_agent")
+        return urlunparse(parsed._replace(query=urlencode(query)))
 
     def _looks_like_guided_visit(self, text: str) -> bool:
         lowered = text.lower()
@@ -262,19 +272,6 @@ class ReferralService:
             *self.mobility_terms,
         ]
         return any(term in lowered for term in allowed_terms)
-
-    def _kinds_for_intent(self, text: str) -> list[str]:
-        lowered = text.lower()
-        kinds: list[str] = []
-        if any(term in lowered for term in self.mobility_terms):
-            kinds.append("transport")
-        if any(term in lowered for term in self.attraction_terms):
-            kinds.append("pass")
-        if any(term in lowered for term in ["entrada", "ticket", "reserva", "museo", "catedral", "palacio", "yacimiento"]):
-            kinds.append("ticket")
-        if not kinds:
-            kinds.append("access")
-        return kinds
 
 
 referral_service = ReferralService()

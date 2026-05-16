@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.config import settings
 from app.deps.auth import get_current_user_required
 from app.schemas.auth import UserResponse
 from app.schemas.billing import (
@@ -103,6 +104,8 @@ async def create_topup(
     payload: TopUpRequest,
     current_user: UserResponse = Depends(get_current_user_required),
 ) -> TopUpResponse:
+    if not settings.billing_manual_topups_enabled:
+        raise HTTPException(status_code=403, detail="Las recargas manuales no están habilitadas")
     try:
         topup = billing_service.create_topup(
             user_id=current_user.id,

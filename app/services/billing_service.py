@@ -23,11 +23,10 @@ class BillingError(RuntimeError):
 
 class BillingService:
     google_play_topup_products = {
-        "locus_topup_1": 100,
-        "locus_topup_3": 300,
-        "locus_topup_5": 500,
-        "locus_topup_10": 1000,
-        "locus_topup_50": 5000,
+        "locus_top_up_1": 100,
+        "locus_top_up_3": 300,
+        "locus_top_up_5": 500,
+        "locus_top_up_10": 1000,
     }
 
     def get_wallet(self, user_id: int) -> Wallet | None:
@@ -197,13 +196,14 @@ class BillingService:
 
         credentials = self._google_play_credentials()
         credentials.refresh(GoogleAuthRequest())
+        headers = {"Authorization": f"Bearer {credentials.token}"}
         url = (
             "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/"
             f"{package_name}/purchases/products/{product_id}/tokens/{purchase_token}"
         )
         response = requests.get(
             url,
-            headers={"Authorization": f"Bearer {credentials.token}"},
+            headers=headers,
             timeout=10,
         )
         if response.status_code >= 400:
@@ -212,11 +212,28 @@ class BillingService:
         payload = response.json()
         if payload.get("purchaseState") not in (None, 0):
             raise BillingError("La compra de Google Play no esta completada")
+
+        consumed_by_server = False
+        if payload.get("consumptionState") != 1:
+            consume_url = (
+                "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/"
+                f"{package_name}/purchases/products/{product_id}/tokens/{purchase_token}:consume"
+            )
+            consume_response = requests.post(
+                consume_url,
+                headers=headers,
+                timeout=10,
+            )
+            if consume_response.status_code >= 400:
+                raise BillingError(f"Google Play no ha permitido consumir la compra ({consume_response.status_code})")
+            consumed_by_server = True
+
         return {
             "status": "verified",
             "purchase_state": payload.get("purchaseState"),
             "consumption_state": payload.get("consumptionState"),
             "acknowledgement_state": payload.get("acknowledgementState"),
+            "consumed_by_server": consumed_by_server,
             "order_id": payload.get("orderId", ""),
             "purchase_time_millis": payload.get("purchaseTimeMillis", ""),
         }

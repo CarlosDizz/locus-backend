@@ -144,6 +144,8 @@ class RealtimeService:
                 "Si reconoces el lugar, monumento, obra o detalle urbano, identificalo con seguridad prudente.",
                 "Si no puedes identificarlo con suficiente confianza, di lo que ves y pide un unico detalle corto para afinar.",
                 "Usa el contexto de la visita y el POI activo solo si realmente encajan con la imagen.",
+                "No inventes nombres propios, dedicatorias, placas, jugadores, autores, fechas ni inscripciones: solo mencionalos si se leen claramente en la imagen o vienen en el contexto.",
+                "Si una placa, cartel o detalle no se lee con seguridad, dilo de forma natural y describe lo visible sin completar el texto.",
                 "No inventes datos y no hables de modelos, tools, backend ni arquitectura interna.",
             ]
         )

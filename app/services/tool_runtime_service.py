@@ -10,6 +10,7 @@ from app.db.models import City, Poi
 from app.db.session import session_scope
 from app.schemas.poi import POI
 from app.schemas.catalog import CityCreateRequest, PoiCreateRequest
+from app.services.billing_service import BillingError, billing_service
 from app.services.catalog_service import CatalogError, catalog_service
 from app.services.poi_service import poi_service
 from app.services.referral_service import referral_service
@@ -605,7 +606,37 @@ class ToolRuntimeService:
             return {"ok": False, "error": f"No Wikipedia article found for: {query}"}
         return {"ok": True, "query": query, "summary": summary}
 
-    def _search_web_facts(self, _session_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _record_internal_openai_usage(
+        self,
+        *,
+        session_id: str,
+        response: dict,
+        model: str,
+        source: str,
+        interaction_type: str,
+    ) -> None:
+        session = session_service.get_or_create(session_id)
+        if session.user_id is None:
+            return
+        try:
+            billing_service.record_usage(
+                user_id=session.user_id,
+                session_id=session.session_id,
+                provider="openai",
+                endpoint="responses",
+                model=model,
+                response_id=str(response.get("id") or ""),
+                usage=response.get("usage", {}) or {},
+                metadata={
+                    "source": source,
+                    "interaction_type": interaction_type,
+                    "web_search_call_count": sum(1 for item in response.get("output") or [] if item.get("type") == "web_search_call"),
+                },
+            )
+        except BillingError:
+            return
+
+    def _search_web_facts(self, session_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
         query = clean_text(arguments.get("query") or "")
         preferred_domains = arguments.get("preferred_domains") or []
         max_results = int(arguments.get("max_results", 5) or 5)
@@ -674,6 +705,13 @@ class ToolRuntimeService:
 
         summary = self._extract_openai_response_text(response)
         sources = self._extract_openai_web_sources(response)
+        self._record_internal_openai_usage(
+            session_id=session_id,
+            response=response,
+            model=client.chat_model(),
+            source="tool_runtime_search_web_facts",
+            interaction_type="tool_web_search",
+        )
         if not summary:
             return {
                 "ok": False,

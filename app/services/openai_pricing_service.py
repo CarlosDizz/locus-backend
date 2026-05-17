@@ -40,7 +40,32 @@ class ParsedPricing:
 
 class OpenAIPricingService:
     MODEL_DOC_TEMPLATE = "https://developers.openai.com/api/docs/models/{model}"
+    PRICING_PAGE_URL = "https://developers.openai.com/api/docs/pricing"
     STALE_AFTER = timedelta(days=3)
+    STATIC_MODEL_PRICING: dict[str, ParsedPricing] = {
+        "gpt-4o-transcribe": ParsedPricing(
+            model="gpt-4o-transcribe",
+            source_url=PRICING_PAGE_URL,
+            source_label="openai_pricing_page_static_transcription",
+            raw_source_hash="static:gpt-4o-transcribe:2026-05-17",
+            fetched_at=datetime.now(UTC),
+            text_input_per_million=Decimal("2.50"),
+            text_output_per_million=Decimal("10.00"),
+            audio_input_per_million=Decimal("2.50"),
+            audio_output_per_million=Decimal("10.00"),
+        ),
+        "gpt-4o-mini-transcribe": ParsedPricing(
+            model="gpt-4o-mini-transcribe",
+            source_url=PRICING_PAGE_URL,
+            source_label="openai_pricing_page_static_transcription",
+            raw_source_hash="static:gpt-4o-mini-transcribe:2026-05-17",
+            fetched_at=datetime.now(UTC),
+            text_input_per_million=Decimal("1.25"),
+            text_output_per_million=Decimal("5.00"),
+            audio_input_per_million=Decimal("1.25"),
+            audio_output_per_million=Decimal("5.00"),
+        ),
+    }
 
     def get_or_refresh_snapshot(self, db: Session, *, endpoint: str, model: str) -> PriceSnapshot:
         current = self._latest_snapshot(db, provider="openai", endpoint=endpoint, model=model)
@@ -153,6 +178,24 @@ class OpenAIPricingService:
         return db.scalar(stmt)
 
     def _fetch_model_pricing(self, model: str) -> ParsedPricing:
+        static_pricing = self.STATIC_MODEL_PRICING.get(model)
+        if static_pricing is not None:
+            return ParsedPricing(
+                model=static_pricing.model,
+                source_url=static_pricing.source_url,
+                source_label=static_pricing.source_label,
+                raw_source_hash=static_pricing.raw_source_hash,
+                fetched_at=datetime.now(UTC),
+                text_input_per_million=static_pricing.text_input_per_million,
+                text_cached_input_per_million=static_pricing.text_cached_input_per_million,
+                text_output_per_million=static_pricing.text_output_per_million,
+                audio_input_per_million=static_pricing.audio_input_per_million,
+                audio_cached_input_per_million=static_pricing.audio_cached_input_per_million,
+                audio_output_per_million=static_pricing.audio_output_per_million,
+                image_input_per_million=static_pricing.image_input_per_million,
+                image_cached_input_per_million=static_pricing.image_cached_input_per_million,
+            )
+
         url = self.MODEL_DOC_TEMPLATE.format(model=model)
         try:
             response = requests.get(

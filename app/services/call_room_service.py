@@ -200,6 +200,13 @@ class RealtimeBridge:
                             "instructions": prepared["instructions"],
                             "tools": prepared["tools"],
                             "tool_choice": "auto",
+                            "truncation": {
+                                "type": "retention_ratio",
+                                "retention_ratio": settings.openai_realtime_retention_ratio,
+                                "token_limits": {
+                                    "post_instructions": settings.openai_realtime_post_instructions_token_limit,
+                                },
+                            },
                             "output_modalities": ["audio"],
                             "audio": {
                                 "input": {
@@ -613,6 +620,26 @@ class CallRoomService:
             if event_type == "conversation.item.input_audio_transcription.completed":
                 transcript = str(event.get("transcript") or "").strip()
                 item = event.get("item_id")
+                usage = event.get("usage") or {}
+                if usage and item:
+                    try:
+                        billing_service.record_usage(
+                            user_id=room.host_user.id,
+                            session_id=room.host_session_id,
+                            provider="openai",
+                            endpoint="transcription",
+                            model=settings.openai_realtime_input_transcription_model,
+                            response_id=f"{room.call_id}:transcription:{item}",
+                            usage=usage,
+                            metadata={
+                                "source": "call_room",
+                                "interaction_type": "realtime_transcription",
+                                "call_id": room.call_id,
+                                "transcription_item_id": str(item),
+                            },
+                        )
+                    except BillingError:
+                        room.log.append(self._log_entry("error", "Sistema", "Saldo insuficiente para continuar la transcripción.", None))
                 if transcript:
                     speaker_user_id = room.last_turn_user_id
                     speaker_name = "Viajero"

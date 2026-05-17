@@ -102,6 +102,8 @@ class Settings:
     openai_realtime_voice: str = os.getenv("OPENAI_REALTIME_VOICE", "cedar")
     openai_realtime_secret_ttl_seconds: int = int(os.getenv("OPENAI_REALTIME_SECRET_TTL_SECONDS", "600"))
     openai_realtime_max_output_tokens: int = int(os.getenv("OPENAI_REALTIME_MAX_OUTPUT_TOKENS", "1400"))
+    openai_realtime_retention_ratio: float = float(os.getenv("OPENAI_REALTIME_RETENTION_RATIO", "0.80"))
+    openai_realtime_post_instructions_token_limit: int = int(os.getenv("OPENAI_REALTIME_POST_INSTRUCTIONS_TOKEN_LIMIT", "8000"))
     openai_realtime_input_transcription_model: str = os.getenv("OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe")
     openai_realtime_input_transcription_language: str = os.getenv("OPENAI_REALTIME_INPUT_TRANSCRIPTION_LANGUAGE", "es")
 
@@ -125,6 +127,7 @@ class Settings:
     billing_min_reserve_cents: int = int(os.getenv("BILLING_MIN_RESERVE_CENTS", "25"))
     billing_min_realtime_call_charge_cents: int = int(os.getenv("BILLING_MIN_REALTIME_CALL_CHARGE_CENTS", "3"))
     billing_manual_topups_enabled: bool = _bool_env("BILLING_MANUAL_TOPUPS_ENABLED", False)
+    billing_client_usage_recording_enabled: bool = _bool_env("BILLING_CLIENT_USAGE_RECORDING_ENABLED", False)
     google_play_package_name: str = os.getenv("GOOGLE_PLAY_PACKAGE_NAME", "com.carlos.locusia")
     google_play_verify_purchases: bool = _bool_env("GOOGLE_PLAY_VERIFY_PURCHASES", True)
     google_play_service_account_json: str = os.getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "")

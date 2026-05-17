@@ -159,6 +159,8 @@ async def record_usage(
     payload: UsageRecordRequest,
     current_user: UserResponse = Depends(get_current_user_required),
 ) -> UsageRecordResponse:
+    if not settings.billing_client_usage_recording_enabled:
+        raise HTTPException(status_code=403, detail="El registro de consumo desde cliente no está habilitado")
     try:
         usage_event, wallet = billing_service.record_usage(
             user_id=current_user.id,

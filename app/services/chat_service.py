@@ -400,6 +400,9 @@ class ChatService:
     def _extract_function_calls(self, response: dict) -> list[dict]:
         return [item for item in response.get("output", []) if item.get("type") == "function_call"]
 
+    def _count_web_search_calls(self, response: dict) -> int:
+        return sum(1 for item in response.get("output", []) if item.get("type") == "web_search_call")
+
     def _run_openai_chat(self, session_id: str, user_message: str) -> tuple[str, dict, dict]:
         flow_started_at = perf_counter()
         context_started_at = perf_counter()
@@ -581,6 +584,7 @@ class ChatService:
                         metadata={
                             "source": "chat_service",
                             "interaction_type": "chat",
+                            "web_search_call_count": self._count_web_search_calls(final_response),
                         },
                     )
             else:

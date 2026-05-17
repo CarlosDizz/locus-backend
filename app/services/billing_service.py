@@ -22,6 +22,8 @@ class BillingError(RuntimeError):
 
 
 class BillingService:
+    WEB_SEARCH_COST_MICROUSD = 10_000
+
     google_play_topup_products = {
         "locus_top_up_1": 100,
         "locus_top_up_3": 300,
@@ -415,6 +417,13 @@ class BillingService:
         normalized["unallocated_cached_input_tokens"] = max(remaining_cached, 0)
         return provider_cost_microusd, provider_cost_eur_cents, charged_amount_cents, normalized
 
+    def _extra_tool_cost_microusd(self, metadata: dict) -> int:
+        try:
+            web_search_calls = int(metadata.get("web_search_call_count", 0) or 0)
+        except (TypeError, ValueError):
+            web_search_calls = 0
+        return max(web_search_calls, 0) * self.WEB_SEARCH_COST_MICROUSD
+
     def record_usage(
         self,
         *,
@@ -442,6 +451,12 @@ class BillingService:
                 price=price,
                 usage=usage,
             )
+            extra_tool_cost_microusd = self._extra_tool_cost_microusd(event_metadata)
+            if extra_tool_cost_microusd > 0:
+                provider_cost_microusd += extra_tool_cost_microusd
+                provider_cost_eur_cents = self._microusd_to_provider_eur_cents(provider_cost_microusd)
+                charged_amount_cents = self._microusd_to_charged_cents(provider_cost_microusd)
+                event_metadata["extra_tool_provider_cost_microusd"] = extra_tool_cost_microusd
 
             if self._is_realtime_call_event(event_metadata):
                 call_id = str(event_metadata.get("call_id") or "").strip()

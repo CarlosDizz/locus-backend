@@ -8,6 +8,7 @@ from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 from app.clients.openai_client import OpenAIClient, OpenAIClientError
 from app.config import settings
 from app.schemas.catalog import PoiResponse
+from app.services.billing_service import BillingError, billing_service
 from app.services.session_service import session_service
 from app.utils.logging import get_logger
 from app.utils.text import clean_text
@@ -27,6 +28,28 @@ class AccessReferralLink:
 class ReferralService:
     def __init__(self) -> None:
         self.logger = get_logger(__name__)
+
+    def _record_internal_openai_usage(self, *, session_id: str, response: dict, model: str) -> None:
+        session = session_service.get_or_create(session_id)
+        if session.user_id is None:
+            return
+        try:
+            billing_service.record_usage(
+                user_id=session.user_id,
+                session_id=session.session_id,
+                provider="openai",
+                endpoint="responses",
+                model=model,
+                response_id=str(response.get("id") or ""),
+                usage=response.get("usage", {}) or {},
+                metadata={
+                    "source": "referral_service_getyourguide_websearch",
+                    "interaction_type": "tool_access_referral_search",
+                    "web_search_call_count": sum(1 for item in response.get("output") or [] if item.get("type") == "web_search_call"),
+                },
+            )
+        except BillingError:
+            return
 
     ticket_terms = [
         "museo",
@@ -181,6 +204,7 @@ class ReferralService:
             }
 
         web_links = self._search_getyourguide_product_links(
+            session_id=session_id,
             query=search_text,
             poi_name=clean_poi,
             city_name=clean_city,
@@ -325,6 +349,7 @@ class ReferralService:
     def _search_getyourguide_product_links(
         self,
         *,
+        session_id: str,
         query: str,
         poi_name: str,
         city_name: str,
@@ -382,6 +407,8 @@ class ReferralService:
         except OpenAIClientError as exc:
             self._log("websearch_failed", query=query, error=str(exc))
             return []
+
+        self._record_internal_openai_usage(session_id=session_id, response=response, model=client.chat_model())
 
         candidates = self._extract_web_sources(response)
         self._log("websearch_sources", query=query, count=len(candidates), sources=[source.get("url", "") for source in candidates[:8]])

@@ -26,8 +26,7 @@ class CatalogError(RuntimeError):
 
 
 class CatalogService:
-    MIN_BOOTSTRAP_POI_COUNT = 12
-    SPARSE_CATALOG_RETRY_POI_COUNT = 6
+    MIN_BOOTSTRAP_POI_COUNT = 40
 
     def __init__(self) -> None:
         self.logger = get_logger(__name__)
@@ -477,6 +476,12 @@ class CatalogService:
         pois = self.list_pois(city_id=city.id, limit=limit)
         existing_poi_count = len(pois)
         if existing_poi_count >= self.MIN_BOOTSTRAP_POI_COUNT:
+            self.logger.info(
+                "catalog_bootstrap_from_location city=%s existing=%s imported=0 updated=0 skipped=0 returned=%s source=existing_catalog",
+                city.name,
+                existing_poi_count,
+                len(pois),
+            )
             return city, 0, 0, 0, {"source": "existing_catalog", "existing_poi_count": existing_poi_count}, pois
 
         imported_count, updated_count, skipped_count, stats, pois, _city_name = self.import_city_pois(
@@ -488,7 +493,7 @@ class CatalogService:
         used_ai_fallback = False
         if (
             not use_ai_candidates
-            and len(pois) < self.SPARSE_CATALOG_RETRY_POI_COUNT
+            and len(pois) < self.MIN_BOOTSTRAP_POI_COUNT
         ):
             ai_imported, ai_updated, ai_skipped, ai_stats, ai_pois, _city_name = self.import_city_pois(
                 city_id=city.id,
@@ -500,7 +505,7 @@ class CatalogService:
             updated_count += ai_updated
             skipped_count += ai_skipped
             if ai_pois:
-                pois = ai_pois
+                pois = self.list_pois(city_id=city.id, limit=limit)
             stats = {
                 "source": "catalog_sources_then_ai_fallback",
                 "existing_poi_count": existing_poi_count,
@@ -514,6 +519,16 @@ class CatalogService:
             stats["existing_poi_count"] = existing_poi_count
         if use_ai_candidates or used_ai_fallback:
             self.start_pending_enrichment(city.id, min(limit, 150))
+        self.logger.info(
+            "catalog_bootstrap_from_location city=%s existing=%s imported=%s updated=%s skipped=%s returned=%s source=%s",
+            city.name,
+            existing_poi_count,
+            imported_count,
+            updated_count,
+            skipped_count,
+            len(pois),
+            stats.get("source"),
+        )
         return city, imported_count, updated_count, skipped_count, stats, pois
 
     def list_pois(
@@ -658,7 +673,7 @@ class CatalogService:
             "Devuelve candidatos de puntos de interés turísticos para una ciudad en JSON puro. "
             "No uses markdown, no expliques nada y no rellenes la lista si la ciudad tiene pocos sitios claros. "
             f"El límite superior es {limit}, pero puedes devolver menos. "
-            "Si la ciudad es muy turística, intenta acercarte a 20-40 candidatos distintos y específicos. "
+            "Si la ciudad es muy turística, intenta acercarte a 40-80 candidatos distintos y específicos, sin rellenar con sitios débiles. "
             "Prioriza lugares famosos, visitables o claramente reconocibles por viajeros. "
             "Incluye nombres alternativos útiles para resolver el sitio en Wikidata: nombre oficial, variante local o forma histórica breve. "
             "Si conoces con suficiente confianza una ubicación utilizable, devuelve lat y lng. "
@@ -1373,8 +1388,8 @@ LIMIT {fetch_limit}
 """
 
     def _build_overpass_map_query(self, city: City, radius_km: float, limit: int) -> str:
-        safe_limit = max(20, min(int(limit) * 4, 180))
-        safe_radius_m = int(min(max(radius_km, 1.5), 8.0) * 1000)
+        safe_limit = max(40, min(int(limit) * 5, 320))
+        safe_radius_m = int(min(max(radius_km, 1.5), 12.0) * 1000)
         return f"""
 [out:json][timeout:20];
 (

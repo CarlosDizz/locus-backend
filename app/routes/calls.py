@@ -6,6 +6,7 @@ from app.deps.auth import get_current_user_required
 from app.schemas.auth import UserResponse
 from app.schemas.call import CallActionResponse, CallCreateRequest, CallCreateResponse, CallJoinTokenResponse
 from app.services.auth_service import auth_service
+from app.services.billing_service import BillingError
 from app.services.call_room_service import CallRoomError, call_room_service
 
 
@@ -50,6 +51,8 @@ async def create_call(
         )
     except CallRoomError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except BillingError as exc:
+        raise HTTPException(status_code=402, detail=str(exc)) from exc
     return CallCreateResponse(call=call, join_token=join_token)
 
 

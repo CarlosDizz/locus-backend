@@ -97,7 +97,7 @@ class WikidataClient:
             )
         return labels
 
-    def run_sparql(self, query: str) -> list[dict[str, Any]]:
+    def run_sparql(self, query: str, timeout: int = 12) -> list[dict[str, Any]]:
         headers = {
             **self.headers,
             "Accept": "application/sparql-results+json",
@@ -106,7 +106,7 @@ class WikidataClient:
             self.sparql_url,
             params={"query": query, "format": "json"},
             headers=headers,
-            timeout=30,
+            timeout=timeout,
         )
         response.raise_for_status()
         return response.json().get("results", {}).get("bindings", [])

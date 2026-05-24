@@ -1945,16 +1945,12 @@ out center 10;
                     )
                 except RequestException as exc:
                     self.logger.warning(
-                        "catalog_import_wikidata_radius_failed city_id=%s existing_rows=%s elapsed_ms=%s error=%s",
+                        "catalog_import_wikidata_radius_failed city_id=%s existing_rows=%s elapsed_ms=%s continuing_with_overpass=true error=%s",
                         city.id,
                         len(bindings),
                         self._elapsed_ms(wikidata_radius_started_at),
                         exc,
                     )
-                    if not bindings:
-                        raise CatalogError(
-                            "Wikidata ha tardado demasiado al importar POIs. Prueba otra vez o reduce el radio de búsqueda."
-                        ) from exc
                 overpass_started_at = time.perf_counter()
                 try:
                     elements = self.overpass.query(self._build_overpass_map_query(city, radius_km=radius_km, limit=limit))
@@ -2111,6 +2107,42 @@ out center 10;
             selected_candidates = ranked_candidates[:limit]
             stats["ranked_candidate_count"] = len(ranked_candidates)
             stats["selected_candidate_count"] = len(selected_candidates)
+
+            if not selected_candidates and not use_ai_candidates and self.openai.is_configured():
+                fallback_started_at = time.perf_counter()
+                try:
+                    fallback_ai_candidates = self._generate_ai_candidates(city, limit=min(limit, 150))
+                except CatalogError as exc:
+                    self.logger.warning(
+                        "catalog_import_ai_last_resort_failed city_id=%s elapsed_ms=%s error=%s",
+                        city.id,
+                        self._elapsed_ms(fallback_started_at),
+                        exc,
+                    )
+                    fallback_ai_candidates = []
+
+                if fallback_ai_candidates:
+                    imported_count, updated_count, skipped_count, imported_rows, fallback_stats = self._upsert_ai_seed_candidates(
+                        db,
+                        city,
+                        type_lookup,
+                        fallback_ai_candidates,
+                        min(limit, 150),
+                    )
+                    fallback_stats["source"] = "ai_last_resort_after_empty_catalog_sources"
+                    fallback_stats["catalog_attempt"] = stats
+                    self.logger.info(
+                        "catalog_import_ai_last_resort_done city_id=%s proposed=%s imported=%s updated=%s skipped=%s returned=%s elapsed_ms=%s total_elapsed_ms=%s",
+                        city.id,
+                        len(fallback_ai_candidates),
+                        imported_count,
+                        updated_count,
+                        skipped_count,
+                        len(imported_rows),
+                        self._elapsed_ms(fallback_started_at),
+                        self._elapsed_ms(started_at),
+                    )
+                    return imported_count, updated_count, skipped_count, fallback_stats, imported_rows, city.name
 
             for index, (score, candidate) in enumerate(selected_candidates):
                 wikidata_id = candidate["wikidata_id"]

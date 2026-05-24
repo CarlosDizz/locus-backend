@@ -259,6 +259,27 @@ class CatalogService:
             score += 80
         if any(token in description for token in ["football", "fútbol", "soccer", "club", "team", "f.c."]):
             score -= 200
+        if any(
+            token in text
+            for token in [
+                "magazine",
+                "newspaper",
+                "journal",
+                "publication",
+                "periodical",
+                "website",
+                "media company",
+                "television",
+                "radio",
+                "publisher",
+                "revista",
+                "periódico",
+                "periodico",
+                "publicación",
+                "publicacion",
+            ]
+        ):
+            score -= 260
         if any(token in text for token in ["roman empire", "película", "album", "song", "novel"]):
             score -= 80
         if country_code:
@@ -406,6 +427,8 @@ class CatalogService:
             value = coords_claim[0].get("mainsnak", {}).get("datavalue", {}).get("value", {})
             lat = value.get("latitude")
             lng = value.get("longitude")
+        if lat is None or lng is None:
+            raise CatalogError("No he podido resolver una ciudad con coordenadas válidas en Wikidata")
         city_name = (
             entity.get("labels", {}).get("es", {}).get("value")
             or best.get("label")
@@ -526,9 +549,34 @@ class CatalogService:
 
         if city is None:
             create_started_at = time.perf_counter()
-            city = self.bootstrap_city(city_name, country_code)
+            try:
+                city = self.create_city(
+                    CityCreateRequest(
+                        name=city_name,
+                        slug=slug,
+                        country_code=country_code.upper(),
+                        lat=lat,
+                        lng=lng,
+                        source="nominatim",
+                    )
+                )
+            except CatalogError as exc:
+                if "slug" not in str(exc).lower():
+                    raise
+                with session_scope() as db:
+                    existing = db.scalar(select(City).where(City.slug == slug))
+                    if existing is None:
+                        raise
+                    city = self._city_to_schema(existing)
+                self.logger.info(
+                    "catalog_bootstrap city_reused_after_duplicate job=%s city_id=%s city=%s slug=%s",
+                    job_id,
+                    city.id,
+                    city.name,
+                    slug,
+                )
             self.logger.info(
-                "catalog_bootstrap city_created job=%s city_id=%s city=%s elapsed_ms=%s",
+                "catalog_bootstrap city_ready job=%s city_id=%s city=%s elapsed_ms=%s",
                 job_id,
                 city.id,
                 city.name,

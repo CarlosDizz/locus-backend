@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -223,6 +224,14 @@ class CatalogService:
     def _elapsed_ms(self, started_at: float) -> int:
         return int((time.perf_counter() - started_at) * 1000)
 
+    def _safe_slug(self, value: str, *, prefix: str = "item") -> str:
+        slug = slugify(value)
+        if slug:
+            return slug
+        normalized = clean_text(value)
+        digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:10]
+        return f"{prefix}-{digest}"
+
     def _city_to_schema(self, city: City) -> CityResponse:
         return CityResponse(
             id=city.id,
@@ -378,7 +387,7 @@ class CatalogService:
 
     def create_city(self, payload: CityCreateRequest) -> CityResponse:
         with session_scope() as db:
-            slug = payload.slug or slugify(payload.name)
+            slug = payload.slug or self._safe_slug(payload.name, prefix="city")
             existing = db.scalar(select(City).where(City.slug == slug))
             if existing is not None:
                 raise CatalogError("Ya existe una ciudad con ese slug")
@@ -434,7 +443,7 @@ class CatalogService:
             or best.get("label")
             or query
         )
-        city_slug = slugify(city_name)
+        city_slug = self._safe_slug(city_name, prefix="city")
         with session_scope() as db:
             existing = db.scalar(select(City).where(City.slug == city_slug))
             if existing is not None:
@@ -490,17 +499,33 @@ class CatalogService:
             raise CatalogError(f"No he podido resolver la ciudad desde la ubicación: {exc}") from exc
 
         address = payload.get("address", {}) or {}
-        city_name = (
-            address.get("city")
-            or address.get("town")
-            or address.get("village")
-            or address.get("municipality")
-            or address.get("county")
-            or ""
-        )
         country_code = str(address.get("country_code") or "").upper()
+        if country_code == "JP":
+            city_name = (
+                address.get("city")
+                or address.get("state")
+                or address.get("province")
+                or address.get("municipality")
+                or address.get("county")
+                or address.get("town")
+                or address.get("village")
+                or ""
+            )
+            if clean_text(city_name).endswith("区") and address.get("state"):
+                city_name = address.get("state") or city_name
+        else:
+            city_name = (
+                address.get("city")
+                or address.get("town")
+                or address.get("village")
+                or address.get("municipality")
+                or address.get("county")
+                or ""
+            )
 
         city_name = clean_text(city_name)
+        if country_code == "JP" and city_name in {"東京都", "東京"}:
+            city_name = "Tokyo"
         if not city_name:
             raise CatalogError("No he podido deducir una ciudad válida desde tu ubicación")
         self.logger.info(
@@ -532,7 +557,7 @@ class CatalogService:
             use_ai_candidates,
         )
         city_name, country_code = self._resolve_city_name_from_coords(lat, lng)
-        slug = slugify(city_name)
+        slug = self._safe_slug(city_name, prefix=f"city-{country_code.lower() or 'xx'}")
 
         db_started_at = time.perf_counter()
         with session_scope() as db:
@@ -716,7 +741,7 @@ class CatalogService:
     def create_poi(self, payload: PoiCreateRequest) -> PoiResponse:
         with session_scope() as db:
             poi_type = db.get(PoiType, payload.poi_type_id) if payload.poi_type_id else self._poi_type_by_code(db, payload.poi_type_code)
-            slug = payload.slug or slugify(payload.name)
+            slug = payload.slug or self._safe_slug(payload.name, prefix="poi")
             poi = Poi(
                 city_id=payload.city_id,
                 poi_type_id=poi_type.id if poi_type else None,
@@ -1047,7 +1072,7 @@ class CatalogService:
         seen_names: set[str] = set()
 
         for rank, candidate in enumerate(ai_candidates[:limit], start=1):
-            dedupe_key = slugify(candidate["name"])
+            dedupe_key = self._safe_slug(candidate["name"], prefix="poi")
             if dedupe_key in seen_names:
                 skipped_count += 1
                 continue
@@ -2002,7 +2027,7 @@ out center 10;
                     stats["ai"]["rejected_count"] += 1
                     bump_reason(stats["ai"]["reasons"], reason)
                     continue
-                dedupe_key = resolved["wikidata_id"] or slugify(resolved["poi_name"])
+                dedupe_key = resolved["wikidata_id"] or self._safe_slug(resolved["poi_name"], prefix="poi")
                 if dedupe_key in seen_ids:
                     stats["ai"]["duplicate_count"] += 1
                     bump_reason(stats["ai"]["reasons"], "duplicate_resolved")
@@ -2069,7 +2094,7 @@ out center 10;
 
             for candidate in overpass_candidates:
                 wikidata_id = candidate["wikidata_id"]
-                dedupe_key = wikidata_id or slugify(candidate["name"])
+                dedupe_key = wikidata_id or self._safe_slug(candidate["name"], prefix="poi")
                 if dedupe_key in seen_ids:
                     continue
                 seen_ids.add(dedupe_key)
@@ -2154,6 +2179,7 @@ out center 10;
                 type_code = candidate["type_code"]
                 wikipedia_title = candidate["wikipedia_title"]
                 poi_type = type_lookup.get(type_code)
+                poi_slug = self._safe_slug(poi_name, prefix="poi")
                 is_featured = (
                     candidate.get("source") in {"wikidata", "wikidata_ai"}
                     and index < featured_limit
@@ -2163,13 +2189,13 @@ out center 10;
                 existing = db.scalar(
                     select(Poi)
                     .where(Poi.city_id == city.id)
-                    .where(or_(Poi.wikidata_id == wikidata_id, Poi.slug == slugify(poi_name)))
+                    .where(or_(Poi.wikidata_id == wikidata_id, Poi.slug == poi_slug))
                 )
                 if existing is None:
                     existing = Poi(
                         city_id=city.id,
                         poi_type_id=poi_type.id if poi_type else None,
-                        slug=slugify(poi_name),
+                        slug=poi_slug,
                         name=poi_name,
                         lat=Decimal(str(lat)) if lat is not None else None,
                         lng=Decimal(str(lng)) if lng is not None else None,

@@ -220,6 +220,9 @@ class CatalogService:
             },
         }
 
+    def _elapsed_ms(self, started_at: float) -> int:
+        return int((time.perf_counter() - started_at) * 1000)
+
     def _city_to_schema(self, city: City) -> CityResponse:
         return CityResponse(
             id=city.id,
@@ -420,6 +423,12 @@ class CatalogService:
         )
 
     def _resolve_city_name_from_coords(self, lat: float, lng: float) -> tuple[str, str]:
+        started_at = time.perf_counter()
+        self.logger.info(
+            "catalog_bootstrap reverse_geocode_start lat=%.5f lng=%.5f",
+            lat,
+            lng,
+        )
         try:
             response = requests.get(
                 "https://nominatim.openstreetmap.org/reverse",
@@ -436,6 +445,13 @@ class CatalogService:
             response.raise_for_status()
             payload = response.json()
         except Exception as exc:
+            self.logger.warning(
+                "catalog_bootstrap reverse_geocode_failed lat=%.5f lng=%.5f elapsed_ms=%s error=%s",
+                lat,
+                lng,
+                self._elapsed_ms(started_at),
+                exc,
+            )
             raise CatalogError(f"No he podido resolver la ciudad desde la ubicación: {exc}") from exc
 
         address = payload.get("address", {}) or {}
@@ -452,6 +468,12 @@ class CatalogService:
         city_name = clean_text(city_name)
         if not city_name:
             raise CatalogError("No he podido deducir una ciudad válida desde tu ubicación")
+        self.logger.info(
+            "catalog_bootstrap reverse_geocode_done city=%s country=%s elapsed_ms=%s",
+            city_name,
+            country_code,
+            self._elapsed_ms(started_at),
+        )
         return city_name, country_code
 
     def bootstrap_city_from_location(
@@ -463,38 +485,97 @@ class CatalogService:
         limit: int = 80,
         use_ai_candidates: bool = True,
     ) -> tuple[CityResponse, int, int, int, dict, list[PoiResponse]]:
+        started_at = time.perf_counter()
+        job_id = f"{int(time.time() * 1000)}-{threading.get_ident()}"
+        self.logger.info(
+            "catalog_bootstrap_from_location_start job=%s lat=%.5f lng=%.5f radius_km=%.2f limit=%s use_ai=%s",
+            job_id,
+            lat,
+            lng,
+            radius_km,
+            limit,
+            use_ai_candidates,
+        )
         city_name, country_code = self._resolve_city_name_from_coords(lat, lng)
         slug = slugify(city_name)
 
+        db_started_at = time.perf_counter()
         with session_scope() as db:
             existing = db.scalar(select(City).where(City.slug == slug))
             city = self._city_to_schema(existing) if existing is not None else None
+        self.logger.info(
+            "catalog_bootstrap city_lookup job=%s city=%s country=%s found=%s elapsed_ms=%s",
+            job_id,
+            city_name,
+            country_code,
+            city is not None,
+            self._elapsed_ms(db_started_at),
+        )
 
         if city is None:
+            create_started_at = time.perf_counter()
             city = self.bootstrap_city(city_name, country_code)
+            self.logger.info(
+                "catalog_bootstrap city_created job=%s city_id=%s city=%s elapsed_ms=%s",
+                job_id,
+                city.id,
+                city.name,
+                self._elapsed_ms(create_started_at),
+            )
 
+        list_started_at = time.perf_counter()
         pois = self.list_pois(city_id=city.id, limit=limit)
         existing_poi_count = len(pois)
+        self.logger.info(
+            "catalog_bootstrap existing_pois job=%s city_id=%s existing=%s limit=%s elapsed_ms=%s",
+            job_id,
+            city.id,
+            existing_poi_count,
+            limit,
+            self._elapsed_ms(list_started_at),
+        )
         if existing_poi_count >= self.MIN_BOOTSTRAP_POI_COUNT:
             self.logger.info(
-                "catalog_bootstrap_from_location city=%s existing=%s imported=0 updated=0 skipped=0 returned=%s source=existing_catalog",
+                "catalog_bootstrap_from_location_done job=%s city=%s existing=%s imported=0 updated=0 skipped=0 returned=%s source=existing_catalog elapsed_ms=%s",
+                job_id,
                 city.name,
                 existing_poi_count,
                 len(pois),
+                self._elapsed_ms(started_at),
             )
             return city, 0, 0, 0, {"source": "existing_catalog", "existing_poi_count": existing_poi_count}, pois
 
+        import_started_at = time.perf_counter()
         imported_count, updated_count, skipped_count, stats, pois, _city_name = self.import_city_pois(
             city_id=city.id,
             radius_km=radius_km,
             limit=limit,
             use_ai_candidates=use_ai_candidates,
         )
+        self.logger.info(
+            "catalog_bootstrap import_attempt_done job=%s city_id=%s imported=%s updated=%s skipped=%s returned=%s mode=%s elapsed_ms=%s",
+            job_id,
+            city.id,
+            imported_count,
+            updated_count,
+            skipped_count,
+            len(pois),
+            stats.get("mode"),
+            self._elapsed_ms(import_started_at),
+        )
         used_ai_fallback = False
         if (
             not use_ai_candidates
             and len(pois) < self.MIN_BOOTSTRAP_POI_COUNT
         ):
+            fallback_started_at = time.perf_counter()
+            self.logger.info(
+                "catalog_bootstrap ai_fallback_start job=%s city_id=%s current_returned=%s min_required=%s",
+                job_id,
+                city.id,
+                len(pois),
+                self.MIN_BOOTSTRAP_POI_COUNT,
+            )
             ai_imported, ai_updated, ai_skipped, ai_stats, ai_pois, _city_name = self.import_city_pois(
                 city_id=city.id,
                 radius_km=radius_km,
@@ -513,21 +594,42 @@ class CatalogService:
                 "ai_fallback": ai_stats,
             }
             used_ai_fallback = True
+            self.logger.info(
+                "catalog_bootstrap ai_fallback_done job=%s city_id=%s imported=%s updated=%s skipped=%s returned=%s elapsed_ms=%s",
+                job_id,
+                city.id,
+                ai_imported,
+                ai_updated,
+                ai_skipped,
+                len(ai_pois),
+                self._elapsed_ms(fallback_started_at),
+            )
 
         if not used_ai_fallback:
             stats["source"] = "existing_catalog_reimport" if existing_poi_count else "fresh_import"
             stats["existing_poi_count"] = existing_poi_count
         if use_ai_candidates or used_ai_fallback:
-            self.start_pending_enrichment(city.id, min(limit, 150))
+            queued = self.start_pending_enrichment(city.id, min(limit, 150))
+            self.logger.info(
+                "catalog_bootstrap enrichment_queue job=%s city_id=%s queued=%s limit=%s",
+                job_id,
+                city.id,
+                queued,
+                min(limit, 150),
+            )
         self.logger.info(
-            "catalog_bootstrap_from_location city=%s existing=%s imported=%s updated=%s skipped=%s returned=%s source=%s",
+            "catalog_bootstrap_from_location_done job=%s city=%s city_id=%s existing=%s imported=%s updated=%s skipped=%s returned=%s source=%s elapsed_ms=%s stats=%s",
+            job_id,
             city.name,
+            city.id,
             existing_poi_count,
             imported_count,
             updated_count,
             skipped_count,
             len(pois),
             stats.get("source"),
+            self._elapsed_ms(started_at),
+            json.dumps(stats, ensure_ascii=False, default=str)[:1800],
         )
         return city, imported_count, updated_count, skipped_count, stats, pois
 
@@ -1510,11 +1612,26 @@ out center 10;
         }
 
     def enrich_city_pending_pois(self, city_id: int, limit: int = 150) -> None:
+        started_at = time.perf_counter()
+        self.logger.info(
+            "catalog_enrichment_start city_id=%s limit=%s",
+            city_id,
+            limit,
+        )
         with session_scope() as db:
             city = db.get(City, city_id)
             if city is None:
+                self.logger.warning("catalog_enrichment_city_missing city_id=%s elapsed_ms=%s", city_id, self._elapsed_ms(started_at))
                 return
+            entity_started_at = time.perf_counter()
             city_entity_id = self._resolve_city_entity_id(city)
+            self.logger.info(
+                "catalog_enrichment_city_resolved city_id=%s city=%s city_entity_id=%s elapsed_ms=%s",
+                city.id,
+                city.name,
+                city_entity_id,
+                self._elapsed_ms(entity_started_at),
+            )
             pending_pois = list(
                 db.scalars(
                     select(Poi)
@@ -1523,13 +1640,20 @@ out center 10;
                 ).all()
             )
             processed = 0
+            resolved_count = 0
+            overpass_count = 0
+            unresolved_count = 0
+            rate_limited = False
+            eligible_count = 0
             for poi in pending_pois:
                 metadata = dict(poi.metadata_json or {})
                 status = metadata.get("import_status", "")
                 if status not in {"pending_wikidata", "retry_wikidata", "rate_limited_retry"}:
                     continue
+                eligible_count += 1
                 candidate = self._build_pending_candidate(poi)
                 metadata["resolution_attempts"] = int(metadata.get("resolution_attempts", 0)) + 1
+                item_started_at = time.perf_counter()
                 resolved, reason = self._resolve_ai_candidate(city, city_entity_id, candidate)
                 if resolved is not None:
                     poi.lat = Decimal(str(resolved["lat"])) if resolved["lat"] is not None else poi.lat
@@ -1545,6 +1669,14 @@ out center 10;
                     metadata["resolution_reason"] = "wikidata"
                     metadata["resolution_score"] = resolved.get("resolution_score")
                     metadata["distance_km"] = resolved.get("distance_km")
+                    resolved_count += 1
+                    self.logger.info(
+                        "catalog_enrichment_item_resolved city_id=%s poi_id=%s name=%s source=wikidata elapsed_ms=%s",
+                        city.id,
+                        poi.id,
+                        poi.name,
+                        self._elapsed_ms(item_started_at),
+                    )
                 else:
                     overpass_resolved = None
                     if reason not in {"wikidata_rate_limited"}:
@@ -1560,26 +1692,65 @@ out center 10;
                         metadata["source_id"] = overpass_resolved.get("source_id", "")
                         metadata["resolution_reason"] = "overpass_fallback"
                         metadata["distance_km"] = overpass_resolved.get("distance_km")
+                        overpass_count += 1
+                        self.logger.info(
+                            "catalog_enrichment_item_resolved city_id=%s poi_id=%s name=%s source=overpass reason=%s elapsed_ms=%s",
+                            city.id,
+                            poi.id,
+                            poi.name,
+                            reason,
+                            self._elapsed_ms(item_started_at),
+                        )
                     elif reason == "wikidata_rate_limited":
                         metadata["import_status"] = "rate_limited_retry"
                         metadata["resolution_reason"] = reason
                         poi.metadata_json = metadata
                         db.flush()
-                        self.logger.warning("Wikidata rate limited while enriching city %s; stopping batch", city.id)
+                        rate_limited = True
+                        self.logger.warning(
+                            "catalog_enrichment_rate_limited city_id=%s poi_id=%s processed=%s eligible=%s elapsed_ms=%s",
+                            city.id,
+                            poi.id,
+                            processed,
+                            eligible_count,
+                            self._elapsed_ms(started_at),
+                        )
                         break
                     else:
                         metadata["import_status"] = "unresolved"
                         metadata["resolution_reason"] = reason
+                        unresolved_count += 1
+                        self.logger.info(
+                            "catalog_enrichment_item_unresolved city_id=%s poi_id=%s name=%s reason=%s elapsed_ms=%s",
+                            city.id,
+                            poi.id,
+                            poi.name,
+                            reason,
+                            self._elapsed_ms(item_started_at),
+                        )
                 poi.metadata_json = metadata
                 processed += 1
                 db.flush()
                 if processed >= limit:
                     break
                 time.sleep(0.15)
+            self.logger.info(
+                "catalog_enrichment_done city_id=%s city=%s eligible=%s processed=%s resolved=%s overpass=%s unresolved=%s rate_limited=%s elapsed_ms=%s",
+                city.id,
+                city.name,
+                eligible_count,
+                processed,
+                resolved_count,
+                overpass_count,
+                unresolved_count,
+                rate_limited,
+                self._elapsed_ms(started_at),
+            )
 
     def start_pending_enrichment(self, city_id: int, limit: int = 150) -> bool:
         with self._enrichment_lock:
             if city_id in self._active_enrichment_jobs:
+                self.logger.info("catalog_enrichment_already_running city_id=%s limit=%s", city_id, limit)
                 return False
             self._active_enrichment_jobs.add(city_id)
 
@@ -1598,9 +1769,18 @@ out center 10;
             daemon=True,
         )
         thread.start()
+        self.logger.info("catalog_enrichment_thread_started city_id=%s limit=%s thread=%s", city_id, limit, thread.name)
         return True
 
     def import_city_pois(self, city_id: int, radius_km: float = 8.0, limit: int = 40, use_ai_candidates: bool = True) -> tuple[int, int, int, dict, list[PoiResponse], str]:
+        started_at = time.perf_counter()
+        self.logger.info(
+            "catalog_import_start city_id=%s radius_km=%.2f limit=%s use_ai=%s",
+            city_id,
+            radius_km,
+            limit,
+            use_ai_candidates,
+        )
         with session_scope() as db:
             city = db.get(City, city_id)
             if city is None:
@@ -1608,18 +1788,50 @@ out center 10;
             if city.lat is None or city.lng is None:
                 raise CatalogError("La ciudad no tiene coordenadas guardadas")
             type_lookup = {item.code: item for item in db.scalars(select(PoiType)).all()}
+            self.logger.info(
+                "catalog_import_city_loaded city_id=%s city=%s lat=%.5f lng=%.5f type_count=%s elapsed_ms=%s",
+                city.id,
+                city.name,
+                float(city.lat),
+                float(city.lng),
+                len(type_lookup),
+                self._elapsed_ms(started_at),
+            )
 
             bindings: list[dict] = []
             overpass_candidates: list[dict] = []
             ai_candidates: list[dict] = []
+            entity_started_at = time.perf_counter()
             city_entity_id = self._resolve_city_entity_id(city)
+            self.logger.info(
+                "catalog_import_city_entity city_id=%s city_entity_id=%s elapsed_ms=%s",
+                city.id,
+                city_entity_id,
+                self._elapsed_ms(entity_started_at),
+            )
             if use_ai_candidates and self.openai.is_configured():
+                ai_started_at = time.perf_counter()
                 try:
                     ai_candidates = self._generate_ai_candidates(city, limit=min(limit, 150))
-                except CatalogError:
+                    self.logger.info(
+                        "catalog_import_ai_candidates_done city_id=%s proposed=%s elapsed_ms=%s",
+                        city.id,
+                        len(ai_candidates),
+                        self._elapsed_ms(ai_started_at),
+                    )
+                except CatalogError as exc:
+                    self.logger.warning(
+                        "catalog_import_ai_candidates_failed city_id=%s elapsed_ms=%s error=%s",
+                        city.id,
+                        self._elapsed_ms(ai_started_at),
+                        exc,
+                    )
                     ai_candidates = []
+            elif use_ai_candidates:
+                self.logger.info("catalog_import_ai_skipped city_id=%s reason=openai_not_configured", city.id)
 
             if ai_candidates:
+                upsert_started_at = time.perf_counter()
                 imported_count, updated_count, skipped_count, imported_rows, stats = self._upsert_ai_seed_candidates(
                     db,
                     city,
@@ -1627,26 +1839,80 @@ out center 10;
                     ai_candidates,
                     min(limit, 150),
                 )
+                self.logger.info(
+                    "catalog_import_ai_seed_done city_id=%s proposed=%s imported=%s updated=%s skipped=%s returned=%s elapsed_ms=%s total_elapsed_ms=%s",
+                    city.id,
+                    len(ai_candidates),
+                    imported_count,
+                    updated_count,
+                    skipped_count,
+                    len(imported_rows),
+                    self._elapsed_ms(upsert_started_at),
+                    self._elapsed_ms(started_at),
+                )
                 return imported_count, updated_count, skipped_count, stats, imported_rows, city.name
 
             if city_entity_id and not ai_candidates:
+                wikidata_city_started_at = time.perf_counter()
                 try:
                     bindings.extend(self.wikidata.run_sparql(self._build_city_entity_import_query(city_entity_id, limit=limit)))
-                except RequestException:
+                    self.logger.info(
+                        "catalog_import_wikidata_city_done city_id=%s rows=%s elapsed_ms=%s",
+                        city.id,
+                        len(bindings),
+                        self._elapsed_ms(wikidata_city_started_at),
+                    )
+                except RequestException as exc:
+                    self.logger.warning(
+                        "catalog_import_wikidata_city_failed city_id=%s elapsed_ms=%s error=%s",
+                        city.id,
+                        self._elapsed_ms(wikidata_city_started_at),
+                        exc,
+                    )
                     pass
 
             if not ai_candidates:
+                before_radius_rows = len(bindings)
+                wikidata_radius_started_at = time.perf_counter()
                 try:
                     bindings.extend(self.wikidata.run_sparql(self._build_radius_import_query(city, radius_km=radius_km, limit=limit)))
+                    self.logger.info(
+                        "catalog_import_wikidata_radius_done city_id=%s rows_added=%s total_rows=%s elapsed_ms=%s",
+                        city.id,
+                        len(bindings) - before_radius_rows,
+                        len(bindings),
+                        self._elapsed_ms(wikidata_radius_started_at),
+                    )
                 except RequestException as exc:
+                    self.logger.warning(
+                        "catalog_import_wikidata_radius_failed city_id=%s existing_rows=%s elapsed_ms=%s error=%s",
+                        city.id,
+                        len(bindings),
+                        self._elapsed_ms(wikidata_radius_started_at),
+                        exc,
+                    )
                     if not bindings:
                         raise CatalogError(
                             "Wikidata ha tardado demasiado al importar POIs. Prueba otra vez o reduce el radio de búsqueda."
                         ) from exc
+                overpass_started_at = time.perf_counter()
                 try:
                     elements = self.overpass.query(self._build_overpass_map_query(city, radius_km=radius_km, limit=limit))
                     overpass_candidates = [item for item in (self._normalize_overpass_element(element) for element in elements) if item]
-                except RequestException:
+                    self.logger.info(
+                        "catalog_import_overpass_done city_id=%s raw=%s normalized=%s elapsed_ms=%s",
+                        city.id,
+                        len(elements),
+                        len(overpass_candidates),
+                        self._elapsed_ms(overpass_started_at),
+                    )
+                except RequestException as exc:
+                    self.logger.warning(
+                        "catalog_import_overpass_failed city_id=%s elapsed_ms=%s error=%s",
+                        city.id,
+                        self._elapsed_ms(overpass_started_at),
+                        exc,
+                    )
                     overpass_candidates = []
             imported_count = 0
             updated_count = 0
@@ -1878,6 +2144,22 @@ out center 10;
                 imported_rows.append(self._poi_to_schema(existing, poi_type))
 
             skipped_count = max(0, stats["ai"]["rejected_count"] + stats["ai"]["duplicate_count"])
+            self.logger.info(
+                "catalog_import_done city_id=%s city=%s mode=%s wikidata_rows=%s overpass_rows=%s ranked=%s selected=%s imported=%s updated=%s skipped=%s returned=%s elapsed_ms=%s stats=%s",
+                city.id,
+                city.name,
+                stats.get("mode"),
+                stats["sources"]["wikidata_rows"],
+                stats["sources"]["overpass_rows"],
+                stats["ranked_candidate_count"],
+                stats["selected_candidate_count"],
+                imported_count,
+                updated_count,
+                skipped_count,
+                len(imported_rows),
+                self._elapsed_ms(started_at),
+                json.dumps(stats, ensure_ascii=False, default=str)[:1800],
+            )
             return imported_count, updated_count, skipped_count, stats, imported_rows, city.name
 
 

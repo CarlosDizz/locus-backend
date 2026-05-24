@@ -666,6 +666,11 @@ class CallRoomService:
                 return
             if event_type == "error":
                 error = event.get("error") or {}
+                if self._is_realtime_active_response_error(error):
+                    room.status = "assistant_speaking"
+                    room.speaker_user_id = None
+                    await self._broadcast_snapshot(room)
+                    return
                 message = str(error.get("message") or "Ha fallado la sesión realtime")
                 param = str(error.get("param") or "").strip()
                 code = str(error.get("code") or "").strip()
@@ -678,6 +683,11 @@ class CallRoomService:
                 room.speaker_user_id = None
                 await self._broadcast(room, {"type": "call.error", "message": message})
                 await self._broadcast_snapshot(room)
+
+    def _is_realtime_active_response_error(self, error: dict[str, Any]) -> bool:
+        code = str(error.get("code") or "").strip()
+        message = str(error.get("message") or "").lower()
+        return code == "conversation_already_has_active_response" or "already has an active response" in message
 
     async def _handle_function_call(self, room: CallRuntime, event: dict[str, Any]) -> None:
         tool_name = str(event.get("name") or "")

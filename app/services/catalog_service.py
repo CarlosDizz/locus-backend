@@ -28,6 +28,7 @@ class CatalogError(RuntimeError):
 
 class CatalogService:
     MIN_BOOTSTRAP_POI_COUNT = 40
+    CONTENT_LANGUAGES = ["es", "en", "fr", "it", "de", "pt", "zh", "ja", "ar"]
 
     def __init__(self) -> None:
         self.logger = get_logger(__name__)
@@ -232,11 +233,223 @@ class CatalogService:
         digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:10]
         return f"{prefix}-{digest}"
 
+    def _is_latinish_text(self, value: str) -> bool:
+        cleaned = clean_text(value)
+        if not cleaned:
+            return False
+        letters = [char for char in cleaned if char.isalpha()]
+        return bool(letters) and sum(1 for char in letters if ord(char) < 128) >= max(1, len(letters) // 2)
+
+    def _normalize_names(self, name: str, names: dict | None = None) -> dict:
+        normalized: dict[str, str] = {}
+        for key, value in (names or {}).items():
+            clean_key = clean_text(str(key)).lower()
+            clean_value = clean_text(str(value))
+            if clean_key and clean_value:
+                normalized[clean_key] = clean_value
+        clean_name = clean_text(name)
+        if clean_name:
+            normalized.setdefault("local", clean_name)
+        return normalized
+
+    def _normalize_short_descriptions(self, description: str, descriptions: dict | None = None) -> dict:
+        normalized: dict[str, str] = {}
+        for key, value in (descriptions or {}).items():
+            clean_key = clean_text(str(key)).lower()
+            clean_value = clean_text(str(value))
+            if clean_key and clean_value:
+                normalized[clean_key] = clean_value[:500]
+        clean_description = clean_text(description)
+        if clean_description:
+            normalized.setdefault("local", clean_description[:500])
+        return normalized
+
+    def _display_name(self, name: str, names: dict | None = None, preferred_language: str = "es") -> str:
+        normalized = self._normalize_names(name, names)
+        for key in [preferred_language, "es", "en", "int", "local"]:
+            if normalized.get(key):
+                return normalized[key]
+        return clean_text(name)
+
+    def _display_description(self, description: str, descriptions: dict | None = None, preferred_language: str = "es") -> str:
+        normalized = self._normalize_short_descriptions(description, descriptions)
+        for key in [preferred_language, "es", "en", "local"]:
+            if normalized.get(key):
+                return normalized[key]
+        return clean_text(description)
+
+    def _needs_content_localization(self, candidate: dict) -> bool:
+        names = self._normalize_names(candidate.get("name", ""), candidate.get("names") or {})
+        descriptions = self._normalize_short_descriptions(
+            candidate.get("short_description") or candidate.get("description") or "",
+            candidate.get("short_descriptions") or {},
+        )
+        return any(not names.get(language) for language in self.CONTENT_LANGUAGES) or any(
+            not descriptions.get(language) for language in self.CONTENT_LANGUAGES
+        )
+
+    def _localize_content_candidates(self, candidates: list[dict], *, context: str) -> list[dict]:
+        if not candidates or not self.openai.is_configured():
+            return candidates
+
+        pending = [candidate for candidate in candidates if self._needs_content_localization(candidate)]
+        if not pending:
+            return candidates
+
+        items = [
+            {
+                "key": str(index),
+                "name": candidate.get("name") or candidate.get("poi_name") or "",
+                "aliases": candidate.get("aliases") or [],
+                "short_description": candidate.get("short_description") or candidate.get("description") or "",
+                "type": candidate.get("poi_type_code") or candidate.get("type_code") or "",
+                "context": context,
+            }
+            for index, candidate in enumerate(pending)
+        ]
+        language_schema = {
+            language: {"type": "string"}
+            for language in self.CONTENT_LANGUAGES
+        }
+        try:
+            response = self.openai.create_response(
+                model=self.openai.chat_model(),
+                instructions=(
+                    "Eres un traductor de catálogo turístico. Devuelve JSON puro. "
+                    "Traduce o translitera nombres de POIs cuando sea útil para una interfaz turística, "
+                    "preservando el nombre local en local/ja/zh/ar si aplica. "
+                    "Traduce short_description en una sola frase natural por idioma. "
+                    "No inventes datos nuevos ni añadas claims: solo traduce el significado dado."
+                ),
+                input_items=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": json.dumps(
+                                    {
+                                        "languages": self.CONTENT_LANGUAGES,
+                                        "items": items,
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                max_output_tokens=min(12000, max(1200, len(items) * 240)),
+                tool_choice="none",
+                extra_payload={
+                    "text": {
+                        "format": {
+                            "type": "json_schema",
+                            "name": "localized_catalog_items",
+                            "schema": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "properties": {
+                                    "items": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "additionalProperties": False,
+                                            "properties": {
+                                                "key": {"type": "string"},
+                                                "names": {
+                                                    "type": "object",
+                                                    "additionalProperties": False,
+                                                    "properties": language_schema,
+                                                    "required": self.CONTENT_LANGUAGES,
+                                                },
+                                                "short_descriptions": {
+                                                    "type": "object",
+                                                    "additionalProperties": False,
+                                                    "properties": language_schema,
+                                                    "required": self.CONTENT_LANGUAGES,
+                                                },
+                                            },
+                                            "required": ["key", "names", "short_descriptions"],
+                                        },
+                                    },
+                                },
+                                "required": ["items"],
+                            },
+                        }
+                    }
+                },
+            )
+            payload = self._extract_json_object(self._extract_response_text(response))
+        except (CatalogError, OpenAIClientError, RequestException) as exc:
+            self.logger.warning("catalog_localization_failed context=%s count=%s error=%s", context, len(items), exc)
+            return candidates
+
+        by_key = {str(item.get("key")): item for item in payload.get("items", []) if isinstance(item, dict)}
+        for index, candidate in enumerate(pending):
+            translated = by_key.get(str(index)) or {}
+            candidate["names"] = {
+                **self._normalize_names(candidate.get("name") or candidate.get("poi_name") or "", candidate.get("names") or {}),
+                **self._normalize_names(candidate.get("name") or candidate.get("poi_name") or "", translated.get("names") or {}),
+            }
+            candidate["short_descriptions"] = {
+                **self._normalize_short_descriptions(
+                    candidate.get("short_description") or candidate.get("description") or "",
+                    candidate.get("short_descriptions") or {},
+                ),
+                **self._normalize_short_descriptions(
+                    candidate.get("short_description") or candidate.get("description") or "",
+                    translated.get("short_descriptions") or {},
+                ),
+            }
+        self.logger.info("catalog_localization_done context=%s count=%s", context, len(items))
+        return candidates
+
+    def _names_from_aliases(self, name: str, aliases: list[str] | None = None) -> dict:
+        names = self._normalize_names(name)
+        for alias in aliases or []:
+            clean_alias = clean_text(alias)
+            if not clean_alias:
+                continue
+            if self._is_latinish_text(clean_alias):
+                names.setdefault("en", clean_alias)
+                names.setdefault("es", clean_alias)
+                break
+        return names
+
+    def _names_from_wikidata_entity(self, entity: dict, fallback_name: str) -> dict:
+        labels = entity.get("labels", {}) or {}
+        names = self._normalize_names(fallback_name)
+        for source_key, target_key in [("es", "es"), ("en", "en"), ("ja", "ja")]:
+            value = labels.get(source_key, {}).get("value")
+            if value:
+                names[target_key] = clean_text(value)
+        return names
+
+    def _names_from_nominatim_payload(self, payload: dict, fallback_name: str, country_code: str) -> dict:
+        namedetails = payload.get("namedetails", {}) or {}
+        names = self._normalize_names(fallback_name)
+        for source_key, target_key in [
+            ("name:es", "es"),
+            ("name:en", "en"),
+            ("name:ja", "ja"),
+            ("int_name", "int"),
+            ("name", "local"),
+        ]:
+            value = namedetails.get(source_key)
+            if value:
+                names[target_key] = clean_text(value)
+        if country_code == "JP" and fallback_name in {"Tokyo", "Tokio", "東京都", "東京"}:
+            names.update({"local": "東京都", "ja": "東京都", "en": "Tokyo", "es": "Tokio", "int": "Tokyo"})
+        return names
+
     def _city_to_schema(self, city: City) -> CityResponse:
+        names = self._normalize_names(city.name, city.names_json or {})
         return CityResponse(
             id=city.id,
             slug=city.slug,
             name=city.name,
+            display_name=self._display_name(city.name, names),
+            names=names,
             country_code=city.country_code,
             lat=float(city.lat) if city.lat is not None else None,
             lng=float(city.lng) if city.lng is not None else None,
@@ -338,6 +551,8 @@ class CatalogService:
         return db.scalar(select(PoiType).where(PoiType.code == code))
 
     def _poi_to_schema(self, poi: Poi, poi_type: PoiType | None = None) -> PoiResponse:
+        names = self._normalize_names(poi.name, poi.names_json or {})
+        short_descriptions = self._normalize_short_descriptions(poi.short_description, poi.short_descriptions_json or {})
         return PoiResponse(
             id=poi.id,
             city_id=poi.city_id,
@@ -346,9 +561,12 @@ class CatalogService:
             poi_type_name=poi_type.name if poi_type else None,
             slug=poi.slug,
             name=poi.name,
+            display_name=self._display_name(poi.name, names),
+            names=names,
             lat=float(poi.lat) if poi.lat is not None else None,
             lng=float(poi.lng) if poi.lng is not None else None,
-            short_description=poi.short_description,
+            short_description=self._display_description(poi.short_description, short_descriptions),
+            short_descriptions=short_descriptions,
             long_description=poi.long_description,
             source_of_truth=poi.source_of_truth,
             wikidata_id=poi.wikidata_id,
@@ -394,6 +612,7 @@ class CatalogService:
             city = City(
                 slug=slug,
                 name=clean_text(payload.name),
+                names_json=self._normalize_names(payload.name, payload.names),
                 country_code=payload.country_code.upper(),
                 lat=Decimal(str(payload.lat)) if payload.lat is not None else None,
                 lng=Decimal(str(payload.lng)) if payload.lng is not None else None,
@@ -443,6 +662,7 @@ class CatalogService:
             or best.get("label")
             or query
         )
+        city_names = self._names_from_wikidata_entity(entity, city_name)
         city_slug = self._safe_slug(city_name, prefix="city")
         with session_scope() as db:
             existing = db.scalar(select(City).where(City.slug == city_slug))
@@ -459,6 +679,7 @@ class CatalogService:
             CityCreateRequest(
                 name=city_name,
                 slug=city_slug,
+                names=city_names,
                 country_code=country_code.upper(),
                 lat=lat,
                 lng=lng,
@@ -466,7 +687,7 @@ class CatalogService:
             )
         )
 
-    def _resolve_city_name_from_coords(self, lat: float, lng: float) -> tuple[str, str]:
+    def _resolve_city_name_from_coords(self, lat: float, lng: float) -> tuple[str, str, dict]:
         started_at = time.perf_counter()
         self.logger.info(
             "catalog_bootstrap reverse_geocode_start lat=%.5f lng=%.5f",
@@ -482,8 +703,12 @@ class CatalogService:
                     "lon": lng,
                     "zoom": 10,
                     "addressdetails": 1,
+                    "namedetails": 1,
                 },
-                headers={"User-Agent": "LocusBackend/1.0"},
+                headers={
+                    "Accept-Language": "es,en,ja",
+                    "User-Agent": "LocusBackend/1.0",
+                },
                 timeout=12,
             )
             response.raise_for_status()
@@ -501,6 +726,7 @@ class CatalogService:
         address = payload.get("address", {}) or {}
         country_code = str(address.get("country_code") or "").upper()
         if country_code == "JP":
+            display_name = clean_text(payload.get("display_name", ""))
             city_name = (
                 address.get("city")
                 or address.get("state")
@@ -511,6 +737,10 @@ class CatalogService:
                 or address.get("village")
                 or ""
             )
+            if clean_text(city_name).endswith("区") and (
+                "tokyo" in display_name.lower() or "東京都" in display_name or "東京" in display_name
+            ):
+                city_name = "Tokyo"
             if clean_text(city_name).endswith("区") and address.get("state"):
                 city_name = address.get("state") or city_name
         else:
@@ -526,15 +756,17 @@ class CatalogService:
         city_name = clean_text(city_name)
         if country_code == "JP" and city_name in {"東京都", "東京"}:
             city_name = "Tokyo"
+        city_names = self._names_from_nominatim_payload(payload, city_name, country_code)
         if not city_name:
             raise CatalogError("No he podido deducir una ciudad válida desde tu ubicación")
         self.logger.info(
-            "catalog_bootstrap reverse_geocode_done city=%s country=%s elapsed_ms=%s",
+            "catalog_bootstrap reverse_geocode_done city=%s display=%s country=%s elapsed_ms=%s",
             city_name,
+            self._display_name(city_name, city_names),
             country_code,
             self._elapsed_ms(started_at),
         )
-        return city_name, country_code
+        return city_name, country_code, city_names
 
     def bootstrap_city_from_location(
         self,
@@ -556,7 +788,7 @@ class CatalogService:
             limit,
             use_ai_candidates,
         )
-        city_name, country_code = self._resolve_city_name_from_coords(lat, lng)
+        city_name, country_code, city_names = self._resolve_city_name_from_coords(lat, lng)
         slug = self._safe_slug(city_name, prefix=f"city-{country_code.lower() or 'xx'}")
 
         db_started_at = time.perf_counter()
@@ -579,6 +811,7 @@ class CatalogService:
                     CityCreateRequest(
                         name=city_name,
                         slug=slug,
+                        names=city_names,
                         country_code=country_code.upper(),
                         lat=lat,
                         lng=lng,
@@ -747,9 +980,11 @@ class CatalogService:
                 poi_type_id=poi_type.id if poi_type else None,
                 slug=slug,
                 name=clean_text(payload.name),
+                names_json=self._normalize_names(payload.name, payload.names),
                 lat=Decimal(str(payload.lat)) if payload.lat is not None else None,
                 lng=Decimal(str(payload.lng)) if payload.lng is not None else None,
                 short_description=clean_text(payload.short_description),
+                short_descriptions_json=self._normalize_short_descriptions(payload.short_description, payload.short_descriptions),
                 long_description=(payload.long_description or "").strip(),
                 source_of_truth=payload.source_of_truth,
                 wikidata_id=payload.wikidata_id,
@@ -776,12 +1011,19 @@ class CatalogService:
                 poi.slug = payload.slug
             if payload.name is not None:
                 poi.name = clean_text(payload.name)
+            if payload.names:
+                poi.names_json = self._normalize_names(payload.name or poi.name, payload.names)
             if payload.lat is not None:
                 poi.lat = Decimal(str(payload.lat))
             if payload.lng is not None:
                 poi.lng = Decimal(str(payload.lng))
             if payload.short_description is not None:
                 poi.short_description = clean_text(payload.short_description)
+            if payload.short_descriptions:
+                poi.short_descriptions_json = self._normalize_short_descriptions(
+                    payload.short_description or poi.short_description,
+                    payload.short_descriptions,
+                )
             if payload.long_description is not None:
                 poi.long_description = payload.long_description.strip()
             if payload.source_of_truth is not None:
@@ -862,7 +1104,7 @@ class CatalogService:
             f"El límite superior es {limit}, pero puedes devolver menos. "
             "Si la ciudad es muy turística, intenta acercarte a 40-80 candidatos distintos y específicos, sin rellenar con sitios débiles. "
             "Prioriza lugares famosos, visitables o claramente reconocibles por viajeros. "
-            "Incluye nombres alternativos útiles para resolver el sitio en Wikidata: nombre oficial, variante local o forma histórica breve. "
+            "Incluye nombres alternativos útiles para resolver el sitio en Wikidata y para UI: nombre oficial, variante local, forma inglesa/española o forma histórica breve. "
             "Si conoces con suficiente confianza una ubicación utilizable, devuelve lat y lng. "
             "Si no estás seguro de las coordenadas, devuelve null y no inventes. "
             "Si conoces una dirección o referencia postal razonable, devuélvela en formatted_address; si no, null. "
@@ -1070,8 +1312,9 @@ class CatalogService:
         skipped_count = 0
         rows: list[PoiResponse] = []
         seen_names: set[str] = set()
+        ai_candidates = self._localize_content_candidates(ai_candidates[:limit], context=f"city:{city.name}:gpt_seed")
 
-        for rank, candidate in enumerate(ai_candidates[:limit], start=1):
+        for rank, candidate in enumerate(ai_candidates, start=1):
             dedupe_key = self._safe_slug(candidate["name"], prefix="poi")
             if dedupe_key in seen_names:
                 skipped_count += 1
@@ -1085,6 +1328,12 @@ class CatalogService:
                 .where(or_(Poi.slug == dedupe_key, Poi.name == candidate["name"]))
             )
             metadata = self._candidate_metadata(candidate, seed_rank=rank)
+            names = self._names_from_aliases(candidate["name"], candidate.get("aliases", []))
+            names = {**names, **self._normalize_names(candidate["name"], candidate.get("names") or {})}
+            short_descriptions = self._normalize_short_descriptions(
+                candidate.get("short_description") or "",
+                candidate.get("short_descriptions") or {},
+            )
             has_seed_coords = candidate.get("lat") is not None and candidate.get("lng") is not None
             if has_seed_coords:
                 metadata["import_status"] = "seeded_gpt_coords"
@@ -1098,12 +1347,14 @@ class CatalogService:
                     poi_type_id=poi_type.id if poi_type else None,
                     slug=dedupe_key,
                     name=candidate["name"],
+                    names_json=names,
                     lat=Decimal(str(candidate["lat"])) if has_seed_coords else None,
                     lng=Decimal(str(candidate["lng"])) if has_seed_coords else None,
                     short_description=(
                         candidate.get("short_description")
                         or ("Ubicación provisional generada por GPT." if has_seed_coords else "Pendiente de resolver ubicación exacta.")
                     ),
+                    short_descriptions_json=short_descriptions,
                     long_description="",
                     source_of_truth="gpt_seed",
                     wikidata_id="",
@@ -1119,6 +1370,11 @@ class CatalogService:
 
             current_meta = dict(existing.metadata_json or {})
             current_meta.update(metadata)
+            existing.names_json = {**self._normalize_names(existing.name, existing.names_json or {}), **names}
+            existing.short_descriptions_json = {
+                **self._normalize_short_descriptions(existing.short_description, existing.short_descriptions_json or {}),
+                **short_descriptions,
+            }
             if existing.lat is not None and existing.lng is not None:
                 current_meta["import_status"] = "resolved"
                 current_meta["import_tier"] = current_meta.get("import_tier", "featured")
@@ -1399,6 +1655,10 @@ class CatalogService:
                 "source": "wikidata_ai",
                 "wikidata_id": best_result["id"],
                 "poi_name": clean_text(best_result.get("label", "")) or candidate["name"],
+                "names": {
+                    **self._names_from_aliases(candidate["name"], candidate.get("aliases", [])),
+                    **self._names_from_wikidata_entity(entity, clean_text(best_result.get("label", "")) or candidate["name"]),
+                },
                 "lat": lat,
                 "lng": lng,
                 "description": clean_text(description),
@@ -1618,9 +1878,15 @@ out center {safe_limit};
         )
         type_code = self._map_overpass_type_code(tags)
         wikidata_id = clean_text(str(tags.get("wikidata", "")))
+        names = self._normalize_names(name)
+        for source_key, target_key in [("name:es", "es"), ("name:en", "en"), ("name:ja", "ja"), ("int_name", "int")]:
+            value = clean_text(str(tags.get(source_key, "")))
+            if value:
+                names[target_key] = value
         return {
             "source_id": f"osm:{element.get('type', '')}:{element.get('id', '')}",
             "name": name,
+            "names": names,
             "lat": lat,
             "lng": lng,
             "description": description,
@@ -2081,6 +2347,7 @@ out center 10;
                             "source": "wikidata",
                             "wikidata_id": wikidata_id,
                             "poi_name": poi_name,
+                            "names": self._normalize_names(poi_name),
                             "lat": lat,
                             "lng": lng,
                             "description": description,
@@ -2116,6 +2383,7 @@ out center 10;
                             "source_id": candidate["source_id"],
                             "wikidata_id": wikidata_id,
                             "poi_name": candidate["name"],
+                            "names": candidate.get("names") or self._normalize_names(candidate["name"]),
                             "lat": candidate["lat"],
                             "lng": candidate["lng"],
                             "description": candidate["description"],
@@ -2130,6 +2398,10 @@ out center 10;
             ranked_candidates.sort(key=lambda item: (-item[0], item[1]["poi_name"].lower()))
             featured_limit = min(max(limit // 2, 4), 8)
             selected_candidates = ranked_candidates[:limit]
+            self._localize_content_candidates(
+                [candidate for _score, candidate in selected_candidates],
+                context=f"city:{city.name}:catalog_sources",
+            )
             stats["ranked_candidate_count"] = len(ranked_candidates)
             stats["selected_candidate_count"] = len(selected_candidates)
 
@@ -2180,6 +2452,8 @@ out center 10;
                 wikipedia_title = candidate["wikipedia_title"]
                 poi_type = type_lookup.get(type_code)
                 poi_slug = self._safe_slug(poi_name, prefix="poi")
+                poi_names = self._normalize_names(poi_name, candidate.get("names") or {})
+                poi_short_descriptions = self._normalize_short_descriptions(description, candidate.get("short_descriptions") or {})
                 is_featured = (
                     candidate.get("source") in {"wikidata", "wikidata_ai"}
                     and index < featured_limit
@@ -2197,9 +2471,11 @@ out center 10;
                         poi_type_id=poi_type.id if poi_type else None,
                         slug=poi_slug,
                         name=poi_name,
+                        names_json=poi_names,
                         lat=Decimal(str(lat)) if lat is not None else None,
                         lng=Decimal(str(lng)) if lng is not None else None,
                         short_description=description,
+                        short_descriptions_json=poi_short_descriptions,
                         long_description="",
                         source_of_truth="wikidata",
                         wikidata_id=wikidata_id,
@@ -2239,6 +2515,11 @@ out center 10;
                     )
                     existing.wikidata_id = wikidata_id or existing.wikidata_id
                     existing.wikipedia_title = wikipedia_title or existing.wikipedia_title
+                    existing.names_json = {**self._normalize_names(existing.name, existing.names_json or {}), **poi_names}
+                    existing.short_descriptions_json = {
+                        **self._normalize_short_descriptions(existing.short_description, existing.short_descriptions_json or {}),
+                        **poi_short_descriptions,
+                    }
                     current_meta = dict(existing.metadata_json or {})
                     current_meta["imported_from"] = (
                         "wikidata_ai"

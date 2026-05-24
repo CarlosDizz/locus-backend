@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class CityCreateRequest(BaseModel):
     name: str
     slug: str | None = None
+    names: dict = Field(default_factory=dict)
     country_code: str = ""
     lat: float | None = None
     lng: float | None = None
@@ -29,6 +30,8 @@ class CityResponse(BaseModel):
     id: int
     slug: str
     name: str
+    display_name: str
+    names: dict = Field(default_factory=dict)
     country_code: str
     lat: float | None = None
     lng: float | None = None
@@ -49,9 +52,11 @@ class PoiCreateRequest(BaseModel):
     poi_type_code: str | None = None
     slug: str | None = None
     name: str
+    names: dict = Field(default_factory=dict)
     lat: float | None = None
     lng: float | None = None
     short_description: str = ""
+    short_descriptions: dict = Field(default_factory=dict)
     long_description: str = ""
     source_of_truth: str = "manual"
     wikidata_id: str = ""
@@ -67,9 +72,11 @@ class PoiUpdateRequest(BaseModel):
     poi_type_code: str | None = None
     slug: str | None = None
     name: str | None = None
+    names: dict = Field(default_factory=dict)
     lat: float | None = None
     lng: float | None = None
     short_description: str | None = None
+    short_descriptions: dict = Field(default_factory=dict)
     long_description: str | None = None
     source_of_truth: str | None = None
     wikidata_id: str | None = None
@@ -87,9 +94,12 @@ class PoiResponse(BaseModel):
     poi_type_name: str | None = None
     slug: str
     name: str
+    display_name: str
+    names: dict = Field(default_factory=dict)
     lat: float | None = None
     lng: float | None = None
     short_description: str
+    short_descriptions: dict = Field(default_factory=dict)
     long_description: str
     source_of_truth: str
     wikidata_id: str

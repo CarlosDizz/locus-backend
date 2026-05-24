@@ -295,6 +295,13 @@ class CatalogService:
         pending = [candidate for candidate in candidates if self._needs_content_localization(candidate)]
         if not pending:
             return candidates
+        if len(pending) > 12:
+            for offset in range(0, len(pending), 12):
+                self._localize_content_candidates(
+                    pending[offset : offset + 12],
+                    context=f"{context}:chunk_{(offset // 12) + 1}",
+                )
+            return candidates
 
         items = [
             {
@@ -338,7 +345,7 @@ class CatalogService:
                         ],
                     }
                 ],
-                max_output_tokens=min(12000, max(1200, len(items) * 240)),
+                max_output_tokens=min(5000, max(1200, len(items) * 320)),
                 tool_choice="none",
                 extra_payload={
                     "text": {
@@ -380,7 +387,7 @@ class CatalogService:
                 },
             )
             payload = self._extract_json_object(self._extract_response_text(response))
-        except (CatalogError, OpenAIClientError, RequestException) as exc:
+        except (CatalogError, OpenAIClientError, RequestException, json.JSONDecodeError, ValueError) as exc:
             self.logger.warning("catalog_localization_failed context=%s count=%s error=%s", context, len(items), exc)
             return candidates
 

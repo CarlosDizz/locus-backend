@@ -17,6 +17,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 import websocket
 
+
 from app.config import settings
 from app.schemas.auth import UserResponse
 from app.schemas.call import CallParticipant, CallSnapshot, UICapabilities

@@ -411,10 +411,22 @@ class CatalogService:
             or best.get("label")
             or query
         )
+        city_slug = slugify(city_name)
+        with session_scope() as db:
+            existing = db.scalar(select(City).where(City.slug == city_slug))
+            if existing is not None:
+                self.logger.info(
+                    "catalog_bootstrap_city_reused city_id=%s city=%s slug=%s",
+                    existing.id,
+                    existing.name,
+                    city_slug,
+                )
+                return self._city_to_schema(existing)
+
         return self.create_city(
             CityCreateRequest(
                 name=city_name,
-                slug=slugify(city_name),
+                slug=city_slug,
                 country_code=country_code.upper(),
                 lat=lat,
                 lng=lng,

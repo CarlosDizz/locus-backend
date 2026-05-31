@@ -16,7 +16,7 @@ compat_router = APIRouter(tags=["compat"])
 
 
 @router.post("/setup", response_model=ChatResponse)
-async def setup_chat(
+def setup_chat(
     payload: ChatSetupRequest,
     current_user: UserResponse | None = Depends(get_current_user_optional),
 ) -> ChatResponse:
@@ -26,7 +26,7 @@ async def setup_chat(
 
 
 @router.post("/messages", response_model=ChatResponse)
-async def send_message(
+def send_message(
     payload: ChatMessageRequest,
     current_user: UserResponse | None = Depends(get_current_user_optional),
 ) -> ChatResponse:
@@ -36,7 +36,7 @@ async def send_message(
 
 
 @compat_router.post("/home_chat")
-async def home_chat(payload: dict) -> dict:
+def home_chat(payload: dict) -> dict:
     action = payload.get("action", "")
     session_id = payload.get("roomId", "")
     lat = payload.get("lat")

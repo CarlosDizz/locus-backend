@@ -9,7 +9,7 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.post("/register", response_model=AuthResponse)
-async def register(payload: RegisterRequest) -> AuthResponse:
+def register(payload: RegisterRequest) -> AuthResponse:
     try:
         token, user = auth_service.register_user(payload.email, payload.password, payload.display_name)
     except AuthError as exc:
@@ -18,7 +18,7 @@ async def register(payload: RegisterRequest) -> AuthResponse:
 
 
 @router.post("/login", response_model=AuthResponse)
-async def login(payload: LoginRequest) -> AuthResponse:
+def login(payload: LoginRequest) -> AuthResponse:
     try:
         token, user = auth_service.login(payload.email, payload.password)
     except AuthError as exc:
@@ -27,7 +27,7 @@ async def login(payload: LoginRequest) -> AuthResponse:
 
 
 @router.post("/google", response_model=AuthResponse)
-async def google_auth(payload: GoogleAuthRequest) -> AuthResponse:
+def google_auth(payload: GoogleAuthRequest) -> AuthResponse:
     try:
         token, user = auth_service.authenticate_google(payload.id_token)
     except AuthError as exc:
@@ -36,5 +36,5 @@ async def google_auth(payload: GoogleAuthRequest) -> AuthResponse:
 
 
 @router.get("/me", response_model=UserResponse)
-async def me(current_user: UserResponse = Depends(get_current_user_required)) -> UserResponse:
+def me(current_user: UserResponse = Depends(get_current_user_required)) -> UserResponse:
     return current_user

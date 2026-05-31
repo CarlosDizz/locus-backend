@@ -1,4 +1,7 @@
-from fastapi import FastAPI
+import logging
+import time
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
@@ -16,6 +19,30 @@ from app.routes.sessions import router as sessions_router
 
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name)
+
+    @app.middleware("http")
+    async def log_request_timing(request: Request, call_next):
+        started_at = time.perf_counter()
+        response = await call_next(request)
+        elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+        if elapsed_ms >= 500:
+            logging.getLogger("app.request_timing").warning(
+                "http_slow_request method=%s path=%s status=%s elapsed_ms=%s",
+                request.method,
+                request.url.path,
+                response.status_code,
+                elapsed_ms,
+            )
+        else:
+            logging.getLogger("app.request_timing").info(
+                "http_request method=%s path=%s status=%s elapsed_ms=%s",
+                request.method,
+                request.url.path,
+                response.status_code,
+                elapsed_ms,
+            )
+        return response
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,

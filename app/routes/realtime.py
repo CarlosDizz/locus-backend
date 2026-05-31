@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/realtime", tags=["realtime"])
 
 
 @router.post("/session", response_model=RealtimeSessionResponse)
-async def prepare_realtime_session(
+def prepare_realtime_session(
     payload: RealtimeSessionRequest,
     current_user: UserResponse | None = Depends(get_current_user_optional),
 ) -> RealtimeSessionResponse:
@@ -32,7 +32,7 @@ async def prepare_realtime_session(
 
 
 @router.post("/client-secret", response_model=RealtimeClientSecretResponse)
-async def create_realtime_client_secret(
+def create_realtime_client_secret(
     payload: RealtimeSessionRequest,
     current_user: UserResponse | None = Depends(get_current_user_optional),
 ) -> RealtimeClientSecretResponse:
@@ -47,13 +47,13 @@ async def create_realtime_client_secret(
 
 
 @router.post("/tool")
-async def execute_realtime_tool(payload: RealtimeToolRequest) -> dict:
+def execute_realtime_tool(payload: RealtimeToolRequest) -> dict:
     result = tool_runtime_service.execute(payload.session_id, payload.tool_name, payload.arguments)
     return json.loads(result)
 
 
 @router.post("/photo-insight", response_model=RealtimePhotoInsightResponse)
-async def get_realtime_photo_insight(
+def get_realtime_photo_insight(
     payload: RealtimePhotoInsightRequest,
     current_user: UserResponse | None = Depends(get_current_user_optional),
 ) -> RealtimePhotoInsightResponse:

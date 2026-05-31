@@ -116,6 +116,37 @@ class ChatService:
         ]
         return any(marker in lowered for marker in markers)
 
+    def _message_suggests_map_context(self, message: str) -> bool:
+        lowered = clean_text(message).lower()
+        if not lowered:
+            return False
+        markers = [
+            "cerca", "cercano", "cercana", "alrededor", "donde", "dónde",
+            "mapa", "ubicacion", "ubicación", "llegar", "ir a", "ruta",
+            "recomienda", "recomiendame", "recomiéndame", "que hago", "qué hago",
+            "que ver", "qué ver", "visitar", "poi", "punto de interes", "punto de interés",
+            "restaurante", "comer", "cenar", "cafe", "café", "bar", "farmacia", "parking",
+        ]
+        return any(marker in lowered for marker in markers)
+
+    def _message_suggests_access_intent(self, message: str) -> bool:
+        lowered = clean_text(message).lower()
+        markers = [
+            "entrada", "entradas", "ticket", "tickets", "pase", "reservar", "reserva",
+            "comprar", "precio", "precios", "tarifa", "tarifas", "horario", "horarios",
+            "disponibilidad", "sin cola", "franja", "acceso",
+        ]
+        return any(marker in lowered for marker in markers)
+
+    def _message_suggests_fact_intent(self, message: str) -> bool:
+        lowered = clean_text(message).lower()
+        markers = [
+            "historia", "origen", "quien", "quién", "cuando", "cuándo", "por que", "por qué",
+            "curiosidad", "curiosidades", "que sabes", "qué sabes", "explica", "cuentame", "cuéntame",
+            "significa", "significado", "arquitectura", "autor", "fecha",
+        ]
+        return any(marker in lowered for marker in markers)
+
     def _select_catalog_promotion_candidate(self, session, user_message: str) -> POI | None:
         message_slug = slugify(user_message)
         message_tokens = {token for token in message_slug.split("-") if len(token) > 2}
@@ -291,7 +322,7 @@ class ChatService:
         lng_km = (lng - avg_lng) * 111.32 * max(cos(radians(lat)), 0.2)
         return sqrt(lat_km ** 2 + lng_km ** 2)
 
-    def _ensure_session_map_context(self, session_id: str):
+    def _ensure_session_map_context(self, session_id: str, user_message: str = ""):
         session = session_service.get_or_create(session_id)
         if session.location.lat is None or session.location.lng is None:
             return session
@@ -299,6 +330,8 @@ class ChatService:
             dist = self._poi_centroid_distance_km(session.location.lat, session.location.lng, session.nearby_pois)
             if dist < 10.0:
                 return session
+        if not self._message_suggests_map_context(user_message):
+            return session
         pois = poi_service.search_nearby_pois(
             query="lugares turisticos",
             lat=session.location.lat,
@@ -307,13 +340,14 @@ class ChatService:
         )
         return session_service.set_nearby_pois(session_id, pois)
 
-    def _tool_manifest(self, *, include_web_search: bool = False) -> list[dict]:
-        tools: list[dict] = [
+    def _tools_by_name(self, wanted_names: set[str], *, include_web_search: bool = False) -> list[dict]:
+        available_tools: list[dict] = [
             *get_session_tool_manifest(),
             *get_poi_tool_manifest(),
             *get_knowledge_tool_manifest(include_web_research_tool=False),
             *get_referral_tool_manifest(),
         ]
+        tools = [tool for tool in available_tools if str(tool.get("name") or "") in wanted_names]
         if include_web_search:
             tools.append(
                 {
@@ -327,17 +361,41 @@ class ChatService:
             )
         return tools
 
+    def _tool_manifest_for_message(self, message: str, session) -> list[dict]:
+        wanted_names: set[str] = set()
+        include_web_search = settings.openai_chat_enable_web_search and self._message_suggests_web_research(message)
+        if self._message_suggests_map_context(message):
+            wanted_names.update(
+                {
+                    "get_session_profile",
+                    "set_active_poi",
+                    "get_nearby_pois",
+                    "search_tourism_candidates",
+                    "identify_map_landmark",
+                    "search_contextual_recommendations",
+                    "mark_pois_on_map",
+                }
+            )
+        if self._message_suggests_missing_landmark(message) or self._message_suggests_visit_intent(message):
+            wanted_names.update({"search_tourism_candidates", "promote_poi_to_catalog"})
+        if self._message_suggests_fact_intent(message) or session.active_poi is not None:
+            wanted_names.update({"get_poi_summary", "resolve_poi_facts", "search_wikipedia"})
+        if self._message_suggests_access_intent(message):
+            wanted_names.add("search_access_referrals")
+            include_web_search = True
+        return self._tools_by_name(wanted_names, include_web_search=include_web_search)
+
     def _create_chat_response(
         self,
         *,
         instructions: str,
         input_items: list[dict],
         previous_response_id: str | None,
-        include_web_search: bool = False,
+        tools: list[dict] | None,
         max_output_tokens: int = 700,
     ) -> dict:
-        full_tools = self._tool_manifest(include_web_search=include_web_search)
-        no_web_tools = [tool for tool in full_tools if tool.get("type") != "web_search"]
+        full_tools = tools or None
+        no_web_tools = [tool for tool in (tools or []) if tool.get("type") != "web_search"] or None
         attempts = [
             ("full", full_tools, previous_response_id),
             ("no_web_search", no_web_tools, previous_response_id),
@@ -406,8 +464,9 @@ class ChatService:
     def _run_openai_chat(self, session_id: str, user_message: str) -> tuple[str, dict, dict]:
         flow_started_at = perf_counter()
         context_started_at = perf_counter()
-        session = self._ensure_session_map_context(session_id)
+        session = self._ensure_session_map_context(session_id, user_message)
         instructions = self._build_instructions(session_id, session)
+        tools = self._tool_manifest_for_message(user_message, session)
         metrics = {
             "context_ms": round((perf_counter() - context_started_at) * 1000, 1),
             "openai_ms": 0.0,
@@ -415,15 +474,15 @@ class ChatService:
             "openai_rounds": 0,
             "tool_calls": 0,
             "tool_batches": 0,
+            "available_tools": len(tools),
         }
-        include_web_search = settings.openai_chat_enable_web_search and self._message_suggests_web_research(user_message)
 
         openai_started_at = perf_counter()
         response = self._create_chat_response(
             instructions=instructions,
             input_items=[{"role": "user", "content": [{"type": "input_text", "text": user_message}]}],
             previous_response_id=session.metadata.get("last_chat_response_id"),
-            include_web_search=include_web_search,
+            tools=tools,
             max_output_tokens=300,
         )
         metrics["openai_ms"] += round((perf_counter() - openai_started_at) * 1000, 1)
@@ -487,7 +546,7 @@ class ChatService:
                 instructions=instructions,
                 input_items=tool_outputs,
                 previous_response_id=response.get("id"),
-                include_web_search=include_web_search,
+                tools=tools,
             )
             metrics["openai_ms"] += round((perf_counter() - openai_started_at) * 1000, 1)
             metrics["openai_rounds"] += 1
@@ -552,6 +611,7 @@ class ChatService:
             "openai_rounds": 0,
             "tool_calls": 0,
             "tool_batches": 0,
+            "available_tools": 0,
             "flow_ms": 0.0,
         }
         promotion_ms = 0.0
@@ -611,6 +671,7 @@ class ChatService:
             f"context_ms={chat_metrics['context_ms']:.1f} "
             f"openai_ms={chat_metrics['openai_ms']:.1f} "
             f"rounds={chat_metrics['openai_rounds']} "
+            f"available_tools={chat_metrics['available_tools']} "
             f"tool_batches={chat_metrics['tool_batches']} "
             f"tool_calls={chat_metrics['tool_calls']} "
             f"tools_ms={chat_metrics['tools_ms']:.1f} "

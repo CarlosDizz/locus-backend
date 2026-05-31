@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/billing", tags=["billing"])
 
 
 @router.get("/wallet", response_model=WalletResponse)
-async def get_wallet(current_user: UserResponse = Depends(get_current_user_required)) -> WalletResponse:
+def get_wallet(current_user: UserResponse = Depends(get_current_user_required)) -> WalletResponse:
     wallet = billing_service.get_wallet(current_user.id)
     if wallet is None:
         raise HTTPException(status_code=404, detail="Wallet no encontrada")
@@ -28,7 +28,7 @@ async def get_wallet(current_user: UserResponse = Depends(get_current_user_requi
 
 
 @router.get("/ledger", response_model=list[LedgerEntryResponse])
-async def get_ledger(
+def get_ledger(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     current_user: UserResponse = Depends(get_current_user_required),
@@ -69,7 +69,7 @@ async def get_ledger(
 
 
 @router.get("/usage-events", response_model=list[UsageEventResponse])
-async def get_usage_events(current_user: UserResponse = Depends(get_current_user_required)) -> list[UsageEventResponse]:
+def get_usage_events(current_user: UserResponse = Depends(get_current_user_required)) -> list[UsageEventResponse]:
     events = billing_service.list_usage_events(current_user.id)
     return [
         UsageEventResponse(
@@ -100,7 +100,7 @@ async def get_usage_events(current_user: UserResponse = Depends(get_current_user
 
 
 @router.post("/topups", response_model=TopUpResponse)
-async def create_topup(
+def create_topup(
     payload: TopUpRequest,
     current_user: UserResponse = Depends(get_current_user_required),
 ) -> TopUpResponse:
@@ -128,7 +128,7 @@ async def create_topup(
 
 
 @router.post("/google-play/topups/confirm", response_model=TopUpResponse)
-async def confirm_google_play_topup(
+def confirm_google_play_topup(
     payload: GooglePlayTopUpRequest,
     current_user: UserResponse = Depends(get_current_user_required),
 ) -> TopUpResponse:
@@ -155,7 +155,7 @@ async def confirm_google_play_topup(
 
 
 @router.post("/usage-events", response_model=UsageRecordResponse)
-async def record_usage(
+def record_usage(
     payload: UsageRecordRequest,
     current_user: UserResponse = Depends(get_current_user_required),
 ) -> UsageRecordResponse:

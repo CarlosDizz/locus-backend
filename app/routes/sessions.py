@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
 @router.post("", response_model=SessionResponse)
-async def create_session(
+def create_session(
     payload: SessionCreateRequest,
     current_user: UserResponse | None = Depends(get_current_user_optional),
 ) -> SessionResponse:
@@ -28,7 +28,7 @@ async def create_session(
 
 
 @router.get("/{session_id}", response_model=SessionResponse)
-async def get_session(session_id: str) -> SessionResponse:
+def get_session(session_id: str) -> SessionResponse:
     session = session_service.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -36,7 +36,7 @@ async def get_session(session_id: str) -> SessionResponse:
 
 
 @router.post("/{session_id}/reset", response_model=SessionResponse)
-async def reset_session(session_id: str) -> SessionResponse:
+def reset_session(session_id: str) -> SessionResponse:
     session = session_service.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -45,7 +45,7 @@ async def reset_session(session_id: str) -> SessionResponse:
 
 
 @router.put("/{session_id}", response_model=SessionResponse)
-async def update_session(
+def update_session(
     session_id: str,
     payload: SessionUpdateRequest,
     current_user: UserResponse | None = Depends(get_current_user_optional),
@@ -57,7 +57,7 @@ async def update_session(
 
 
 @router.post("/{session_id}/presence", response_model=SessionResponse)
-async def touch_participant_presence(
+def touch_participant_presence(
     session_id: str,
     payload: SessionParticipantTouchRequest,
     current_user: UserResponse = Depends(get_current_user_required),
@@ -67,7 +67,7 @@ async def touch_participant_presence(
 
 
 @router.delete("/{session_id}/presence", response_model=SessionResponse)
-async def leave_participant_presence(
+def leave_participant_presence(
     session_id: str,
     current_user: UserResponse = Depends(get_current_user_required),
 ) -> SessionResponse:
@@ -76,7 +76,7 @@ async def leave_participant_presence(
 
 
 @router.post("/{session_id}/call-state", response_model=SessionResponse)
-async def set_call_state(
+def set_call_state(
     session_id: str,
     payload: SessionCallStateRequest,
     current_user: UserResponse = Depends(get_current_user_required),
@@ -86,7 +86,7 @@ async def set_call_state(
 
 
 @router.post("/{session_id}/call-log", response_model=SessionResponse)
-async def append_call_log(
+def append_call_log(
     session_id: str,
     payload: SessionCallLogRequest,
     current_user: UserResponse = Depends(get_current_user_required),

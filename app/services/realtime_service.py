@@ -30,6 +30,11 @@ class RealtimeService:
         "ja": "日本語",
         "ar": "العربية",
     }
+    GUIDE_LANGUAGE_NOTES = {
+        "ar": "استخدم العربية الفصحى الحديثة بحروف عربية. لا تستخدم الإسبانية أو الإنجليزية إلا إذا طلب المستخدم ذلك صراحة.",
+        "ja": "日本語で自然に話してください。ユーザーが明示的に求めない限り、スペイン語や英語に切り替えないでください。",
+        "zh": "请使用自然的中文回答。除非用户明确要求，否则不要切换到西班牙语或英语。",
+    }
 
     def __init__(self) -> None:
         self.openai = OpenAIClient()
@@ -46,7 +51,9 @@ class RealtimeService:
             f"IDIOMA OBLIGATORIO DE LA EXPERIENCIA: {name} ({code}). "
             f"Responde siempre en {name}, incluida la primera frase de apertura, "
             "las explicaciones, las preguntas, los mensajes de chat y los cierres. "
-            "Si el usuario habla en otro idioma, solo cambia de idioma si lo pide explicitamente."
+            "Si el usuario habla en otro idioma, solo cambia de idioma si lo pide explicitamente. "
+            "Las instrucciones internas pueden estar escritas en español, pero eso NO autoriza a responder en español. "
+            f"{self.GUIDE_LANGUAGE_NOTES.get(code, '')}"
         )
 
     def prepare_session(self, data: RealtimeSessionRequest) -> RealtimeSessionResponse:
@@ -97,7 +104,8 @@ class RealtimeService:
             ] if part
         ).strip() or "No hay preferencias personales guardadas todavía."
 
-        instructions = self._language_instruction(resolved_language) + "\n\n" + prompt_service.render(
+        language_instruction = self._language_instruction(resolved_language)
+        rendered_prompt = prompt_service.render(
             "realtime_agent.json",
             {
                 "session_profile": session_profile,
@@ -107,6 +115,12 @@ class RealtimeService:
                     f"{item['role'].upper()}: {item['text']}" for item in session.memory[-8:]
                 ),
             },
+        )
+        instructions = (
+            f"{language_instruction}\n\n"
+            f"{rendered_prompt}\n\n"
+            "RECORDATORIO FINAL DE IDIOMA:\n"
+            f"{language_instruction}"
         )
         raw_tools = [
             *get_session_tool_manifest(),

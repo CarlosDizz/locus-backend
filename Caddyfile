@@ -1,0 +1,7 @@
+:80 {
+	reverse_proxy api:8000
+}
+
+api.locusguide.es {
+	reverse_proxy api:8000
+}

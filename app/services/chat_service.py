@@ -200,11 +200,11 @@ class ChatService:
         return ranked[0][1] if ranked and ranked[0][0] > 0 else None
 
     def _maybe_promote_candidate_to_catalog(self, session_id: str, user_message: str) -> dict | None:
-        session = session_service.get_or_create(session_id)
         should_try = self._message_suggests_missing_landmark(user_message) or self._message_suggests_visit_intent(user_message)
         if not should_try:
             return None
 
+        session = session_service.get_or_create(session_id)
         candidate = self._select_catalog_promotion_candidate(session, user_message)
         if candidate is None:
             return None
@@ -603,7 +603,6 @@ class ChatService:
         session_ms = round((perf_counter() - session_started_at) * 1000, 1)
 
         clean_message = clean_text(data.message)
-        session_service.append_memory(session.session_id, "user", clean_message)
         chat_metrics = {
             "context_ms": 0.0,
             "openai_ms": 0.0,
@@ -615,11 +614,20 @@ class ChatService:
             "flow_ms": 0.0,
         }
         promotion_ms = 0.0
+        billing_check_ms = 0.0
+        billing_record_ms = 0.0
+        user_memory_ms = 0.0
+        final_session_ms = 0.0
         outcome = "ok"
+        memory_started_at = perf_counter()
+        session_service.append_memory(session.session_id, "user", clean_message)
+        user_memory_ms = round((perf_counter() - memory_started_at) * 1000, 1)
         try:
             if self.openai.is_configured():
                 if session.user_id is not None:
+                    billing_started_at = perf_counter()
                     billing_service.ensure_user_can_consume(session.user_id)
+                    billing_check_ms = round((perf_counter() - billing_started_at) * 1000, 1)
                 reply, final_response, chat_metrics = self._run_openai_chat(session.session_id, clean_message)
                 promotion_started_at = perf_counter()
                 promotion_result = self._maybe_promote_candidate_to_catalog(session.session_id, clean_message)
@@ -631,8 +639,11 @@ class ChatService:
                             f"{reply}\n\n"
                             f"Además, ya te lo he incorporado también como punto de interés normal del mapa para que puedas abrir su ficha y usarlo como visita."
                         )
+                final_session_started_at = perf_counter()
                 final_session = session_service.get_or_create(session.session_id)
+                final_session_ms = round((perf_counter() - final_session_started_at) * 1000, 1)
                 if final_session.user_id is not None:
+                    billing_started_at = perf_counter()
                     billing_service.record_usage(
                         user_id=final_session.user_id,
                         session_id=final_session.session_id,
@@ -647,6 +658,7 @@ class ChatService:
                             "web_search_call_count": self._count_web_search_calls(final_response),
                         },
                     )
+                    billing_record_ms = round((perf_counter() - billing_started_at) * 1000, 1)
             else:
                 raise OpenAIClientError("OpenAI no configurado")
         except BillingError:
@@ -668,6 +680,7 @@ class ChatService:
             f"outcome={outcome} "
             f"total_ms={total_ms:.1f} "
             f"session_ms={session_ms:.1f} "
+            f"user_memory_ms={user_memory_ms:.1f} "
             f"context_ms={chat_metrics['context_ms']:.1f} "
             f"openai_ms={chat_metrics['openai_ms']:.1f} "
             f"rounds={chat_metrics['openai_rounds']} "
@@ -676,6 +689,9 @@ class ChatService:
             f"tool_calls={chat_metrics['tool_calls']} "
             f"tools_ms={chat_metrics['tools_ms']:.1f} "
             f"promotion_ms={promotion_ms:.1f} "
+            f"final_session_ms={final_session_ms:.1f} "
+            f"billing_check_ms={billing_check_ms:.1f} "
+            f"billing_record_ms={billing_record_ms:.1f} "
             f"finalize_ms={finalize_ms:.1f}"
         )
         self.logger.warning(timing_line)

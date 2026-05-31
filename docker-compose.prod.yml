@@ -1,0 +1,70 @@
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    expose:
+      - "8000"
+    env_file:
+      - ${LOCUS_ENV_FILE:-.env.prod}
+    environment:
+      DB_DRIVER: ${DB_DRIVER:-mysql+pymysql}
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:-locus}
+      DB_USER: ${DB_USER:-locus}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DATABASE_URL: mysql+pymysql://${DB_USER:-locus}:${DB_PASSWORD}@mysql:3306/${DB_NAME:-locus}
+      MYSQL_URL: ""
+      MYSQL_PUBLIC_URL: ""
+      DATABASE_PUBLIC_URL: ""
+      MYSQLHOST: mysql
+      MYSQLPORT: 3306
+      MYSQLDATABASE: ${DB_NAME:-locus}
+      MYSQLUSER: ${DB_USER:-locus}
+      MYSQLPASSWORD: ${DB_PASSWORD}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+      uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME:-locus}
+      MYSQL_USER: ${DB_USER:-locus}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  mysql_data:
+  caddy_data:
+  caddy_config:

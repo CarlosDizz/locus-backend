@@ -33,6 +33,7 @@ class CallSnapshot(BaseModel):
     host_session_id: str
     poi_id: int | str | None = None
     poi_name: str = ""
+    language: str = "es"
     status: CallStatus
     speaker_user_id: int | None = None
     max_members: int = 10
@@ -47,6 +48,7 @@ class CallCreateRequest(BaseModel):
     session_id: str
     poi_id: int | str | None = None
     poi_name: str = ""
+    language: str = Field(default="es", max_length=16)
 
 
 class CallCreateResponse(BaseModel):
@@ -61,4 +63,3 @@ class CallJoinTokenResponse(BaseModel):
 
 class CallActionResponse(BaseModel):
     call: CallSnapshot
-

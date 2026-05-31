@@ -54,6 +54,7 @@ class CallRuntime:
     host_session_id: str
     poi_id: int | str | None
     poi_name: str
+    language: str
     status: str
     speaker_user_id: int | None
     last_turn_user_id: int | None = None
@@ -75,6 +76,7 @@ class CallRuntime:
             host_session_id=self.host_session_id,
             poi_id=self.poi_id,
             poi_name=self.poi_name,
+            language=self.language,
             status=self.status,
             speaker_user_id=self.speaker_user_id,
             max_members=self.max_members,
@@ -190,7 +192,11 @@ class RealtimeBridge:
         try:
             self.ws = websocket.create_connection(url, header=headers, timeout=5, enable_multithread=True)
             self.ws.settimeout(0.2)
-            prepared = realtime_service.build_room_runtime(self.room.host_session_id, self.room.poi_name)
+            prepared = realtime_service.build_room_runtime(
+                self.room.host_session_id,
+                self.room.poi_name,
+                language=self.room.language,
+            )
             self.ws.send(
                 json.dumps(
                     {
@@ -217,7 +223,7 @@ class RealtimeBridge:
                                     },
                                     "transcription": {
                                         "model": settings.openai_realtime_input_transcription_model,
-                                        "language": settings.openai_realtime_input_transcription_language,
+                                        "language": self.room.language or settings.openai_realtime_input_transcription_language,
                                     },
                                     "turn_detection": None,
                                 },
@@ -339,10 +345,19 @@ class CallRoomService:
             "ui": self._capabilities_for(room, user_id).model_dump(mode="json"),
         }
 
-    async def create_call(self, *, user: UserResponse, session_id: str, poi_id: int | str | None, poi_name: str) -> tuple[CallSnapshot, str]:
+    async def create_call(
+        self,
+        *,
+        user: UserResponse,
+        session_id: str,
+        poi_id: int | str | None,
+        poi_name: str,
+        language: str = "es",
+    ) -> tuple[CallSnapshot, str]:
         async with self._lock:
             billing_service.ensure_user_can_consume(user.id)
             call_id = self._build_call_id()
+            resolved_language = realtime_service.normalize_language(language)
             room = CallRuntime(
                 call_id=call_id,
                 join_code=call_id,
@@ -350,6 +365,7 @@ class CallRoomService:
                 host_session_id=session_id.upper(),
                 poi_id=poi_id,
                 poi_name=poi_name or "",
+                language=resolved_language,
                 status="idle",
                 speaker_user_id=None,
                 max_members=self.MAX_MEMBERS,

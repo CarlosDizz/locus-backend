@@ -19,9 +19,35 @@ from app.utils.text import clean_text
 
 class RealtimeService:
     WEBRTC_CALLS_API_URL = "https://api.openai.com/v1/realtime/calls"
+    GUIDE_LANGUAGES = {
+        "es": "español",
+        "en": "English",
+        "fr": "français",
+        "it": "italiano",
+        "de": "Deutsch",
+        "pt": "português",
+        "zh": "中文",
+        "ja": "日本語",
+        "ar": "العربية",
+    }
 
     def __init__(self) -> None:
         self.openai = OpenAIClient()
+
+    def normalize_language(self, language: str | None) -> str:
+        raw = (language or "").strip().lower().replace("_", "-")
+        code = raw.split("-", 1)[0]
+        return code if code in self.GUIDE_LANGUAGES else "es"
+
+    def _language_instruction(self, language: str) -> str:
+        code = self.normalize_language(language)
+        name = self.GUIDE_LANGUAGES[code]
+        return (
+            f"IDIOMA OBLIGATORIO DE LA EXPERIENCIA: {name} ({code}). "
+            f"Responde siempre en {name}, incluida la primera frase de apertura, "
+            "las explicaciones, las preguntas, los mensajes de chat y los cierres. "
+            "Si el usuario habla en otro idioma, solo cambia de idioma si lo pide explicitamente."
+        )
 
     def prepare_session(self, data: RealtimeSessionRequest) -> RealtimeSessionResponse:
         if data.user_id is not None:
@@ -30,6 +56,7 @@ class RealtimeService:
             session_id=data.session_id,
             active_poi_name=data.active_poi_name,
             visit_context=data.visit_context,
+            language=data.language,
         )
         return RealtimeSessionResponse(
             session_id=prepared["session_id"],
@@ -46,8 +73,10 @@ class RealtimeService:
         session_id: str,
         active_poi_name: str | None = None,
         visit_context: str = "",
+        language: str = "es",
     ) -> dict:
         session = session_service.get_or_create(session_id)
+        resolved_language = self.normalize_language(language or session.profile.language)
         resolved_active_poi_name = active_poi_name or (session.active_poi.name if session.active_poi else "")
         resolved_visit_context = visit_context or ""
         if resolved_active_poi_name:
@@ -68,7 +97,7 @@ class RealtimeService:
             ] if part
         ).strip() or "No hay preferencias personales guardadas todavía."
 
-        instructions = prompt_service.render(
+        instructions = self._language_instruction(resolved_language) + "\n\n" + prompt_service.render(
             "realtime_agent.json",
             {
                 "session_profile": session_profile,
@@ -91,6 +120,7 @@ class RealtimeService:
             "tools": tools,
             "active_poi_name": resolved_active_poi_name,
             "visit_context": resolved_visit_context,
+            "language": resolved_language,
         }
 
     def create_client_secret(self, data: RealtimeSessionRequest) -> RealtimeClientSecretResponse:
@@ -135,11 +165,14 @@ class RealtimeService:
             f"{item['role'].upper()}: {item['text']}" for item in session.memory[-6:]
         )
 
+        resolved_language = self.normalize_language(data.language or session.profile.language)
+        language_name = self.GUIDE_LANGUAGES[resolved_language]
         instructions = "\n".join(
             [
+                self._language_instruction(resolved_language),
                 "Eres Locus, el guia de una llamada en vivo.",
                 "Estas reaccionando a una foto enviada durante la visita.",
-                "Responde en espanol natural y breve, como un mensaje de chat de 2 a 4 frases.",
+                f"Responde en {language_name} natural y breve, como un mensaje de chat de 2 a 4 frases.",
                 "Describe con claridad lo que ves.",
                 "Si reconoces el lugar, monumento, obra o detalle urbano, identificalo con seguridad prudente.",
                 "Si no puedes identificarlo con suficiente confianza, di lo que ves y pide un unico detalle corto para afinar.",

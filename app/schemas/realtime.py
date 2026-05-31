@@ -6,6 +6,7 @@ class RealtimeSessionRequest(BaseModel):
     user_id: int | None = None
     active_poi_name: str | None = None
     visit_context: str = Field(default="")
+    language: str = Field(default="es", max_length=16)
 
 
 class RealtimeSessionResponse(BaseModel):
@@ -41,6 +42,7 @@ class RealtimePhotoInsightRequest(BaseModel):
     session_id: str
     image_data_url: str
     file_name: str | None = None
+    language: str = Field(default="es", max_length=16)
 
 
 class RealtimePhotoInsightResponse(BaseModel):

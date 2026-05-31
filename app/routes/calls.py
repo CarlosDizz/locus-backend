@@ -48,6 +48,7 @@ async def create_call(
             session_id=payload.session_id,
             poi_id=payload.poi_id,
             poi_name=payload.poi_name,
+            language=payload.language,
         )
     except CallRoomError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

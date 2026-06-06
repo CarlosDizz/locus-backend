@@ -138,6 +138,17 @@ class ChatService:
         ]
         return any(marker in lowered for marker in markers)
 
+    def _message_suggests_activity_referral_intent(self, message: str) -> bool:
+        lowered = clean_text(message).lower()
+        markers = [
+            "actividad", "actividades", "experiencia", "experiencias", "tour", "tours",
+            "free tour", "tour a pie", "walking tour", "visita guiada", "visitas guiadas",
+            "excursion", "excursión", "excursiones", "barco", "crucero", "bus turistico",
+            "bus turístico", "teleferico", "teleférico", "cosas que hacer", "que hacer",
+            "qué hacer", "planes", "plan para", "getyourguide", "get your guide",
+        ]
+        return any(marker in lowered for marker in markers)
+
     def _message_suggests_fact_intent(self, message: str) -> bool:
         lowered = clean_text(message).lower()
         markers = [
@@ -380,7 +391,7 @@ class ChatService:
             wanted_names.update({"search_tourism_candidates", "promote_poi_to_catalog"})
         if self._message_suggests_fact_intent(message) or session.active_poi is not None:
             wanted_names.update({"get_poi_summary", "resolve_poi_facts", "search_wikipedia"})
-        if self._message_suggests_access_intent(message):
+        if self._message_suggests_access_intent(message) or self._message_suggests_activity_referral_intent(message):
             wanted_names.add("search_access_referrals")
             include_web_search = True
         return self._tools_by_name(wanted_names, include_web_search=include_web_search)

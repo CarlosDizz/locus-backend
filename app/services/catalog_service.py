@@ -11,10 +11,11 @@ from decimal import Decimal
 import requests
 from requests import RequestException
 from sqlalchemy import Select, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from app.clients.overpass_client import OverpassClient
 from app.clients.openai_client import OpenAIClient, OpenAIClientError
-from app.clients.wikidata_client import WikidataClient
+from app.clients.wikidata_client import WikidataClient, WikidataRateLimitError
 from app.db.models import City, Poi, PoiType
 from app.db.session import session_scope
 from app.schemas.catalog import CityCreateRequest, CityResponse, PoiCreateRequest, PoiResponse, PoiTypeResponse, PoiUpdateRequest
@@ -29,6 +30,10 @@ class CatalogError(RuntimeError):
 class CatalogService:
     MIN_BOOTSTRAP_POI_COUNT = 40
     CONTENT_LANGUAGES = ["es", "en", "fr", "it", "de", "pt", "zh", "ja", "ar"]
+    CONTENT_LOCALIZATION_CHUNK_SIZE = 4
+    CONTENT_LOCALIZATION_MAX_OUTPUT_TOKENS = 12000
+    AI_SEED_LOCALIZATION_LIMIT = 12
+    CATALOG_SOURCE_LOCALIZATION_LIMIT = 12
 
     def __init__(self) -> None:
         self.logger = get_logger(__name__)
@@ -295,11 +300,11 @@ class CatalogService:
         pending = [candidate for candidate in candidates if self._needs_content_localization(candidate)]
         if not pending:
             return candidates
-        if len(pending) > 12:
-            for offset in range(0, len(pending), 12):
+        if len(pending) > self.CONTENT_LOCALIZATION_CHUNK_SIZE:
+            for offset in range(0, len(pending), self.CONTENT_LOCALIZATION_CHUNK_SIZE):
                 self._localize_content_candidates(
-                    pending[offset : offset + 12],
-                    context=f"{context}:chunk_{(offset // 12) + 1}",
+                    pending[offset : offset + self.CONTENT_LOCALIZATION_CHUNK_SIZE],
+                    context=f"{context}:chunk_{(offset // self.CONTENT_LOCALIZATION_CHUNK_SIZE) + 1}",
                 )
             return candidates
 
@@ -345,7 +350,7 @@ class CatalogService:
                         ],
                     }
                 ],
-                max_output_tokens=min(5000, max(1200, len(items) * 320)),
+                max_output_tokens=min(self.CONTENT_LOCALIZATION_MAX_OUTPUT_TOKENS, max(1800, len(items) * 950)),
                 tool_choice="none",
                 extra_payload={
                     "text": {
@@ -524,11 +529,13 @@ class CatalogService:
         return score
 
     def _resolve_city_entity_id(self, city: City) -> str | None:
-        searches = [
-            *self.wikidata.search_entities(city.name, limit=8),
-            *self.wikidata.search_entities(f"{city.name} city", limit=8),
-            *self.wikidata.search_entities(city.slug.replace("-", " "), limit=8),
-        ]
+        searches: list[dict] = []
+        for term in (city.name, f"{city.name} city", city.slug.replace("-", " ")):
+            try:
+                searches.extend(self.wikidata.search_entities(term, limit=8))
+            except WikidataRateLimitError as exc:
+                self.logger.warning("catalog_city_entity_rate_limited city_id=%s city=%s error=%s", city.id, city.name, exc)
+                return None
         best_id = ""
         best_score = -9999
         seen_ids: set[str] = set()
@@ -556,6 +563,33 @@ class CatalogService:
         if not code:
             return None
         return db.scalar(select(PoiType).where(PoiType.code == code))
+
+    def _find_existing_city_poi(
+        self,
+        db,
+        city_id: int,
+        *,
+        slug: str,
+        name: str | None = None,
+        wikidata_id: str | None = None,
+    ) -> Poi | None:
+        conditions = [Poi.slug == slug]
+        if name:
+            conditions.append(Poi.name == name)
+        if wikidata_id:
+            conditions.append(Poi.wikidata_id == wikidata_id)
+        return db.scalar(select(Poi).where(Poi.city_id == city_id).where(or_(*conditions)))
+
+    def _list_ai_seed_pois(self, db, city_id: int, *, limit: int) -> list[PoiResponse]:
+        rows = db.execute(
+            select(Poi, PoiType)
+            .outerjoin(PoiType, Poi.poi_type_id == PoiType.id)
+            .where(Poi.city_id == city_id)
+            .where(Poi.source_of_truth == "gpt_seed")
+            .order_by(Poi.id.asc())
+            .limit(limit)
+        ).all()
+        return [self._poi_to_schema(poi, poi_type) for poi, poi_type in rows]
 
     def _poi_to_schema(self, poi: Poi, poi_type: PoiType | None = None) -> PoiResponse:
         names = self._normalize_names(poi.name, poi.names_json or {})
@@ -633,11 +667,12 @@ class CatalogService:
         query = clean_text(name)
         if not query:
             raise CatalogError("El nombre de ciudad es obligatorio")
-        searches = [
-            *self.wikidata.search_entities(query, limit=8),
-            *self.wikidata.search_entities(f"{query} city", limit=8),
-            *self.wikidata.search_entities(f"{query} capital", limit=8),
-        ]
+        searches: list[dict] = []
+        for term in (query, f"{query} city", f"{query} capital"):
+            try:
+                searches.extend(self.wikidata.search_entities(term, limit=8))
+            except WikidataRateLimitError as exc:
+                raise CatalogError("Wikidata está limitando peticiones temporalmente; inténtalo de nuevo en unos minutos") from exc
         deduped: list[dict] = []
         seen_ids: set[str] = set()
         for candidate in searches:
@@ -1319,7 +1354,12 @@ class CatalogService:
         skipped_count = 0
         rows: list[PoiResponse] = []
         seen_names: set[str] = set()
-        ai_candidates = self._localize_content_candidates(ai_candidates[:limit], context=f"city:{city.name}:gpt_seed")
+        ai_candidates = ai_candidates[:limit]
+        if ai_candidates:
+            self._localize_content_candidates(
+                ai_candidates[: self.AI_SEED_LOCALIZATION_LIMIT],
+                context=f"city:{city.name}:gpt_seed",
+            )
 
         for rank, candidate in enumerate(ai_candidates, start=1):
             dedupe_key = self._safe_slug(candidate["name"], prefix="poi")
@@ -1329,11 +1369,7 @@ class CatalogService:
             seen_names.add(dedupe_key)
 
             poi_type = type_lookup.get(candidate["poi_type_code"])
-            existing = db.scalar(
-                select(Poi)
-                .where(Poi.city_id == city.id)
-                .where(or_(Poi.slug == dedupe_key, Poi.name == candidate["name"]))
-            )
+            existing = self._find_existing_city_poi(db, city.id, slug=dedupe_key, name=candidate["name"])
             metadata = self._candidate_metadata(candidate, seed_rank=rank)
             names = self._names_from_aliases(candidate["name"], candidate.get("aliases", []))
             names = {**names, **self._normalize_names(candidate["name"], candidate.get("names") or {})}
@@ -1369,11 +1405,25 @@ class CatalogService:
                     is_active=True,
                     metadata_json=metadata,
                 )
-                db.add(poi)
-                db.flush()
-                imported_count += 1
-                rows.append(self._poi_to_schema(poi, poi_type))
-                continue
+                try:
+                    with db.begin_nested():
+                        db.add(poi)
+                        db.flush()
+                except IntegrityError as exc:
+                    self.logger.warning(
+                        "catalog_ai_seed_duplicate_insert city_id=%s slug=%s name=%s error=%s",
+                        city.id,
+                        dedupe_key,
+                        candidate["name"],
+                        exc,
+                    )
+                    existing = self._find_existing_city_poi(db, city.id, slug=dedupe_key, name=candidate["name"])
+                    if existing is None:
+                        raise
+                else:
+                    imported_count += 1
+                    rows.append(self._poi_to_schema(poi, poi_type))
+                    continue
 
             current_meta = dict(existing.metadata_json or {})
             current_meta.update(metadata)
@@ -1600,7 +1650,11 @@ class CatalogService:
         prelim_results: dict[str, dict] = {}
         search_failed = False
         for term in search_terms:
-            for result in self.wikidata.search_entities(term, limit=5):
+            try:
+                search_results = self.wikidata.search_entities(term, limit=5)
+            except WikidataRateLimitError:
+                return None, "wikidata_rate_limited"
+            for result in search_results:
                 result_id = result.get("id", "")
                 if not result_id:
                     continue
@@ -1621,7 +1675,7 @@ class CatalogService:
         entity_ids = [item["result"]["id"] for item in ranked_prelim if item.get("result", {}).get("id")]
         try:
             entity_lookup = self.wikidata.get_entities(entity_ids)
-        except RequestException:
+        except (WikidataRateLimitError, RequestException):
             return None, "wikidata_rate_limited"
         for item in ranked_prelim:
             result = item["result"]
@@ -2155,6 +2209,24 @@ out center 10;
                 len(type_lookup),
                 self._elapsed_ms(started_at),
             )
+            existing_ai_seed_pois = self._list_ai_seed_pois(db, city.id, limit=min(limit, 150))
+            if use_ai_candidates and existing_ai_seed_pois:
+                stats = {
+                    "mode": "ai_seed_reused",
+                    "source": "existing_ai_seed",
+                    "existing_ai_seed_count": len(existing_ai_seed_pois),
+                    "openai_skipped": True,
+                    "reason": "city_already_has_gpt_seed_pois",
+                    "ranked_candidate_count": len(existing_ai_seed_pois),
+                    "selected_candidate_count": len(existing_ai_seed_pois),
+                }
+                self.logger.info(
+                    "catalog_import_ai_seed_reused city_id=%s existing=%s openai_skipped=true elapsed_ms=%s",
+                    city.id,
+                    len(existing_ai_seed_pois),
+                    self._elapsed_ms(started_at),
+                )
+                return 0, 0, 0, stats, existing_ai_seed_pois, city.name
 
             bindings: list[dict] = []
             overpass_candidates: list[dict] = []
@@ -2299,6 +2371,14 @@ out center 10;
                 if resolved is None:
                     stats["ai"]["rejected_count"] += 1
                     bump_reason(stats["ai"]["reasons"], reason)
+                    if reason == "wikidata_rate_limited":
+                        self.logger.warning(
+                            "catalog_import_ai_resolution_rate_limited city_id=%s rejected=%s elapsed_ms=%s",
+                            city.id,
+                            stats["ai"]["rejected_count"],
+                            self._elapsed_ms(started_at),
+                        )
+                        break
                     continue
                 dedupe_key = resolved["wikidata_id"] or self._safe_slug(resolved["poi_name"], prefix="poi")
                 if dedupe_key in seen_ids:
@@ -2406,11 +2486,24 @@ out center 10;
             featured_limit = min(max(limit // 2, 4), 8)
             selected_candidates = ranked_candidates[:limit]
             self._localize_content_candidates(
-                [candidate for _score, candidate in selected_candidates],
+                [candidate for _score, candidate in selected_candidates[: self.CATALOG_SOURCE_LOCALIZATION_LIMIT]],
                 context=f"city:{city.name}:catalog_sources",
             )
             stats["ranked_candidate_count"] = len(ranked_candidates)
             stats["selected_candidate_count"] = len(selected_candidates)
+
+            if not selected_candidates and not use_ai_candidates and existing_ai_seed_pois:
+                stats["mode"] = "catalog_sources_empty_ai_seed_reused"
+                stats["source"] = "existing_ai_seed_after_empty_catalog_sources"
+                stats["existing_ai_seed_count"] = len(existing_ai_seed_pois)
+                stats["openai_skipped"] = True
+                self.logger.info(
+                    "catalog_import_ai_last_resort_reused city_id=%s existing=%s openai_skipped=true elapsed_ms=%s",
+                    city.id,
+                    len(existing_ai_seed_pois),
+                    self._elapsed_ms(started_at),
+                )
+                return 0, 0, skipped_count, stats, existing_ai_seed_pois, city.name
 
             if not selected_candidates and not use_ai_candidates and self.openai.is_configured():
                 fallback_started_at = time.perf_counter()
@@ -2467,13 +2560,10 @@ out center 10;
                     and self._is_featured_candidate(score, type_code)
                 )
 
-                existing = db.scalar(
-                    select(Poi)
-                    .where(Poi.city_id == city.id)
-                    .where(or_(Poi.wikidata_id == wikidata_id, Poi.slug == poi_slug))
-                )
+                existing = self._find_existing_city_poi(db, city.id, slug=poi_slug, wikidata_id=wikidata_id)
+                created = False
                 if existing is None:
-                    existing = Poi(
+                    poi = Poi(
                         city_id=city.id,
                         poi_type_id=poi_type.id if poi_type else None,
                         slug=poi_slug,
@@ -2507,10 +2597,27 @@ out center 10;
                             "distance_km": candidate.get("distance_km"),
                         },
                     )
-                    db.add(existing)
-                    db.flush()
-                    imported_count += 1
-                else:
+                    try:
+                        with db.begin_nested():
+                            db.add(poi)
+                            db.flush()
+                    except IntegrityError as exc:
+                        self.logger.warning(
+                            "catalog_source_duplicate_insert city_id=%s slug=%s wikidata_id=%s name=%s error=%s",
+                            city.id,
+                            poi_slug,
+                            wikidata_id,
+                            poi_name,
+                            exc,
+                        )
+                        existing = self._find_existing_city_poi(db, city.id, slug=poi_slug, wikidata_id=wikidata_id)
+                        if existing is None:
+                            raise
+                    else:
+                        existing = poi
+                        created = True
+                        imported_count += 1
+                if not created:
                     existing.poi_type_id = poi_type.id if poi_type else existing.poi_type_id
                     existing.lat = Decimal(str(lat)) if lat is not None else existing.lat
                     existing.lng = Decimal(str(lng)) if lng is not None else existing.lng

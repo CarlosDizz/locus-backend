@@ -98,7 +98,7 @@ class Settings:
     openai_chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-5.4-mini")
     openai_chat_enable_web_search: bool = _bool_env("OPENAI_CHAT_ENABLE_WEB_SEARCH", True)
     openai_response_timeout_seconds: int = int(os.getenv("OPENAI_RESPONSE_TIMEOUT_SECONDS", "180"))
-    openai_realtime_model: str = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-2")
+    openai_realtime_model: str = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime-mini")
     openai_realtime_voice: str = os.getenv("OPENAI_REALTIME_VOICE", "cedar")
     openai_realtime_secret_ttl_seconds: int = int(os.getenv("OPENAI_REALTIME_SECRET_TTL_SECONDS", "600"))
     openai_realtime_max_output_tokens: int = int(os.getenv("OPENAI_REALTIME_MAX_OUTPUT_TOKENS", "1400"))
@@ -132,6 +132,13 @@ class Settings:
     google_play_verify_purchases: bool = _bool_env("GOOGLE_PLAY_VERIFY_PURCHASES", True)
     google_play_service_account_json: str = os.getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "")
     google_play_service_account_file: str = os.getenv("GOOGLE_PLAY_SERVICE_ACCOUNT_FILE", "")
+    app_android_latest_version_code: int = int(os.getenv("APP_ANDROID_LATEST_VERSION_CODE", "10"))
+    app_android_update_url: str = os.getenv(
+        "APP_ANDROID_UPDATE_URL",
+        f"https://play.google.com/store/apps/details?id={os.getenv('GOOGLE_PLAY_PACKAGE_NAME', 'com.carlos.locusia')}",
+    )
+    app_ios_latest_build: int = int(os.getenv("APP_IOS_LATEST_BUILD", "1"))
+    app_ios_update_url: str = os.getenv("APP_IOS_UPDATE_URL", "")
 
     getyourguide_referrals_enabled: bool = _bool_env("GETYOURGUIDE_REFERRALS_ENABLED", True)
     getyourguide_partner_id: str = os.getenv("GETYOURGUIDE_PARTNER_ID", "")

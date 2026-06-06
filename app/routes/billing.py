@@ -40,11 +40,20 @@ def get_ledger(
         if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit()
     ]
     usage_map = billing_service.get_usage_events_map(usage_ids)
+    call_ranges = billing_service.get_realtime_call_ranges(
+        current_user.id,
+        [
+            usage_event.call_id
+            for usage_event in usage_map.values()
+            if usage_event.call_id and usage_event.interaction_type == "realtime_call"
+        ],
+    )
     response: list[LedgerEntryResponse] = []
     for entry in entries:
         usage_event = None
         if entry.reference_type == "usage_event" and str(entry.reference_id).isdigit():
             usage_event = usage_map.get(int(entry.reference_id))
+        call_range = call_ranges.get(usage_event.call_id) if usage_event is not None and usage_event.call_id else None
 
         response.append(
             LedgerEntryResponse(
@@ -59,6 +68,8 @@ def get_ledger(
                 usage_source=usage_event.source if usage_event is not None else None,
                 usage_endpoint=usage_event.endpoint if usage_event is not None else None,
                 usage_call_id=usage_event.call_id if usage_event is not None else None,
+                usage_call_started_at=call_range["started_at"] if call_range is not None else None,
+                usage_call_ended_at=call_range["ended_at"] if call_range is not None else None,
                 usage_audio_input_tokens=usage_event.audio_input_tokens if usage_event is not None else None,
                 usage_audio_output_tokens=usage_event.audio_output_tokens if usage_event is not None else None,
                 usage_image_input_tokens=usage_event.image_input_tokens if usage_event is not None else None,

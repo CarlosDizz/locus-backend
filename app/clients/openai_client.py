@@ -5,6 +5,10 @@ from typing import Any
 import requests
 
 from app.config import settings
+from app.utils.logging import get_logger
+
+
+logger = get_logger(__name__)
 
 
 class OpenAIClientError(RuntimeError):
@@ -69,7 +73,14 @@ class OpenAIClient:
         )
         if not response.ok:
             raise OpenAIClientError(f"Responses API error {response.status_code}: {response.text}")
-        return response.json()
+        payload = response.json()
+        logger.info(
+            "openai_response_done endpoint=responses model=%s response_id=%s usage=%s",
+            model,
+            payload.get("id", ""),
+            payload.get("usage", {}),
+        )
+        return payload
 
     def create_realtime_client_secret(
         self,
@@ -120,4 +131,6 @@ class OpenAIClient:
         )
         if not response.ok:
             raise OpenAIClientError(f"Realtime client secret error {response.status_code}: {response.text}")
-        return response.json()
+        payload = response.json()
+        logger.info("openai_realtime_secret_created model=%s voice=%s", model, voice or self.realtime_voice())
+        return payload

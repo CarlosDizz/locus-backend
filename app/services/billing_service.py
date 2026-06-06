@@ -8,7 +8,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import requests
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
-from sqlalchemy import Select, desc, select
+from sqlalchemy import Select, desc, func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -94,6 +94,33 @@ class BillingService:
             stmt = select(UsageEvent).where(UsageEvent.id.in_(usage_ids))
             events = list(db.scalars(stmt).all())
             return {event.id: event for event in events}
+
+    def get_realtime_call_ranges(self, user_id: int, call_ids: list[str]) -> dict[str, dict[str, datetime]]:
+        clean_call_ids = sorted({call_id.strip() for call_id in call_ids if call_id and call_id.strip()})
+        if not clean_call_ids:
+            return {}
+
+        with session_scope() as db:
+            rows = db.execute(
+                select(
+                    UsageEvent.call_id,
+                    func.min(UsageEvent.created_at),
+                    func.max(UsageEvent.created_at),
+                )
+                .where(UsageEvent.bill_to_user_id == user_id)
+                .where(UsageEvent.interaction_type == "realtime_call")
+                .where(UsageEvent.call_id.in_(clean_call_ids))
+                .group_by(UsageEvent.call_id)
+            ).all()
+
+            return {
+                str(call_id): {
+                    "started_at": started_at,
+                    "ended_at": ended_at,
+                }
+                for call_id, started_at, ended_at in rows
+                if call_id and started_at and ended_at
+            }
 
     def list_usage_events(self, user_id: int, limit: int = 100) -> list[UsageEvent]:
         with session_scope() as db:

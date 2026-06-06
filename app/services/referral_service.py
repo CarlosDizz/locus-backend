@@ -195,14 +195,6 @@ class ReferralService:
                     ),
                 }
 
-        if self._looks_like_guided_visit(search_text) and not self._looks_like_non_substitutable_experience(search_text):
-            self._log("tool_rejected", session_id=session_id, error="guided_visit_competes_with_locus", search_text=search_text)
-            return {
-                "ok": False,
-                "error": "guided_visit_competes_with_locus",
-                "message": "No recomiendes visitas guiadas culturales normales: esa experiencia la cubre Locus. Ofrece entradas, pases o transporte si aplica.",
-            }
-
         web_links = self._search_getyourguide_product_links(
             session_id=session_id,
             query=search_text,
@@ -225,17 +217,17 @@ class ReferralService:
                 ),
             }
 
-        self._log("tool_no_links", session_id=session_id, query=search_text)
+        fallback_link = self._fallback_getyourguide_search_link(search_text, poi_name=clean_poi, city_name=clean_city)
+        self._log("tool_fallback_search", session_id=session_id, query=search_text, url=fallback_link.url)
         return {
-            "ok": False,
-            "error": "no_reliable_referral_link",
-            "provider": "curated",
+            "ok": True,
+            "provider": "getyourguide_fallback_search",
             "query": search_text,
-            "links": [],
-            "message": (
-                "No tengo un enlace concreto y fiable de entrada/pase para este lugar. "
-                "No muestres busquedas genericas de GetYourGuide como si fueran entradas. "
-                "Consulta informacion oficial o busqueda web para precio, horarios y venta online."
+            "links": [fallback_link.__dict__],
+            "policy": (
+                "No se encontro un producto concreto suficientemente fiable. Este enlace es una busqueda sugerida "
+                "de GetYourGuide, no una entrada oficial ni una recomendacion garantizada. Presentalo como opcion "
+                "secundaria con lenguaje honesto: 'ver opciones en GetYourGuide'."
             ),
         }
 
@@ -375,11 +367,10 @@ class ReferralService:
             response = client.create_response(
                 model=client.chat_model(),
                 instructions=(
-                    "Busca solo paginas concretas de producto en GetYourGuide para entradas, pases, tickets, "
-                    "transporte turistico o experiencias fisicas. No devuelvas paginas de busqueda, categorias, "
-                    "ciudades ni articulos. La ciudad indicada es obligatoria: si el producto no esta en esa ciudad "
-                    "o no menciona claramente el lugar buscado, no sirve. Evita visitas guiadas culturales normales "
-                    "si no aportan acceso fisico."
+                    "Busca paginas concretas de producto en GetYourGuide para entradas, pases, tickets, tours, "
+                    "free tours, visitas guiadas, excursiones, transporte turistico o experiencias reservables. "
+                    "No devuelvas paginas de busqueda, categorias, ciudades ni articulos. La ciudad indicada es "
+                    "importante: si el producto claramente no esta en esa ciudad o no encaja con el lugar buscado, no sirve."
                 ),
                 input_items=[
                     {
@@ -391,10 +382,10 @@ class ReferralService:
                                     f"Encuentra productos concretos de GetYourGuide para: {query}\n"
                                     f"Ciudad obligatoria: {city_name or '(sin ciudad)'}\n"
                                     f"Lugar/POI obligatorio: {poi_name or query}\n"
-                                    f"Intencion: {intent or 'access'}\n"
+                                    f"Intencion: {intent or 'activity'}\n"
                                     "Prioriza paginas de producto con entrada, pase, ticket, acceso sin cola, bus, barco, "
-                                    "tren turistico, teleferico o transporte. No devuelvas experiencias generales de la ciudad "
-                                    "si no son para el lugar/POI pedido. Si no hay producto claro de ese lugar en esa ciudad, no inventes."
+                                    "tren turistico, teleferico, transporte, tour, free tour, visita guiada, excursion o experiencia. "
+                                    "No inventes productos si no aparecen fuentes claras."
                                 ),
                             }
                         ],
@@ -424,9 +415,6 @@ class ReferralService:
                 self._log("candidate_rejected", reason="place_mismatch", title=title, url=url, poi_name=poi_name, city_name=city_name)
                 continue
             candidate_text = f"{title} {unquote(url)}"
-            if self._looks_like_guided_visit(candidate_text) and not self._looks_like_non_substitutable_experience(candidate_text):
-                self._log("candidate_rejected", reason="guided_visit", title=title, url=url)
-                continue
             final_url = self._decorate_url(url, provider="getyourguide")
             if final_url in seen_urls:
                 self._log("candidate_rejected", reason="duplicate", title=title, url=url)
@@ -447,6 +435,23 @@ class ReferralService:
             if len(links) >= max(1, min(max_results, 5)):
                 break
         return links
+
+    def _fallback_getyourguide_search_link(self, query: str, *, poi_name: str, city_name: str) -> AccessReferralLink:
+        search_query = self._compose_search_text(query, poi_name, city_name)
+        url = self._decorate_url(
+            "https://www.getyourguide.es/s/?" + urlencode({"q": search_query}),
+            provider="getyourguide",
+        )
+        title_subject = poi_name or city_name or query
+        return AccessReferralLink(
+            title=f"Ver opciones para {title_subject} en GetYourGuide",
+            description="Busqueda sugerida de actividades, tours o entradas. Revisa encaje, precio y disponibilidad.",
+            url=url,
+            kind="activity",
+            query=search_query,
+            provider="getyourguide",
+            tracking_status="fallback_search_tracked" if "partner_id=" in url else "fallback_search",
+        )
 
     def _log(self, event: str, **payload) -> None:
         message = "referral_tool " + " ".join(f"{key}={value!r}" for key, value in payload.items())

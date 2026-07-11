@@ -116,12 +116,7 @@ class RealtimeService:
                 ),
             },
         )
-        instructions = (
-            f"{language_instruction}\n\n"
-            f"{rendered_prompt}\n\n"
-            "RECORDATORIO FINAL DE IDIOMA:\n"
-            f"{language_instruction}"
-        )
+        instructions = f"{language_instruction}\n\n{rendered_prompt}"
         raw_tools = [
             *get_session_tool_manifest(),
             *get_poi_tool_manifest(),

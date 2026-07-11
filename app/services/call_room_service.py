@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import queue
+import re
 import secrets
 import threading
 import time
@@ -129,9 +130,17 @@ class RealtimeBridge:
 
     def commit_audio(self) -> None:
         self.send({"type": "input_audio_buffer.commit"})
-        self.send({"type": "response.create"})
 
-    def send_text(self, text: str, author: str) -> None:
+    def request_response(self, forced_tool_name: str | None = None) -> None:
+        payload: dict[str, Any] = {"type": "response.create"}
+        if forced_tool_name:
+            payload["response"] = {
+                "tool_choice": {"type": "function", "name": forced_tool_name},
+                "metadata": {"locus_forced_tool": forced_tool_name},
+            }
+        self.send(payload)
+
+    def send_text(self, text: str, author: str, forced_tool_name: str | None = None) -> None:
         self.send(
             {
                 "type": "conversation.item.create",
@@ -142,7 +151,7 @@ class RealtimeBridge:
                 },
             }
         )
-        self.send({"type": "response.create"})
+        self.request_response(forced_tool_name)
 
     def send_image(self, *, image_data_url: str, author: str) -> None:
         self.send(
@@ -167,7 +176,7 @@ class RealtimeBridge:
                 "item": {"type": "function_call_output", "call_id": call_id, "output": output},
             }
         )
-        self.send({"type": "response.create"})
+        self.request_response()
 
     def handle_session_updated(self, event: dict[str, Any]) -> None:
         if self.initial_response_sent:
@@ -177,7 +186,7 @@ class RealtimeBridge:
         if self.room.log:
             return
         self.initial_response_sent = True
-        self.send({"type": "response.create"})
+        self.request_response()
 
     def send(self, payload: dict[str, Any]) -> None:
         if self.closed:
@@ -298,6 +307,40 @@ class CallRoomService:
 
     def _build_call_id(self) -> str:
         return f"CALL-{secrets.token_hex(3).upper()}"
+
+    @staticmethod
+    def _forced_research_tool(text: str) -> str | None:
+        normalized = " ".join(text.casefold().split())
+        words = re.findall(r"\w+", normalized, flags=re.UNICODE)
+
+        def contains_marker(marker: str) -> bool:
+            if " " in marker or marker in {"歴史", "历史", "تاريخ"}:
+                return marker in normalized
+            return any(word.startswith(marker) for word in words)
+
+        deep_research_markers = (
+            "toda la historia", "historia completa", "vision historica", "visión histórica",
+            "explicacion completa", "explicación completa", "en profundidad", "profundiza",
+            "documentate", "documéntate", "investiga", "fuentes adicionales",
+            "full history", "complete history", "in depth", "research it",
+            "storia completa", "tutta la storia", "approfondisci",
+            "histoire complète", "geschichte vollständig", "história completa",
+            "歴史", "历史", "تاريخ",
+        )
+        factual_markers = (
+            "historia", "origen", "cuando se", "cuándo se", "fecha", "año", "siglo",
+            "arquitect", "artista", "constru", "fundad", "personaje", "simbol",
+            "history", "origin", "when was", "date", "century", "architect", "built",
+            "storia", "origine", "quando", "secolo", "architet",
+            "histoire", "origine", "siècle", "architecte",
+            "geschichte", "ursprung", "jahrhundert", "architekt",
+            "história", "origem", "século", "arquiteto",
+        )
+        if any(contains_marker(marker) for marker in deep_research_markers):
+            return "search_web_facts"
+        if any(contains_marker(marker) for marker in factual_markers):
+            return "resolve_poi_facts"
+        return None
 
     def _build_join_token(self, *, call_id: str, user_id: int) -> str:
         exp = int(time.time()) + self.JOIN_TOKEN_TTL_SECONDS
@@ -586,7 +629,8 @@ class CallRoomService:
         await self._ensure_bridge(room)
         room.log.append(self._log_entry("user-text", user.display_name, clean, user.id))
         room.status = "assistant_speaking"
-        room.bridge.send_text(clean, user.display_name)
+        forced_tool_name = self._forced_research_tool(clean)
+        room.bridge.send_text(clean, user.display_name, forced_tool_name)
         await self._broadcast_snapshot(room)
         await self._broadcast(room, {"type": "assistant.started"})
 
@@ -674,6 +718,12 @@ class CallRoomService:
                         },
                     )
                     await self._broadcast_snapshot(room)
+                if room.bridge is not None:
+                    room.bridge.request_response(self._forced_research_tool(transcript))
+                return
+            if event_type == "conversation.item.input_audio_transcription.failed":
+                if room.bridge is not None:
+                    room.bridge.request_response()
                 return
             if event_type == "response.function_call_arguments.done":
                 await self._handle_function_call(room, event)
@@ -716,6 +766,7 @@ class CallRoomService:
             parsed = json.loads(arguments)
         except json.JSONDecodeError:
             parsed = {}
+        print(f"realtime_tool_call call_id={room.call_id} tool={tool_name}", flush=True)
         result = tool_runtime_service.execute(room.host_session_id, tool_name, parsed)
         room.bridge.send_tool_output(call_id, result)
 

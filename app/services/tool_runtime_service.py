@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import or_, select
 
@@ -85,6 +87,26 @@ class ToolRuntimeService:
                     collected.append({"title": title, "url": url})
 
         return collected
+
+    @staticmethod
+    def _normalize_web_domain(value: Any) -> str | None:
+        raw = clean_text(str(value or "")).strip().lower()
+        if not raw:
+            return None
+
+        parsed = urlparse(raw if "://" in raw else f"//{raw}")
+        host = (parsed.hostname or "").rstrip(".")
+        try:
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            return None
+
+        if not host or "." not in host or len(host) > 253:
+            return None
+        label_pattern = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+        if any(not label_pattern.fullmatch(label) for label in host.split(".")):
+            return None
+        return host
 
     def _get_session_profile(self, session_id: str, _arguments: dict[str, Any]) -> dict[str, Any]:
         session = session_service.get_or_create(session_id)
@@ -654,7 +676,13 @@ class ToolRuntimeService:
                 "message": "La busqueda web de OpenAI no esta configurada en este entorno.",
             }
 
-        allowed_domains = [clean_text(str(domain)) for domain in preferred_domains if clean_text(str(domain))]
+        allowed_domains = list(
+            dict.fromkeys(
+                domain
+                for value in preferred_domains
+                if (domain := self._normalize_web_domain(value)) is not None
+            )
+        )
         web_tool: dict[str, Any] = {
             "type": "web_search",
             "user_location": {
@@ -666,8 +694,8 @@ class ToolRuntimeService:
         if allowed_domains:
             web_tool["filters"] = {"allowed_domains": allowed_domains[:20]}
 
-        try:
-            response = client.create_response(
+        def create_web_response(tool: dict[str, Any]) -> dict[str, Any]:
+            return client.create_response(
                 model=client.chat_model(),
                 instructions=(
                     "Investiga en internet con prudencia. Debes usar la busqueda web para responder. "
@@ -688,20 +716,34 @@ class ToolRuntimeService:
                         ],
                     }
                 ],
-                tools=[web_tool],
+                tools=[tool],
                 max_output_tokens=350,
                 extra_payload={"include": ["web_search_call.action.sources"]},
             )
+
+        try:
+            response = create_web_response(web_tool)
         except OpenAIClientError as exc:
-            # Log raw provider rejection so we can tune payload/model support without
-            # leaving the caller blind when web research fails in production.
-            print(f"search_web_facts_failed query={query} error={exc}", flush=True)
-            return {
-                "ok": False,
-                "query": query,
-                "error": "web_search_failed",
-                "message": str(exc),
-            }
+            if allowed_domains:
+                print(
+                    f"search_web_facts_filtered_retry query={query} domains={allowed_domains} error={exc}",
+                    flush=True,
+                )
+                web_tool.pop("filters", None)
+                try:
+                    response = create_web_response(web_tool)
+                except OpenAIClientError as retry_exc:
+                    exc = retry_exc
+                else:
+                    exc = None
+            if exc is not None:
+                print(f"search_web_facts_failed query={query} error={exc}", flush=True)
+                return {
+                    "ok": False,
+                    "query": query,
+                    "error": "web_search_failed",
+                    "message": str(exc),
+                }
 
         summary = self._extract_openai_response_text(response)
         sources = self._extract_openai_web_sources(response)

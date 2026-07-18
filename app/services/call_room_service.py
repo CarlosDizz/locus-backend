@@ -322,8 +322,13 @@ class CallRoomService:
             "toda la historia", "historia completa", "vision historica", "visión histórica",
             "explicacion completa", "explicación completa", "en profundidad", "profundiza",
             "documentate", "documéntate", "investiga", "fuentes adicionales",
+            "cuentame mas", "cuéntame más", "mas detalles", "más detalles", "detalles concretos",
+            "continua la historia", "continúa la historia", "sigue contando", "amplia esto", "amplía esto",
+            "vamos a los detalles", "otra etapa", "siguiente parada", "siguiente punto",
             "full history", "complete history", "in depth", "research it",
+            "tell me more", "more details", "keep going", "next stop",
             "storia completa", "tutta la storia", "approfondisci",
+            "dimmi di più", "altri dettagli", "prossima tappa",
             "histoire complète", "geschichte vollständig", "história completa",
             "歴史", "历史", "تاريخ",
         )
@@ -337,7 +342,7 @@ class CallRoomService:
             "história", "origem", "século", "arquiteto",
         )
         if any(contains_marker(marker) for marker in deep_research_markers):
-            return "search_web_facts"
+            return "prepare_poi_history"
         if any(contains_marker(marker) for marker in factual_markers):
             return "resolve_poi_facts"
         return None
@@ -768,6 +773,15 @@ class CallRoomService:
             parsed = {}
         print(f"realtime_tool_call call_id={room.call_id} tool={tool_name}", flush=True)
         result = tool_runtime_service.execute(room.host_session_id, tool_name, parsed)
+        try:
+            result_payload = json.loads(result)
+        except json.JSONDecodeError:
+            result_payload = {}
+        print(
+            f"realtime_tool_result call_id={room.call_id} tool={tool_name} "
+            f"ok={result_payload.get('ok')} chars={len(result)}",
+            flush=True,
+        )
         room.bridge.send_tool_output(call_id, result)
 
     async def _handle_response_done(self, room: CallRuntime, event: dict[str, Any]) -> None:

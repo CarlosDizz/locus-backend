@@ -25,6 +25,7 @@ class ToolRuntimeService:
 
     def execute(self, session_id: str, tool_name: str, arguments: dict[str, Any]) -> str:
         handlers = {
+            "prepare_poi_history": self._prepare_poi_history,
             "get_session_profile": self._get_session_profile,
             "set_active_poi": self._set_active_poi,
             "get_nearby_pois": self._get_nearby_pois,
@@ -617,6 +618,91 @@ class ToolRuntimeService:
             "source_policy": "Usa hechos documentales de Wikidata y resumen narrativo prudente; si falta un dato concreto, no debe inventarse.",
         }
 
+    def _prepare_poi_history(self, session_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        poi_name = clean_text(arguments.get("poi_name") or "")
+        user_request = clean_text(arguments.get("user_request") or "")
+        language = clean_text(arguments.get("language") or "es") or "es"
+        if not poi_name:
+            return {"ok": False, "error": "poi_name is required"}
+
+        client = OpenAIClient()
+        if not client.is_configured():
+            return {"ok": False, "error": "web_search_not_configured"}
+
+        web_tool: dict[str, Any] = {
+            "type": "web_search",
+            "user_location": {
+                "type": "approximate",
+                "country": "ES",
+                "timezone": "Europe/Madrid",
+            },
+        }
+        try:
+            response = client.create_response(
+                model=client.chat_model(),
+                instructions=(
+                    "Eres el documentalista de un guia cultural. Investiga con busqueda web y prepara "
+                    "un dossier historico sustancioso, preciso y util para narracion oral. Prioriza fuentes "
+                    "oficiales, institucionales, patrimoniales y academicas. No escribas consejos genericos "
+                    "para mirar, no describas tus limitaciones y no rellenes huecos. Distingue claramente "
+                    "entre hechos documentados y leyendas o tradiciones. Incluye fechas, protagonistas, "
+                    "etapas constructivas, transformaciones, arte o arquitectura y detalles concretos. "
+                    f"Escribe el dossier en el idioma identificado por este codigo: {language}."
+                ),
+                input_items=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    f"POI: {poi_name}\n"
+                                    f"Peticion del visitante: {user_request or 'Explicacion historica completa'}\n\n"
+                                    "Estructura el resultado como: sintesis historica; cronologia con etapas; "
+                                    "personajes y decisiones clave; arquitectura, arte y transformaciones; "
+                                    "tradiciones o controversias; y detalles concretos memorables. "
+                                    "Entrega suficiente material para una visita narrada de varios minutos."
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                tools=[web_tool],
+                max_output_tokens=1200,
+                extra_payload={"include": ["web_search_call.action.sources"]},
+            )
+        except OpenAIClientError as exc:
+            print(f"prepare_poi_history_failed poi={poi_name} error={exc}", flush=True)
+            return {
+                "ok": False,
+                "poi_name": poi_name,
+                "error": "history_research_failed",
+                "message": str(exc),
+            }
+
+        dossier = self._extract_openai_response_text(response)
+        sources = self._extract_openai_web_sources(response)
+        self._record_internal_openai_usage(
+            session_id=session_id,
+            response=response,
+            model=client.chat_model(),
+            source="tool_runtime_prepare_poi_history",
+            interaction_type="tool_web_research",
+        )
+        if not dossier:
+            return {"ok": False, "poi_name": poi_name, "error": "no_results"}
+        return {
+            "ok": True,
+            "poi_name": poi_name,
+            "dossier": dossier,
+            "sources": sources[:8],
+            "narration_instruction": (
+                "Narra ahora la historia solicitada usando los hechos de este dossier. "
+                "Da fechas, nombres, etapas y detalles concretos. No vuelvas a investigar, no hables "
+                "de limitaciones y no sustituyas el relato por indicaciones genericas para observar."
+            ),
+        }
+
 
     def _search_wikipedia(self, _session_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
         from app.clients.wikipedia_client import WikipediaClient
@@ -717,7 +803,7 @@ class ToolRuntimeService:
                     }
                 ],
                 tools=[tool],
-                max_output_tokens=350,
+                max_output_tokens=800,
                 extra_payload={"include": ["web_search_call.action.sources"]},
             )
 

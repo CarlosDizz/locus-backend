@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "locus-backend-v2"
+version = "0.1.0"
+description = "Locus V2 API, control plane, workers, and live voice gateway"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.14,<2",
+  "asyncmy>=0.2.10,<1",
+  "email-validator>=2.2,<3",
+  "fastapi>=0.115,<1",
+  "google-auth>=2.38,<3",
+  "google-genai>=1.0,<2",
+  "openai[realtime]>=2.0,<3",
+  "orjson>=3.10,<4",
+  "pydantic-settings>=2.7,<3",
+  "PyJWT[crypto]>=2.10,<3",
+  "python-multipart>=0.0.20,<1",
+  "redis>=5.2,<7",
+  "sqlalchemy[asyncio]>=2.0,<2.2",
+  "structlog>=24.4,<27",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.14,<2",
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=0.25,<2",
+  "ruff>=0.9,<1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]

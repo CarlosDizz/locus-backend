@@ -1,0 +1,54 @@
+from datetime import date, datetime
+
+from pydantic import BaseModel
+
+
+class OverviewMetric(BaseModel):
+    label: str
+    value: int
+    tone: str
+
+
+class ModelSummary(BaseModel):
+    id: int
+    provider: str
+    external_id: str
+    display_name: str
+    service_kind: str
+    adapter_code: str
+    lifecycle: str
+    enabled: bool
+    selectable: bool
+    capabilities: dict
+
+
+class DailyUsageSummary(BaseModel):
+    day: date
+    interactions: int
+    charged_cents: int
+    provider_cost_eur_cents: int
+
+
+class CalendarActivity(BaseModel):
+    id: str
+    title: str
+    start: datetime
+    kind: str
+
+
+class PoiMapPoint(BaseModel):
+    id: str
+    name: str
+    city: str
+    lat: float
+    lng: float
+
+
+class AdminOverview(BaseModel):
+    environment: str
+    metrics: list[OverviewMetric]
+    registered_adapters: list[str]
+    models: list[ModelSummary]
+    usage: list[DailyUsageSummary]
+    activities: list[CalendarActivity]
+    poi_map: list[PoiMapPoint]

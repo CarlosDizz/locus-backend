@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+command="${1:-up}"
+case "$command" in
+  up)
+    docker compose up --build -d
+    printf '\nLocus V2 is starting:\n  Control panel: http://localhost:4201\n  API:           http://localhost:8100/api/v2/health\n  Realtime:      http://localhost:8101/ws/v2/health\n\n'
+    ;;
+  down)
+    docker compose down
+    ;;
+  rebuild)
+    docker compose up --build --force-recreate -d
+    ;;
+  logs)
+    docker compose logs -f "${2:-api}"
+    ;;
+  status)
+    docker compose ps
+    ;;
+  migrate)
+    docker compose run --rm api alembic upgrade head
+    ;;
+  seed)
+    docker compose run --rm api python -m locus_v2.entrypoints.seed
+    ;;
+  import-v1)
+    docker compose run --rm api python -m locus_v2.entrypoints.import_v1 "${@:2}"
+    ;;
+  *)
+    echo "Usage: ./bin/locus {up|down|rebuild|logs [service]|status|migrate|seed|import-v1}"
+    exit 2
+    ;;
+esac

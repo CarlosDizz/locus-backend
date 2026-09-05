@@ -1,0 +1,49 @@
+<section class="configuration-head">
+  <div>
+    <p class="eyebrow">CONTROL PLANE</p>
+    <h1>{{ mode() === 'providers' ? 'Proveedores y rutas' : 'Taller de prompts' }}</h1>
+    <p>{{ mode() === 'providers' ? 'Decide quién habla primero y quién toma el relevo.' : 'Cada cambio crea historia. Nada publicado se sobrescribe.' }}</p>
+  </div>
+  <span class="safe"><i></i>Cambios auditados</span>
+</section>
+
+@if (loading()) { <section class="state">Leyendo la configuración...</section> }
+@if (notice()) { <p class="notice">{{ notice() }}</p> }
+@if (error()) { <p class="error">{{ error() }}</p> }
+
+@if (!loading() && configuration(); as config) {
+  @if (mode() === 'providers') {
+    <section class="provider-grid">
+      @for (provider of config.providers; track provider.id) {
+        <article class="provider-card">
+          <header><span>{{ provider.code.slice(0, 1).toUpperCase() }}</span><div><h2>{{ provider.name }}</h2><small>{{ provider.models.length }} modelos registrados</small></div></header>
+          @for (model of provider.models; track model.id) {
+            <div class="model-line">
+              <div><strong>{{ model.display_name }}</strong><small>{{ model.external_id }}</small></div>
+              <button type="button" class="switch" [class.on]="model.enabled" [attr.aria-label]="'Cambiar estado de ' + model.display_name" (click)="toggleModel(model)"><i></i></button>
+            </div>
+          }
+        </article>
+      }
+    </section>
+
+    @for (route of config.routing_profiles; track route.id) {
+      <section class="route-editor">
+        <div><p class="eyebrow">RUTA PUBLICADA</p><h2>{{ route.name }}</h2><small>{{ route.environment }} · {{ route.voice_mode }}</small></div>
+        <label>Primario<select [(ngModel)]="primaryModelId"><option [ngValue]="null" disabled>Selecciona</option>@for(model of voiceModels();track model.id){<option [ngValue]="model.id">{{ model.display_name }}</option>}</select></label>
+        <label>Fallback<select [(ngModel)]="fallbackModelId"><option [ngValue]="null">Sin fallback</option>@for(model of voiceModels();track model.id){<option [ngValue]="model.id">{{ model.display_name }}</option>}</select></label>
+        <label>Prompt<select [(ngModel)]="promptVersionId">@for(version of publishedVersions();track version.id){<option [ngValue]="version.id">{{ version.label }}</option>}</select></label>
+        <button type="button" class="publish" (click)="saveRouting(route)">Publicar ruta</button>
+      </section>
+    }
+  } @else {
+    @for (prompt of config.prompts; track prompt.id) {
+      <section class="prompt-workbench">
+        <aside><p class="eyebrow">{{ prompt.code }}</p><h2>{{ prompt.name }}</h2><p>{{ prompt.description }}</p>
+          <div class="versions">@for(version of prompt.versions;track version.id){<button type="button" [class.published]="version.status === 'published'" (click)="draftContent = version.content"><b>v{{ version.version }}</b><span>{{ version.status }}</span></button>}</div>
+        </aside>
+        <div class="editor"><div class="editor-top"><span>Borrador siguiente</span><small>{{ draftContent.length }} caracteres</small></div><textarea [(ngModel)]="draftContent" spellcheck="true"></textarea><footer><button type="button" class="draft" (click)="createVersion(prompt)">Guardar nueva versión</button>@if(prompt.versions[0]?.status === 'draft'){<button type="button" class="publish" (click)="publish(prompt.versions[0].id)">Publicar v{{ prompt.versions[0].version }}</button>}</footer></div>
+      </section>
+    }
+  }
+}

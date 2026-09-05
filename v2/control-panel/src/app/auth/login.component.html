@@ -1,0 +1,27 @@
+<main class="login-shell">
+  <section class="login-story">
+    <div class="login-brand"><span><i></i></span><strong>LOCUS</strong><small>CONTROL</small></div>
+    <p class="eyebrow">CENTRO DE OPERACIONES</p>
+    <h1>Todo viaje empieza<br>por una <em>puerta.</em></h1>
+    <p class="lead">Aquí cuidamos las voces, los lugares y las decisiones que hacen que Locus se sienta vivo.</p>
+    <div class="coordinates"><span>40.4168° N</span><i></i><span>3.7038° W</span></div>
+  </section>
+
+  <section class="login-panel">
+    <div class="card">
+      <span class="seal"><i></i></span>
+      <p class="eyebrow">ACCESO PRIVADO</p>
+      <h2>Bienvenido a bordo</h2>
+      <p>Identifícate con la cuenta administradora de Locus.</p>
+      <div #googleButton class="google-button"></div>
+      @if (config()?.local_login_enabled) {
+        <button type="button" class="local-login" [disabled]="busy()" (click)="loginLocal()">
+          <span></span>{{ busy() ? 'Abriendo...' : 'Entrar en modo local' }}
+        </button>
+        <small class="local-note">Solo desarrollo · no existe en producción</small>
+      }
+      @if (error()) { <p class="login-error">{{ error() }}</p> }
+      <footer>Sesión segura · Cookie HttpOnly · 7 días</footer>
+    </div>
+  </section>
+</main>

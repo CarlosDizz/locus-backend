@@ -1,0 +1,33 @@
+{
+  "name": "locus-control-panel",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "ng serve",
+    "build": "ng build"
+  },
+  "dependencies": {
+    "@angular/common": "20.3.30",
+    "@angular/compiler": "20.3.30",
+    "@angular/core": "20.3.30",
+    "@angular/forms": "20.3.30",
+    "@angular/google-maps": "20.2.14",
+    "@angular/platform-browser": "20.3.30",
+    "@fullcalendar/angular": "^6.1.19",
+    "@fullcalendar/core": "^6.1.19",
+    "@fullcalendar/daygrid": "^6.1.19",
+    "@fullcalendar/interaction": "^6.1.19",
+    "echarts": "^6.0.0",
+    "@lucide/angular": "1.41.0",
+    "ngx-echarts": "^20.0.1",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0",
+    "zone.js": "~0.15.0"
+  },
+  "devDependencies": {
+    "@angular-devkit/build-angular": "20.3.36",
+    "@angular/cli": "20.3.36",
+    "@angular/compiler-cli": "20.3.30",
+    "typescript": "~5.9.0"
+  }
+}

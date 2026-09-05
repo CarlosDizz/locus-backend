@@ -1,0 +1,20 @@
+:root {
+  --locus-cream: #f6f0e7;
+  --locus-sand: #e8ddc7;
+  --locus-terracotta: #b86a4b;
+  --locus-blue: #2f5d62;
+  --locus-green: #6c8a64;
+  --locus-ink: #1f2a2e;
+  --locus-muted: #697477;
+  --locus-paper: #fffaf2;
+  --locus-line: rgba(47, 93, 98, 0.15);
+  --locus-shadow: 0 24px 70px rgba(45, 52, 49, 0.1);
+  font-family: "Manrope", sans-serif;
+  color: var(--locus-ink);
+  background: var(--locus-cream);
+}
+
+* { box-sizing: border-box; }
+html, body { min-height: 100%; margin: 0; }
+body { background: var(--locus-cream); }
+button, input { font: inherit; }

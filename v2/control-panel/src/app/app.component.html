@@ -1,0 +1,149 @@
+@if (authChecking()) {
+  <section class="auth-splash"><span></span><strong>LOCUS</strong><small>Verificando acceso</small></section>
+} @else if (!admin()) {
+  <locus-login (authenticated)="onAuthenticated($event)" />
+} @else {
+<div class="shell">
+  <aside class="rail">
+    <div class="brand" aria-label="Locus Control">
+      <span class="brand-mark"><i></i></span>
+      <div>
+        <strong>LOCUS</strong>
+        <small>CONTROL</small>
+      </div>
+    </div>
+
+    <nav aria-label="Secciones del panel">
+      @for (item of navigation; track item.label) {
+        <button
+          type="button"
+          [class.active]="activeSection() === item.label"
+          (click)="selectSection(item.label)"
+        >
+          <span class="nav-symbol" [attr.data-glyph]="item.glyph"></span>
+          {{ item.label }}
+        </button>
+      }
+    </nav>
+
+    <div class="rail-foot">
+      <span class="avatar">{{ initials() }}</span>
+      <div><strong>{{ admin()!.display_name }}</strong><small>Administrador</small></div>
+      <button class="more" aria-label="Cerrar sesión" title="Cerrar sesión" (click)="logout()">↪</button>
+    </div>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <div class="crumb"><span>Centro de operaciones</span><b>/</b>{{ activeSection() }}</div>
+      <div class="top-actions">
+        <span class="environment"><i></i>{{ overview()?.environment || 'local' }}</span>
+        <button type="button" class="icon-action" (click)="loadOverview()" aria-label="Actualizar">↻</button>
+        <button type="button" class="primary">Nueva prueba</button>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div>
+        <p class="eyebrow">SISTEMA VIVO</p>
+        <h1>El pulso de Locus,<br><em>en un solo lugar.</em></h1>
+        <p class="intro">Prompts, rutas y proveedores bajo control. Cada conversación deja una pista que podemos seguir.</p>
+      </div>
+      <div class="compass" aria-hidden="true">
+        <span class="orbit orbit-one"></span>
+        <span class="orbit orbit-two"></span>
+        <span class="needle"></span>
+        <small>V2</small>
+      </div>
+    </section>
+
+    @if (loading()) {
+      <section class="loading-card"><span></span>Tomando el pulso al sistema...</section>
+    } @else if (error()) {
+      <section class="error-card"><b>V2 no responde todavía</b><p>{{ error() }}</p><button (click)="loadOverview()">Reintentar</button></section>
+    } @else {
+      @if (activeSection() === 'Pulso') {
+      <section class="metrics" aria-label="Resumen">
+        @for (metric of overview()!.metrics; track metric.label; let index = $index) {
+          <article [attr.data-tone]="metric.tone">
+            <span class="metric-index">0{{ index + 1 }}</span>
+            <strong>{{ metric.value }}</strong>
+            <p>{{ metric.label }}</p>
+          </article>
+        }
+      </section>
+
+      <section class="workspace-grid">
+        <article class="route-card panel">
+          <div class="panel-title">
+            <div><p class="eyebrow">RUTA DE VOZ</p><h2>Proveedores preparados</h2></div>
+            <span class="live-pill"><i></i>Conectado</span>
+          </div>
+
+          <div class="route-map">
+            <div class="route-line"></div>
+            @for (adapter of overview()!.registered_adapters; track adapter; let index = $index) {
+              <div class="route-stop" [style.--delay]="index * 90 + 'ms'">
+                <span>{{ index + 1 }}</span>
+                <div><strong>{{ adapter }}</strong><small>{{ adapter === 'openai_live' ? 'Preparado, no seleccionable' : 'Adaptador registrado' }}</small></div>
+              </div>
+            }
+          </div>
+        </article>
+
+        <article class="brief panel">
+          <p class="eyebrow">SIGUIENTE HITO</p>
+          <h2>Una llamada completa</h2>
+          <p>POI, voz, documentación, respuesta y coste trazable de principio a fin.</p>
+          <div class="progress"><span></span></div>
+          <footer><b>Fundación</b><span>En marcha</span></footer>
+        </article>
+      </section>
+
+      <section class="models panel">
+        <div class="panel-title">
+          <div><p class="eyebrow">CATÁLOGO</p><h2>Modelos y capacidades</h2></div>
+          <button class="text-action">Gestionar catálogo →</button>
+        </div>
+        <div class="model-table">
+          <div class="table-head"><span>Modelo</span><span>Proveedor</span><span>Servicio</span><span>Estado</span></div>
+          @for (model of overview()!.models; track model.id) {
+            <div class="table-row">
+              <div><span class="provider-monogram">{{ model.provider.slice(0, 1).toUpperCase() }}</span><strong>{{ model.display_name }}</strong><small>{{ model.external_id }}</small></div>
+              <span>{{ model.provider }}</span>
+              <span>{{ model.service_kind }}</span>
+              <span class="status" [class.waiting]="!model.enabled"><i></i>{{ modelStatus(model) }}</span>
+            </div>
+          }
+        </div>
+      </section>
+      <locus-usage-chart [data]="overview()!.usage" />
+    } @else if (activeSection() === 'Conversaciones') {
+      @defer {
+        <locus-operations-calendar [activities]="overview()!.activities" />
+      } @placeholder {
+        <section class="loading-card">Preparando el calendario...</section>
+      }
+    } @else if (activeSection() === 'Ciudades y POIs') {
+      @defer {
+        <locus-poi-map [points]="overview()!.poi_map" />
+      } @placeholder {
+        <section class="loading-card">Preparando el atlas...</section>
+      }
+    } @else if (activeSection() === 'Prompts') {
+      <locus-control-plane mode="prompts" />
+    } @else if (activeSection() === 'Proveedores') {
+      <locus-control-plane mode="providers" />
+    } @else if (activeSection() === 'Usuarios') {
+      <locus-user-directory />
+    } @else {
+      <section class="section-placeholder">
+        <p class="eyebrow">MÓDULO V2</p>
+        <h1>{{ activeSection() }}</h1>
+        <p>La base está conectada. Construiremos este módulo sobre los mismos puertos, permisos y trazas.</p>
+      </section>
+    }
+    }
+  </main>
+</div>
+}

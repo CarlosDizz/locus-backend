@@ -1,0 +1,1 @@
+"""Administration infrastructure adapters."""

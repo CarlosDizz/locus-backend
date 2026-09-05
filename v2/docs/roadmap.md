@@ -17,6 +17,20 @@ una vez V2 haya demostrado en local paridad de datos, facturacion y comportamien
 mantiene disponible en ECS durante la ventana de observacion por si hay que revertir el cambio
 de URL sin tocar la app.
 
+### 0.1 Flujo de usuario objetivo en la app Ionic (2026-09-05)
+
+Contexto de producto anotado tal cual para no perder matices al decidir alcance de Chat y Voz:
+
+1. Al registrarse, la persona ve el mapa del sitio donde esta, con su localizacion.
+2. Puede abrir un chat con recomendaciones y consejos generados por IA sobre la zona.
+3. Al seleccionar un POI del mapa, puede iniciar una experiencia sobre ese POI concreto que
+   combina llamada de voz, chat de texto y envio de imagenes, ademas de soporte de grupo (varias
+   personas en la misma sesion) — como una visita guiada real de un monumento, museo o iglesia.
+
+Esto confirma que Chat y Voz no son canales aislados: comparten el mismo POI como contexto, y el
+chat de imagen y las llamadas en grupo son parte del objetivo final, no un extra. Afecta
+directamente al alcance del dominio Chat (Capitulo 3) y al puente de llamadas (Capitulo 6).
+
 ## 1. Objetivo
 
 Construir un backend V2 mantenible, observable y configurable que pueda sustituir al backend actual sin obligarnos a modificar inicialmente la aplicacion Ionic.
@@ -90,6 +104,18 @@ Cada adaptador de proveedor sera responsable de:
 - Importacion de datos aprovechables de V1.
 - Datos importados: 19 usuarios, 19 wallets, 8 tarifas, 575 eventos de uso, 259 movimientos, 24 recargas, 17 ciudades, 6 tipos de POI, 858 POIs y 58 sesiones.
 - Build Angular, Ruff, pruebas principales y comprobaciones focalizadas de Mypy superadas.
+- Correccion de fecha/hora en toda la aplicacion (2026-09-05): todo timestamp se guardaba
+  naive-pero-UTC y se servia sin marca de zona, asi que el navegador lo interpretaba como
+  hora local. `shared/clock.py` anade `as_utc`/`UtcDatetime` en el limite de serializacion
+  (Registros, Auditoria, Conversaciones, Usuarios, Consumos); la base de datos sigue
+  guardando UTC sin cambios.
+- Seccion de Auditoria en el panel (2026-09-05): `AdminAuditEvent` ya se escribia en cada
+  cambio de modelo/prompt/ruta; ahora tiene vista con antes/despues.
+- Boton "Probar proveedor" en Proveedores (2026-09-05): llamada real a cualquier modelo
+  catalogado (chat o voz), con coste real facturado y mostrado al momento.
+- Slice minimo de Chat probado end to end (2026-09-05) contra OpenAI real, solo para
+  verificar el pipeline de uso/coste; el dominio Chat completo sigue pendiente (Fase C,
+  Capitulo 3 del checklist).
 
 ### En curso
 

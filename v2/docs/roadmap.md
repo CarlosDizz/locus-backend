@@ -298,9 +298,13 @@ todavia no iniciado y es el riesgo tecnico mas alto de la Fase C.
   plugin nativo Capacitor `PlayBilling` en el frontend, `play-billing.service.ts`). No hay ninguna
   referencia a Google Play en `v2/src`. Es el gap de negocio de mayor coste si V1 se apagase sin
   puente.
-- **Referidos**: `app/services/referral_service.py` (620 lineas) corre en V1 y no tiene dominio
-  equivalente en V2 ni aparece en las fases anteriores. Pendiente decidir si es paridad obligatoria
-  antes del corte o se pospone a la Fase G.
+- **Afiliacion GetYourGuide** (`app/services/referral_service.py`, 620 lineas; el nombre
+  confunde, no es un programa de invitar amigos): genera enlaces de afiliado en dos puntos —
+  `GET /catalog/pois/{id}/access-links` y la tool de IA `activity_referrals`, que el propio chat
+  o la llamada de voz invoca para sugerir experiencias reservables (gated por
+  `settings.getyourguide_referrals_enabled`). Es ingreso por afiliacion activo hoy y no tiene
+  dominio equivalente en V2. Paridad obligatoria antes del corte: sin esto el chat/voz de V2
+  pierde una fuente de ingresos que V1 ya tiene.
 - **Legal y version minima de app**: `/privacy-policy` y `/legal` (`app/routes/legal.py`) y
   `/api/app/version` (`app/routes/app_info.py`) se sirven hoy solo desde V1. Impacto tecnico bajo,
   pero bloquean un corte total si no se replican antes de retirar V1.

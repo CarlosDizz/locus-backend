@@ -1,16 +1,14 @@
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from enum import Enum
 
 from fastapi import APIRouter
 
-ServiceT = TypeVar("ServiceT")
 
-
-class AdminController(Generic[ServiceT], ABC):
+class AdminController[ServiceT](ABC):
     """Base controller wiring; concrete controllers own routes and schemas."""
 
     prefix: str
-    tags: list[str]
+    tags: list[str | Enum]
 
     def __init__(self) -> None:
         self.router = APIRouter(prefix=self.prefix, tags=self.tags)

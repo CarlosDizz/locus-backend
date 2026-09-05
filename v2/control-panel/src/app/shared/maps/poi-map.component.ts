@@ -1,52 +1,106 @@
-import { Component, computed, input } from '@angular/core';
-import { GoogleMapsModule } from '@angular/google-maps';
+import { afterNextRender, Component, effect, ElementRef, input, output, viewChild } from '@angular/core';
+import * as L from 'leaflet';
 
 import { PoiMapPoint } from '../../core/admin-overview.model';
 
 @Component({
   selector: 'locus-poi-map',
   standalone: true,
-  imports: [GoogleMapsModule],
   template: `
-    <section class="map-panel">
-      <header><div><p>CATÁLOGO GEOGRÁFICO</p><h1>Ciudades y lugares.</h1></div><span>{{ points().length }} POIs visibles</span></header>
-      @if (mapsAvailable && points().length) {
-        <google-map height="620px" width="100%" [center]="center()" [zoom]="11" [options]="mapOptions">
-          @for (point of points(); track point.id) {
-            <map-advanced-marker [position]="{lat: point.lat, lng: point.lng}" [title]="point.name" />
-          }
-        </google-map>
-      } @else {
-        <div class="atlas" aria-label="Vista previa del catálogo de puntos de interés">
-          <div class="grid"></div><div class="ring one"></div><div class="ring two"></div>
-          @for (point of previewPoints(); track point.id; let index = $index) {
-            <button [style.left.%]="point.x" [style.top.%]="point.y" [title]="point.name"><i></i><span>{{ point.name }}</span></button>
-          }
-          <div class="map-empty"><b>{{ points().length ? 'Vista cartográfica preparada' : 'Esperando el catálogo V1' }}</b><p>{{ points().length ? 'Añade la clave web restringida de Google Maps para activar el mapa.' : 'Los POIs aparecerán después de la importación.' }}</p></div>
-        </div>
+    <div class="map-wrap">
+      <div #map class="map" aria-label="Mapa de puntos de interés"></div>
+      @if (!points().length) {
+        <div class="empty"><i></i><b>Sin lugares geolocalizados</b><p>Prueba con otra ciudad o cambia los filtros.</p></div>
       }
-    </section>
+    </div>
   `,
   styles: [`
-    .map-panel { margin-top: 38px; padding: 30px; background: rgba(255,250,242,.78); border: 1px solid var(--locus-line); }
-    header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 28px; }
-    header p { color: var(--locus-blue); font-size: 9px; letter-spacing: .24em; font-weight: 800; margin: 0 0 10px; }
-    h1 { font: 600 clamp(36px,4vw,58px)/1 "Fraunces",serif; margin: 0; }
-    header span { border: 1px solid var(--locus-line); border-radius: 99px; padding: 9px 13px; font-size: 10px; font-weight: 800; }
-    .atlas { height: 620px; position: relative; overflow: hidden; background: #e6e4d7; border: 1px solid rgba(47,93,98,.16); }
-    .grid { position:absolute;inset:0;background-image:linear-gradient(rgba(47,93,98,.09) 1px,transparent 1px),linear-gradient(90deg,rgba(47,93,98,.09) 1px,transparent 1px);background-size:62px 62px;transform:rotate(-7deg) scale(1.2); }
-    .ring { position:absolute;border:1px solid rgba(184,106,75,.25);border-radius:50%; }.ring.one{width:420px;height:420px;right:-100px;top:-120px}.ring.two{width:270px;height:270px;left:-70px;bottom:-80px}
-    .atlas button { position:absolute;transform:translate(-50%,-100%);border:0;background:transparent;color:var(--locus-ink);font-size:9px;cursor:pointer;z-index:2; }
-    .atlas button i { display:block;width:22px;height:22px;margin:auto;background:var(--locus-terracotta);border:5px solid var(--locus-paper);border-radius:50% 50% 50% 0;transform:rotate(-45deg);box-shadow:0 4px 12px rgba(31,42,46,.2); }
-    .atlas button span { display:none;white-space:nowrap;background:var(--locus-paper);padding:5px 8px;border-radius:8px;box-shadow:0 5px 20px rgba(31,42,46,.14); }.atlas button:hover span{display:block}
-    .map-empty { position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);padding:28px 34px;background:rgba(255,250,242,.92);text-align:center;z-index:3;box-shadow:var(--locus-shadow); }
-    .map-empty b { font:600 22px "Fraunces",serif; }.map-empty p{max-width:330px;color:var(--locus-muted);font-size:11px;line-height:1.6;margin:8px 0 0}
+    :host{display:block}.map-wrap{position:relative;height:600px;overflow:hidden;border-top:1px solid var(--locus-line);background:#e6e4d7}.map{width:100%;height:100%;z-index:1}.empty{position:absolute;z-index:2;left:50%;top:50%;transform:translate(-50%,-50%);min-width:260px;padding:28px 34px;background:rgba(255,250,242,.94);text-align:center;box-shadow:var(--locus-shadow);pointer-events:none}.empty i{display:block;width:30px;height:30px;margin:0 auto 14px;border:7px solid var(--locus-blue);border-radius:50%;box-shadow:inset 0 0 0 5px var(--locus-paper);background:var(--locus-terracotta)}.empty b{display:block;font:600 22px "Fraunces",serif}.empty p{color:var(--locus-muted);font-size:10px;margin:7px 0 0}:host ::ng-deep .leaflet-control-zoom a{color:var(--locus-blue);background:var(--locus-paper);border-color:var(--locus-line)}:host ::ng-deep .leaflet-tooltip{border:0;border-radius:4px;background:var(--locus-paper);color:var(--locus-ink);box-shadow:var(--locus-shadow);font:700 10px "Manrope",sans-serif}:host ::ng-deep .leaflet-tooltip-top::before{border-top-color:var(--locus-paper)}@media(max-width:700px){.map-wrap{height:440px}}
   `],
 })
 export class PoiMapComponent {
   readonly points = input.required<PoiMapPoint[]>();
-  readonly mapsAvailable = typeof window !== 'undefined' && 'google' in window;
-  readonly mapOptions = { mapId: 'DEMO_MAP_ID', disableDefaultUI: false };
-  readonly center = computed(() => this.points().length ? { lat: this.points()[0].lat, lng: this.points()[0].lng } : { lat: 40.4168, lng: -3.7038 });
-  readonly previewPoints = computed(() => this.points().slice(0, 24).map((point, index) => ({ ...point, x: 10 + ((index * 37) % 80), y: 15 + ((index * 53) % 72) })));
+  readonly cityCenter = input<{ lat: number; lng: number } | null>(null);
+  readonly poiSelected = output<string>();
+  readonly mapElement = viewChild.required<ElementRef<HTMLDivElement>>('map');
+
+  private map?: L.Map;
+  private readonly markers = L.layerGroup();
+
+  constructor() {
+    afterNextRender(() => {
+      this.map = L.map(this.mapElement().nativeElement, { center: [40.4168, -3.7038], zoom: 5 });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors',
+        maxZoom: 19,
+      }).addTo(this.map);
+      this.markers.addTo(this.map);
+      this.render(this.points(), this.cityCenter());
+      window.setTimeout(() => this.map?.invalidateSize(), 0);
+    });
+
+    effect(() => {
+      const points = this.points();
+      const cityCenter = this.cityCenter();
+      if (this.map) this.render(points, cityCenter);
+    });
+  }
+
+  private render(points: PoiMapPoint[], cityCenter: { lat: number; lng: number } | null): void {
+    if (!this.map) return;
+    this.map.stop();
+    this.map.invalidateSize();
+    this.markers.clearLayers();
+    if (!points.length) {
+      this.map.setView(cityCenter ? [cityCenter.lat, cityCenter.lng] : [40.4168, -3.7038], cityCenter ? 12 : 5, { animate: false });
+      return;
+    }
+
+    const bounds = L.latLngBounds([]);
+    for (const point of points) {
+      const position = L.latLng(point.lat, point.lng);
+      bounds.extend(position);
+      L.circleMarker(position, {
+        radius: 8,
+        color: '#fffaf2',
+        weight: 4,
+        fillColor: '#b86a4b',
+        fillOpacity: 1,
+      })
+        .bindTooltip(point.name, { direction: 'top', offset: [0, -7] })
+        .on('click', () => this.poiSelected.emit(point.id))
+        .addTo(this.markers);
+    }
+    if (points.length === 1) {
+      this.map.setView([points[0].lat, points[0].lng], 14, { animate: false });
+      return;
+    }
+    const framingPoints = cityCenter ? this.closestToCenter(points, cityCenter, 0.9) : points;
+    const framingBounds = L.latLngBounds(
+      framingPoints.map((point) => L.latLng(point.lat, point.lng)),
+    );
+    this.map.fitBounds(framingBounds.isValid() ? framingBounds : bounds, {
+      padding: [42, 42],
+      maxZoom: 14,
+      animate: false,
+    });
+  }
+
+  private closestToCenter(
+    points: PoiMapPoint[],
+    center: { lat: number; lng: number },
+    ratio: number,
+  ): PoiMapPoint[] {
+    const count = Math.max(2, Math.ceil(points.length * ratio));
+    const lngScale = Math.cos(center.lat * Math.PI / 180);
+    return [...points]
+      .sort((left, right) => {
+        const leftDistance = (left.lat - center.lat) ** 2
+          + ((left.lng - center.lng) * lngScale) ** 2;
+        const rightDistance = (right.lat - center.lat) ** 2
+          + ((right.lng - center.lng) * lngScale) ** 2;
+        return leftDistance - rightDistance;
+      })
+      .slice(0, count);
+  }
 }

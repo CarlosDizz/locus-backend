@@ -22,7 +22,8 @@ async def execute(inspect_only: bool) -> None:
             await importer.source.dispose()
             return
         run = await importer.run()
-        print(json.dumps({"run_id": run.id, "status": run.status, **run.table_counts_json}, indent=2))
+        result = {"run_id": run.id, "status": run.status, **run.table_counts_json}
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

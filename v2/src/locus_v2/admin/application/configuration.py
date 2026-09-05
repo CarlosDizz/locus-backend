@@ -7,7 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from locus_v2.ai.enums import PublicationStatus
-from locus_v2.ai.models import AIModel, AIProvider, PromptDefinition, PromptVersion, RoutingProfile
+from locus_v2.ai.models import (
+    AIModel,
+    AIProvider,
+    AITool,
+    PromptDefinition,
+    PromptVersion,
+    RoutingProfile,
+)
 from locus_v2.identity.models import AdminAuditEvent, User
 from locus_v2.shared.clock import utc_now
 
@@ -52,6 +59,7 @@ class AdminConfigurationService:
                 await self.session.scalars(select(RoutingProfile).order_by(RoutingProfile.name))
             ).all()
         )
+        tools = list((await self.session.scalars(select(AITool).order_by(AITool.name))).all())
         return {
             "providers": [
                 {
@@ -69,6 +77,7 @@ class AdminConfigurationService:
                     "code": definition.code,
                     "name": definition.name,
                     "description": definition.description,
+                    "service_kind": definition.service_kind,
                     "versions": [
                         {
                             "id": version.id,
@@ -76,6 +85,8 @@ class AdminConfigurationService:
                             "status": version.status,
                             "content": version.content,
                             "variables": version.variables_json,
+                            "tools": version.tools_json,
+                            "runtime_config": version.runtime_config_json,
                             "published_at": version.published_at,
                         }
                         for version in sorted(
@@ -86,6 +97,7 @@ class AdminConfigurationService:
                 for definition in definitions
             ],
             "routing_profiles": [self._profile_view(profile) for profile in profiles],
+            "tools": [self._tool_view(tool) for tool in tools],
         }
 
     async def set_model_state(self, model_id: int, enabled: bool, selectable: bool) -> dict:
@@ -121,7 +133,13 @@ class AdminConfigurationService:
         await self.session.commit()
         return self._model_view(model)
 
-    async def create_prompt_version(self, definition_id: int, content: str) -> dict:
+    async def create_prompt_version(
+        self,
+        definition_id: int,
+        content: str,
+        tool_codes: list[str],
+        runtime_config: dict,
+    ) -> dict:
         definition = await self.session.get(PromptDefinition, definition_id)
         if definition is None:
             raise ConfigurationError("Prompt definition not found")
@@ -130,12 +148,15 @@ class AdminConfigurationService:
                 PromptVersion.definition_id == definition_id
             )
         )
+        tools = await self._tool_snapshots(definition.service_kind, tool_codes)
         version = PromptVersion(
             definition_id=definition_id,
             version=(latest or 0) + 1,
             status=PublicationStatus.DRAFT,
             content=content.strip(),
             variables_json={"required": ["locale", "poi_name"]},
+            tools_json=tools,
+            runtime_config_json=runtime_config,
             created_by_user_id=self.actor.id,
         )
         if not version.content:
@@ -147,7 +168,12 @@ class AdminConfigurationService:
             "prompt_version",
             str(version.id),
             None,
-            {"definition_id": definition_id, "version": version.version},
+            {
+                "definition_id": definition_id,
+                "version": version.version,
+                "tool_codes": [tool["code"] for tool in tools],
+                "runtime_config": runtime_config,
+            },
         )
         await self.session.commit()
         return {"id": version.id, "version": version.version, "status": version.status}
@@ -222,13 +248,21 @@ class AdminConfigurationService:
             if change.fallback_model_id is not None
             else None
         )
-        if primary.service_kind != "voice" or (fallback and fallback.service_kind != "voice"):
-            raise ConfigurationError("Voice routing only accepts voice models")
+        if primary.service_kind != profile.service_kind or (
+            fallback and fallback.service_kind != profile.service_kind
+        ):
+            raise ConfigurationError(
+                f"{profile.service_kind.capitalize()} routing only accepts "
+                f"{profile.service_kind} models"
+            )
         if fallback and fallback.id == primary.id:
             raise ConfigurationError("Primary and fallback models must be different")
         prompt = await self.session.get(PromptVersion, change.prompt_version_id)
         if prompt is None or prompt.status != PublicationStatus.PUBLISHED:
             raise ConfigurationError("Routing requires a published prompt")
+        definition = await self.session.get(PromptDefinition, prompt.definition_id)
+        if definition is None or definition.service_kind != profile.service_kind:
+            raise ConfigurationError("Routing requires a prompt for the same service")
         before = self._profile_view(profile)
         profile.primary_model_id = primary.id
         profile.fallback_model_id = fallback.id if fallback else None
@@ -244,6 +278,30 @@ class AdminConfigurationService:
         if model is None or not model.enabled or not model.selectable:
             raise ConfigurationError("Selected model is not available")
         return model
+
+    async def _tool_snapshots(self, service_kind: str, tool_codes: list[str]) -> list[dict]:
+        unique_codes = list(dict.fromkeys(tool_codes))
+        if not unique_codes:
+            return []
+        tools = list(
+            (
+                await self.session.scalars(
+                    select(AITool).where(AITool.code.in_(unique_codes), AITool.enabled.is_(True))
+                )
+            ).all()
+        )
+        by_code = {tool.code: tool for tool in tools}
+        unavailable = [code for code in unique_codes if code not in by_code]
+        if unavailable:
+            raise ConfigurationError(f"Tools are not available: {', '.join(unavailable)}")
+        incompatible = [
+            code for code in unique_codes if service_kind not in by_code[code].service_kinds_json
+        ]
+        if incompatible:
+            raise ConfigurationError(
+                f"Tools do not support {service_kind}: {', '.join(incompatible)}"
+            )
+        return [self._tool_view(by_code[code]) for code in unique_codes]
 
     async def _audit(
         self, action: str, resource_type: str, resource_id: str, before: dict | None, after: dict
@@ -271,6 +329,21 @@ class AdminConfigurationService:
             "lifecycle": model.lifecycle,
             "enabled": model.enabled,
             "selectable": model.selectable,
+            "runtime_defaults": model.runtime_defaults_json,
+        }
+
+    @staticmethod
+    def _tool_view(tool: AITool) -> dict:
+        return {
+            "id": tool.id,
+            "code": tool.code,
+            "name": tool.name,
+            "description": tool.description,
+            "handler_code": tool.handler_code,
+            "enabled": tool.enabled,
+            "requires_approval": tool.requires_approval,
+            "service_kinds": tool.service_kinds_json,
+            "schema": tool.schema_json,
         }
 
     @staticmethod
@@ -280,6 +353,7 @@ class AdminConfigurationService:
             "code": profile.code,
             "name": profile.name,
             "experience_code": profile.experience_code,
+            "service_kind": profile.service_kind,
             "environment": profile.environment,
             "status": profile.status,
             "voice_mode": profile.voice_mode,

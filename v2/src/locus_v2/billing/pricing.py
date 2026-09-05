@@ -1,4 +1,4 @@
-from decimal import Decimal, ROUND_CEILING
+from decimal import ROUND_CEILING, Decimal
 
 from pydantic import BaseModel, Field
 
@@ -8,11 +8,14 @@ class NormalizedUsage(BaseModel):
     cached_text_input_tokens: int = Field(default=0, ge=0)
     text_output_tokens: int = Field(default=0, ge=0)
     audio_input_tokens: int = Field(default=0, ge=0)
+    cached_audio_input_tokens: int = Field(default=0, ge=0)
     audio_output_tokens: int = Field(default=0, ge=0)
+    image_input_tokens: int = Field(default=0, ge=0)
+    cached_image_input_tokens: int = Field(default=0, ge=0)
     audio_input_milliseconds: int = Field(default=0, ge=0)
     audio_output_milliseconds: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
-    raw: dict = Field(default_factory=dict)
+    raw: dict[str, object] = Field(default_factory=dict)
 
 
 class PriceCard(BaseModel):
@@ -20,10 +23,56 @@ class PriceCard(BaseModel):
     cached_text_input_per_million_usd: Decimal = Decimal(0)
     text_output_per_million_usd: Decimal = Decimal(0)
     audio_input_per_million_tokens_usd: Decimal = Decimal(0)
+    cached_audio_input_per_million_tokens_usd: Decimal = Decimal(0)
     audio_output_per_million_tokens_usd: Decimal = Decimal(0)
+    image_input_per_million_tokens_usd: Decimal = Decimal(0)
+    cached_image_input_per_million_tokens_usd: Decimal = Decimal(0)
     audio_input_per_minute_usd: Decimal = Decimal(0)
     audio_output_per_minute_usd: Decimal = Decimal(0)
     tool_call_usd: Decimal = Decimal(0)
+
+    @classmethod
+    def from_json(cls, value: dict[str, object]) -> "PriceCard":
+        def rate(*keys: str) -> Decimal:
+            for key in keys:
+                raw = value.get(key)
+                if raw not in (None, ""):
+                    return Decimal(str(raw))
+            return Decimal(0)
+
+        return cls(
+            text_input_per_million_usd=rate(
+                "text_input_per_million_usd", "text_input_per_million", "input_per_million"
+            ),
+            cached_text_input_per_million_usd=rate(
+                "cached_text_input_per_million_usd",
+                "text_cached_input_per_million",
+                "cached_input_per_million",
+            ),
+            text_output_per_million_usd=rate(
+                "text_output_per_million_usd", "text_output_per_million", "output_per_million"
+            ),
+            audio_input_per_million_tokens_usd=rate(
+                "audio_input_per_million_tokens_usd", "audio_input_per_million"
+            ),
+            cached_audio_input_per_million_tokens_usd=rate(
+                "cached_audio_input_per_million_tokens_usd",
+                "audio_cached_input_per_million",
+            ),
+            audio_output_per_million_tokens_usd=rate(
+                "audio_output_per_million_tokens_usd", "audio_output_per_million"
+            ),
+            image_input_per_million_tokens_usd=rate(
+                "image_input_per_million_tokens_usd", "image_input_per_million"
+            ),
+            cached_image_input_per_million_tokens_usd=rate(
+                "cached_image_input_per_million_tokens_usd",
+                "image_cached_input_per_million",
+            ),
+            audio_input_per_minute_usd=rate("audio_input_per_minute_usd"),
+            audio_output_per_minute_usd=rate("audio_output_per_minute_usd"),
+            tool_call_usd=rate("tool_call_usd"),
+        )
 
 
 class ProviderCostCalculator:
@@ -33,21 +82,40 @@ class ProviderCostCalculator:
 
     def calculate_microusd(self, usage: NormalizedUsage, price: PriceCard) -> int:
         total = Decimal(0)
-        total += Decimal(usage.text_input_tokens) * price.text_input_per_million_usd / self.ONE_MILLION
+        total += (
+            Decimal(usage.text_input_tokens) * price.text_input_per_million_usd / self.ONE_MILLION
+        )
         total += (
             Decimal(usage.cached_text_input_tokens)
             * price.cached_text_input_per_million_usd
             / self.ONE_MILLION
         )
-        total += Decimal(usage.text_output_tokens) * price.text_output_per_million_usd / self.ONE_MILLION
+        total += (
+            Decimal(usage.text_output_tokens) * price.text_output_per_million_usd / self.ONE_MILLION
+        )
         total += (
             Decimal(usage.audio_input_tokens)
             * price.audio_input_per_million_tokens_usd
             / self.ONE_MILLION
         )
         total += (
+            Decimal(usage.cached_audio_input_tokens)
+            * price.cached_audio_input_per_million_tokens_usd
+            / self.ONE_MILLION
+        )
+        total += (
             Decimal(usage.audio_output_tokens)
             * price.audio_output_per_million_tokens_usd
+            / self.ONE_MILLION
+        )
+        total += (
+            Decimal(usage.image_input_tokens)
+            * price.image_input_per_million_tokens_usd
+            / self.ONE_MILLION
+        )
+        total += (
+            Decimal(usage.cached_image_input_tokens)
+            * price.cached_image_input_per_million_tokens_usd
             / self.ONE_MILLION
         )
         total += (

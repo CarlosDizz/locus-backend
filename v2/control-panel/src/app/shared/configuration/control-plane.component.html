@@ -1,8 +1,8 @@
 <section class="configuration-head">
   <div>
     <p class="eyebrow">CONTROL PLANE</p>
-    <h1>{{ mode() === 'providers' ? 'Proveedores y rutas' : 'Taller de prompts' }}</h1>
-    <p>{{ mode() === 'providers' ? 'Decide quién habla primero y quién toma el relevo.' : 'Cada cambio crea historia. Nada publicado se sobrescribe.' }}</p>
+    <h1>{{ mode() === 'providers' ? 'Proveedores por servicio' : 'Taller de prompts' }}</h1>
+    <p>{{ mode() === 'providers' ? 'Chat y voz tienen rutas independientes, aunque formen parte de la misma conversación.' : 'Cada cambio crea historia. Nada publicado se sobrescribe.' }}</p>
   </div>
   <span class="safe"><i></i>Cambios auditados</span>
 </section>
@@ -13,37 +13,102 @@
 
 @if (!loading() && configuration(); as config) {
   @if (mode() === 'providers') {
+    <nav class="service-tabs" aria-label="Tipo de servicio">
+      <button type="button" [class.active]="activeService() === 'voice'" (click)="selectService('voice')"><span>V</span><div><b>Voz</b><small>Experiencia en directo</small></div></button>
+      <button type="button" [class.active]="activeService() === 'chat'" (click)="selectService('chat')"><span>C</span><div><b>Chat</b><small>Conversación escrita</small></div></button>
+    </nav>
+
+    <section class="service-intro">
+      <div><p class="eyebrow">{{ activeService() === 'voice' ? 'CANAL DE VOZ' : 'CANAL DE CHAT' }}</p><h2>{{ activeService() === 'voice' ? 'Quién escucha y habla' : 'Quién responde por escrito' }}</h2></div>
+      <p>{{ activeService() === 'voice' ? 'Modelos full-duplex, transcripción y herramientas durante la llamada.' : 'Modelos de texto, herramientas documentales y enlaces útiles.' }}</p>
+    </section>
+
     <section class="provider-grid">
       @for (provider of config.providers; track provider.id) {
+        @if (modelsForProvider(provider.id, activeService()).length) {
         <article class="provider-card">
-          <header><span>{{ provider.code.slice(0, 1).toUpperCase() }}</span><div><h2>{{ provider.name }}</h2><small>{{ provider.models.length }} modelos registrados</small></div></header>
-          @for (model of provider.models; track model.id) {
+          <header><span>{{ provider.code.slice(0, 1).toUpperCase() }}</span><div><h2>{{ provider.name }}</h2><small>{{ modelsForProvider(provider.id, activeService()).length }} modelos de {{ activeService() === 'voice' ? 'voz' : 'chat' }}</small></div></header>
+          @for (model of modelsForProvider(provider.id, activeService()); track model.id) {
             <div class="model-line">
               <div><strong>{{ model.display_name }}</strong><small>{{ model.external_id }}</small></div>
               <button type="button" class="switch" [class.on]="model.enabled" [attr.aria-label]="'Cambiar estado de ' + model.display_name" (click)="toggleModel(model)"><i></i></button>
             </div>
           }
         </article>
+        }
       }
     </section>
 
-    @for (route of config.routing_profiles; track route.id) {
+    <div class="conversation-label"><span></span><b>Configuración de la conversación</b><span></span></div>
+    @for (route of routesFor(activeService()); track route.id) {
       <section class="route-editor">
-        <div><p class="eyebrow">RUTA PUBLICADA</p><h2>{{ route.name }}</h2><small>{{ route.environment }} · {{ route.voice_mode }}</small></div>
-        <label>Primario<select [(ngModel)]="primaryModelId"><option [ngValue]="null" disabled>Selecciona</option>@for(model of voiceModels();track model.id){<option [ngValue]="model.id">{{ model.display_name }}</option>}</select></label>
-        <label>Fallback<select [(ngModel)]="fallbackModelId"><option [ngValue]="null">Sin fallback</option>@for(model of voiceModels();track model.id){<option [ngValue]="model.id">{{ model.display_name }}</option>}</select></label>
-        <label>Prompt<select [(ngModel)]="promptVersionId">@for(version of publishedVersions();track version.id){<option [ngValue]="version.id">{{ version.label }}</option>}</select></label>
+        <div><p class="eyebrow">RUTA DE {{ route.service_kind === 'voice' ? 'VOZ' : 'CHAT' }}</p><h2>{{ route.name }}</h2><small>{{ route.environment }}{{ route.service_kind === 'voice' ? ' · ' + route.voice_mode : '' }}</small></div>
+        <label>Primario<select [(ngModel)]="routeSelections[route.id].primaryModelId"><option [ngValue]="null" disabled>Selecciona</option>@for(model of modelsFor(route.service_kind);track model.id){<option [ngValue]="model.id">{{ model.display_name }}</option>}</select></label>
+        <label>Fallback<select [(ngModel)]="routeSelections[route.id].fallbackModelId"><option [ngValue]="null">Sin fallback</option>@for(model of modelsFor(route.service_kind);track model.id){<option [ngValue]="model.id">{{ model.display_name }}</option>}</select></label>
+        <label>Prompt<select [(ngModel)]="routeSelections[route.id].promptVersionId">@for(version of publishedVersions(route.service_kind);track version.id){<option [ngValue]="version.id">{{ version.label }}</option>}</select></label>
         <button type="button" class="publish" (click)="saveRouting(route)">Publicar ruta</button>
       </section>
+    } @empty {
+      <section class="state">Todavía no existe una ruta de {{ activeService() === 'voice' ? 'voz' : 'chat' }} para este entorno.</section>
     }
   } @else {
-    @for (prompt of config.prompts; track prompt.id) {
+    <nav class="service-tabs prompt-tabs" aria-label="Tipo de prompt">
+      <button type="button" [class.active]="activePromptService() === 'voice'" (click)="selectPromptService('voice')"><span>V</span><div><b>Prompts de voz</b><small>Guía en directo</small></div></button>
+      <button type="button" [class.active]="activePromptService() === 'chat'" (click)="selectPromptService('chat')"><span>C</span><div><b>Prompts de chat</b><small>Conversación escrita</small></div></button>
+    </nav>
+
+    @for (prompt of promptsFor(activePromptService()); track prompt.id) {
       <section class="prompt-workbench">
         <aside><p class="eyebrow">{{ prompt.code }}</p><h2>{{ prompt.name }}</h2><p>{{ prompt.description }}</p>
-          <div class="versions">@for(version of prompt.versions;track version.id){<button type="button" [class.published]="version.status === 'published'" (click)="draftContent = version.content"><b>v{{ version.version }}</b><span>{{ version.status }}</span></button>}</div>
+          <div class="versions">@for(version of prompt.versions;track version.id){<button type="button" [class.published]="version.status === 'published'" (click)="selectPromptVersion(prompt, version)"><b>v{{ version.version }}</b><span>{{ version.status }}</span></button>}</div>
         </aside>
-        <div class="editor"><div class="editor-top"><span>Borrador siguiente</span><small>{{ draftContent.length }} caracteres</small></div><textarea [(ngModel)]="draftContent" spellcheck="true"></textarea><footer><button type="button" class="draft" (click)="createVersion(prompt)">Guardar nueva versión</button>@if(prompt.versions[0]?.status === 'draft'){<button type="button" class="publish" (click)="publish(prompt.versions[0].id)">Publicar v{{ prompt.versions[0].version }}</button>}</footer></div>
+        <div class="editor">
+          <div class="editor-top"><span>Borrador siguiente</span><small>{{ (draftContent[prompt.id] || '').length }} caracteres</small></div>
+          <textarea [(ngModel)]="draftContent[prompt.id]" spellcheck="true"></textarea>
+          <section class="tool-picker">
+            <div><p class="eyebrow">TOOLS DISPONIBLES</p><h3>Capacidades de esta versión</h3><small>La selección se guarda junto al prompt y no cambia las versiones ya publicadas.</small></div>
+            <div class="tool-list">
+              @for (tool of toolsFor(prompt.service_kind); track tool.id) {
+                <button type="button" [class.selected]="toolSelected(prompt.id, tool.code)" (click)="togglePromptTool(prompt.id, tool.code)">
+                  <i></i><span><b>{{ tool.name }}</b><small>{{ tool.description }}</small></span>
+                </button>
+              } @empty {
+                <span class="no-tools">No hay tools activas para este canal.</span>
+              }
+            </div>
+          </section>
+          <section class="runtime-editor">
+            <div><p class="eyebrow">CONFIGURACIÓN DE EJECUCIÓN</p><h3>Inicialización del modelo</h3><small>Se versiona con el prompt. Admite límites de salida, voz, detección de turno y opciones específicas de cada proveedor.</small></div>
+            <div class="runtime-fields">
+              <label>Tokens máximos de salida<input type="number" min="64" max="32000" step="64" [(ngModel)]="draftRuntime[prompt.id].maxOutputTokens"></label>
+              <label>Temperatura<input type="number" min="0" max="2" step="0.1" [(ngModel)]="draftRuntime[prompt.id].temperature"></label>
+              @if (prompt.service_kind === 'voice') {
+                <label>Voz OpenAI<select [(ngModel)]="draftRuntime[prompt.id].openaiVoice">@for (voice of openaiVoices; track voice) {<option [value]="voice">{{ voice }}</option>}</select></label>
+                <label>Voz Gemini<select [(ngModel)]="draftRuntime[prompt.id].googleVoice">@for (voice of googleVoices; track voice) {<option [value]="voice">{{ voice }}</option>}</select></label>
+                <label>Gestión del turno<select [(ngModel)]="draftRuntime[prompt.id].turnDetection"><option value="provider_native">Full duplex · proveedor</option><option value="semantic_vad">VAD semántico</option><option value="server_vad">VAD de servidor</option><option value="manual">Manual · pulsar para hablar</option></select></label>
+                <label>Transcripción de entrada<select [(ngModel)]="draftRuntime[prompt.id].inputTranscription"><option value="gpt-4o-mini-transcribe">GPT-4o mini transcribe</option><option value="gpt-4o-transcribe">GPT-4o transcribe</option></select></label>
+                @if (draftRuntime[prompt.id].turnDetection === 'semantic_vad') {
+                  <label>Sensibilidad semántica<select [(ngModel)]="draftRuntime[prompt.id].semanticEagerness"><option value="low">Baja</option><option value="auto">Automática</option><option value="high">Alta</option></select></label>
+                }
+                @if (draftRuntime[prompt.id].turnDetection === 'server_vad') {
+                  <label>Umbral VAD<input type="number" min="0" max="1" step="0.05" [(ngModel)]="draftRuntime[prompt.id].vadThreshold"></label>
+                  <label>Audio previo (ms)<input type="number" min="0" max="2000" step="50" [(ngModel)]="draftRuntime[prompt.id].prefixPaddingMs"></label>
+                  <label>Silencio para cerrar turno (ms)<input type="number" min="100" max="5000" step="50" [(ngModel)]="draftRuntime[prompt.id].silenceDurationMs"></label>
+                }
+                <label class="check-field"><input type="checkbox" [(ngModel)]="draftRuntime[prompt.id].allowInterruptions"><span>Permitir que el usuario interrumpa la respuesta</span></label>
+                <label class="check-field"><input type="checkbox" [(ngModel)]="draftRuntime[prompt.id].createResponse"><span>Responder automáticamente al cerrar el turno</span></label>
+              } @else {
+                <label>Esfuerzo de razonamiento<select [(ngModel)]="draftRuntime[prompt.id].reasoningEffort"><option value="minimal">Mínimo</option><option value="low">Bajo</option><option value="medium">Medio</option><option value="high">Alto</option></select></label>
+                <label>Verbosidad<select [(ngModel)]="draftRuntime[prompt.id].verbosity"><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option></select></label>
+              }
+              <details class="advanced-options"><summary>Opciones avanzadas</summary><label>JSON adicional<textarea class="runtime-json" [(ngModel)]="draftRuntime[prompt.id].advancedJson" spellcheck="false"></textarea></label></details>
+            </div>
+          </section>
+          <footer><button type="button" class="draft" (click)="createVersion(prompt)">Guardar nueva versión</button>@if(prompt.versions[0]?.status === 'draft'){<button type="button" class="publish" (click)="publish(prompt.versions[0].id)">Publicar v{{ prompt.versions[0].version }}</button>}</footer>
+        </div>
       </section>
+    } @empty {
+      <section class="state">Todavía no hay prompts de {{ activePromptService() === 'voice' ? 'voz' : 'chat' }}.</section>
     }
   }
 }

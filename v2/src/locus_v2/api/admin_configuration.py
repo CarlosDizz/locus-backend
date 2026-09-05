@@ -25,6 +25,8 @@ class ModelStateRequest(BaseModel):
 
 class PromptVersionRequest(BaseModel):
     content: str = Field(min_length=20)
+    tool_codes: list[str] = Field(default_factory=list)
+    runtime_config: dict[str, Any] = Field(default_factory=dict)
 
 
 class RoutingRequest(BaseModel):
@@ -60,7 +62,7 @@ async def create_prompt_version(
 ) -> dict:
     try:
         return await AdminConfigurationService(session, admin).create_prompt_version(
-            definition_id, payload.content
+            definition_id, payload.content, payload.tool_codes, payload.runtime_config
         )
     except ConfigurationError as error:
         raise _bad_request(error) from error

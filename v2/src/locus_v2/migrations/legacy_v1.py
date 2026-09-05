@@ -15,7 +15,6 @@ from locus_v2.catalog.models import City, Poi, PoiType
 from locus_v2.identity.models import Role, User, UserRole, UserStatus
 from locus_v2.infrastructure.database import models as database_models  # noqa: F401
 from locus_v2.migrations.models import DataImportRun, LegacyAppSession
-from locus_v2.shared.ids import new_public_id
 
 logger = structlog.get_logger()
 
@@ -58,11 +57,26 @@ def copied_at(row: Mapping[str, Any], field: str, fallback: datetime | None = No
     return fallback or datetime.now()
 
 
+def legacy_adapter_code(provider_code: str, service_kind: str) -> str:
+    """Map imported model metadata onto a V2 adapter when one exists."""
+    normalized_provider = provider_code.strip().lower()
+    if service_kind == "voice":
+        if normalized_provider == "openai":
+            return "openai_realtime"
+        if normalized_provider in {"google", "gemini"}:
+            return "gemini_live"
+    if service_kind == "chat" and normalized_provider == "openai":
+        return "openai_responses"
+    return "legacy_v1"
+
+
 class LegacyV1Importer:
     """Read-only V1 adapter and idempotent V2 import use case."""
 
     def __init__(self, source_url: str, target: AsyncSession, admin_email: str) -> None:
-        self.source: AsyncEngine = create_async_engine(async_mysql_url(source_url), pool_pre_ping=True)
+        self.source: AsyncEngine = create_async_engine(
+            async_mysql_url(source_url), pool_pre_ping=True
+        )
         self.target = target
         self.admin_email = admin_email.lower()
         self.counts: dict[str, int] = {}
@@ -77,9 +91,8 @@ class LegacyV1Importer:
             counts: dict[str, int] = {}
             for table in TABLES:
                 if table in existing:
-                    counts[table] = int(
-                        (await connection.execute(text(f"SELECT COUNT(*) FROM `{table}`"))).scalar_one()
-                    )
+                    result = await connection.execute(text(f"SELECT COUNT(*) FROM `{table}`"))
+                    counts[table] = int(result.scalar_one())
             return counts
 
     async def rows(self, table: str) -> list[Mapping[str, Any]]:
@@ -147,7 +160,11 @@ class LegacyV1Importer:
                             f"User {email} is already linked to legacy id {user.legacy_v1_id}"
                         )
                     user.legacy_v1_id = legacy_id
-                    user.display_name = user.display_name or row.get("display_name") or email.split("@", 1)[0]
+                    user.display_name = (
+                        user.display_name
+                        or row.get("display_name")
+                        or email.split("@", 1)[0]
+                    )
                     user.avatar_url = user.avatar_url or row.get("avatar_url") or None
                     user.provider_subject = user.provider_subject or row.get("google_sub") or None
                     merged += 1
@@ -160,7 +177,11 @@ class LegacyV1Importer:
                         auth_provider=row.get("auth_provider") or "google",
                         provider_subject=row.get("google_sub") or None,
                         locale="es-ES",
-                        status=UserStatus.ACTIVE if row.get("is_active", True) else UserStatus.BLOCKED,
+                        status=(
+                            UserStatus.ACTIVE
+                            if row.get("is_active", True)
+                            else UserStatus.BLOCKED
+                        ),
                         created_at=copied_at(row, "created_at"),
                         updated_at=copied_at(row, "updated_at", copied_at(row, "created_at")),
                     )
@@ -283,8 +304,12 @@ class LegacyV1Importer:
         await self.target.flush()
         self.counts["wallets"] = imported
 
-    async def _provider_model(self, provider_code: str, model_code: str) -> tuple[AIProvider, AIModel]:
-        provider = await self.target.scalar(select(AIProvider).where(AIProvider.code == provider_code))
+    async def _provider_model(
+        self, provider_code: str, model_code: str
+    ) -> tuple[AIProvider, AIModel]:
+        provider = await self.target.scalar(
+            select(AIProvider).where(AIProvider.code == provider_code)
+        )
         if provider is None:
             provider = AIProvider(code=provider_code, name=provider_code.title(), config_json={})
             self.target.add(provider)
@@ -296,12 +321,13 @@ class LegacyV1Importer:
             )
         )
         if model is None:
+            service_kind = "voice" if "realtime" in model_code or "live" in model_code else "chat"
             model = AIModel(
                 provider_id=provider.id,
                 external_id=model_code,
                 display_name=model_code,
-                service_kind="voice" if "realtime" in model_code else "chat",
-                adapter_code="legacy_v1",
+                service_kind=service_kind,
+                adapter_code=legacy_adapter_code(provider_code, service_kind),
                 lifecycle=Lifecycle.RETIRED,
                 enabled=False,
                 selectable=False,

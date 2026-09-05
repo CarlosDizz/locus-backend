@@ -1,5 +1,5 @@
 from enum import StrEnum
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
@@ -19,6 +19,7 @@ class SessionStart(ClientEventBase):
     routing_profile: str = Field(min_length=1, max_length=100)
     context_type: str = Field(default="poi", max_length=40)
     context_id: str | None = Field(default=None, max_length=100)
+    audio_format: AudioFormat = AudioFormat.PCM16_24KHZ
 
 
 class AudioStart(ClientEventBase):
@@ -39,12 +40,24 @@ class TextSend(ClientEventBase):
     text: str = Field(min_length=1, max_length=8000)
 
 
+class ToolApproval(ClientEventBase):
+    type: Literal["tool.approval"]
+    call_id: str = Field(min_length=1, max_length=200)
+    approved: bool
+
+
 class SessionClose(ClientEventBase):
     type: Literal["session.close"]
 
 
 ClientEvent = Annotated[
-    Union[SessionStart, AudioStart, AudioCommit, ResponseCancel, TextSend, SessionClose],
+    SessionStart
+    | AudioStart
+    | AudioCommit
+    | ResponseCancel
+    | TextSend
+    | ToolApproval
+    | SessionClose,
     Field(discriminator="type"),
 ]
 

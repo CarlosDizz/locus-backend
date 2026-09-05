@@ -1,3 +1,4 @@
+from decimal import Decimal
 from functools import lru_cache
 from typing import Literal
 
@@ -36,8 +37,16 @@ class Settings(BaseSettings):
 
     openai_api_key: SecretStr | None = None
     gemini_api_key: SecretStr | None = None
+    tool_model: str = "gpt-5-mini"
+    tool_timeout_seconds: float = Field(default=60.0, gt=0)
+    event_log_retention_days: int = Field(default=30, ge=1, le=365)
+
+    billing_usd_to_eur: Decimal = Field(default=Decimal("0.87"), gt=0)
+    billing_margin_multiplier: Decimal = Field(default=Decimal("2.20"), ge=1)
+    billing_min_realtime_call_charge_cents: int = Field(default=3, ge=0)
+    billing_worker_poll_seconds: float = Field(default=1.0, gt=0, le=60)
 
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+    return Settings()

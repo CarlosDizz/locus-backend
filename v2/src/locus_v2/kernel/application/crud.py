@@ -1,15 +1,16 @@
 from collections.abc import Mapping, Sequence
-from typing import Generic, Protocol, TypeVar
+from typing import Protocol, TypeVar
 
 EntityT = TypeVar("EntityT")
+ReadT = TypeVar("ReadT", covariant=True)
 
 
-class ReadRepository(Protocol[EntityT]):
-    async def list(self, *, limit: int, offset: int) -> Sequence[EntityT]: ...
+class ReadRepository(Protocol[ReadT]):
+    async def list(self, *, limit: int, offset: int) -> Sequence[ReadT]: ...
 
     async def count(self) -> int: ...
 
-    async def get(self, entity_id: int) -> EntityT | None: ...
+    async def get(self, entity_id: int) -> ReadT | None: ...
 
 
 class WriteRepository(ReadRepository[EntityT], Protocol[EntityT]):
@@ -20,7 +21,7 @@ class WriteRepository(ReadRepository[EntityT], Protocol[EntityT]):
     async def delete(self, entity: EntityT) -> None: ...
 
 
-class CrudService(Generic[EntityT]):
+class CrudService[EntityT]:
     """Shared orchestration only; domain rules belong in subclasses."""
 
     def __init__(self, repository: WriteRepository[EntityT]) -> None:

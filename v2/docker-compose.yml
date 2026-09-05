@@ -9,7 +9,7 @@ services:
 
   api:
     build: .
-    env_file: .env
+    env_file: ${LOCUS_ENV_FILE:-.env.local}
     command: sh -c "alembic upgrade head && python -m locus_v2.entrypoints.seed && uvicorn locus_v2.entrypoints.api:app --host 0.0.0.0 --port 8100 --reload"
     ports:
       - "8100:8100"
@@ -29,7 +29,7 @@ services:
 
   realtime:
     build: .
-    env_file: .env
+    env_file: ${LOCUS_ENV_FILE:-.env.local}
     command: uvicorn locus_v2.entrypoints.realtime:app --host 0.0.0.0 --port 8101 --reload
     ports:
       - "8101:8101"
@@ -43,12 +43,12 @@ services:
 
   worker:
     build: .
-    env_file: .env
+    env_file: ${LOCUS_ENV_FILE:-.env.local}
     command: python -m locus_v2.entrypoints.worker
     volumes:
       - ./src:/app/src
     depends_on:
-      mysql:
+      api:
         condition: service_healthy
       valkey:
         condition: service_healthy

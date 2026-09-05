@@ -34,6 +34,7 @@
   </aside>
 
   <main>
+    @if (activeSection() === 'Pulso') {
     <header class="topbar">
       <div class="crumb"><span>Centro de operaciones</span><b>/</b>{{ activeSection() }}</div>
       <div class="top-actions">
@@ -42,20 +43,23 @@
         <button type="button" class="primary">Nueva prueba</button>
       </div>
     </header>
+    }
 
-    <section class="hero">
-      <div>
-        <p class="eyebrow">SISTEMA VIVO</p>
-        <h1>El pulso de Locus,<br><em>en un solo lugar.</em></h1>
-        <p class="intro">Prompts, rutas y proveedores bajo control. Cada conversación deja una pista que podemos seguir.</p>
-      </div>
-      <div class="compass" aria-hidden="true">
-        <span class="orbit orbit-one"></span>
-        <span class="orbit orbit-two"></span>
-        <span class="needle"></span>
-        <small>V2</small>
-      </div>
-    </section>
+    @if (activeSection() === 'Pulso') {
+      <section class="hero">
+        <div>
+          <p class="eyebrow">SISTEMA VIVO</p>
+          <h1>El pulso de Locus,<br><em>en un solo lugar.</em></h1>
+          <p class="intro">Prompts, rutas y proveedores bajo control. Cada conversación deja una pista que podemos seguir.</p>
+        </div>
+        <div class="compass" aria-hidden="true">
+          <span class="orbit orbit-one"></span>
+          <span class="orbit orbit-two"></span>
+          <span class="needle"></span>
+          <small>V2</small>
+        </div>
+      </section>
+    }
 
     @if (loading()) {
       <section class="loading-card"><span></span>Tomando el pulso al sistema...</section>
@@ -126,7 +130,7 @@
       }
     } @else if (activeSection() === 'Ciudades y POIs') {
       @defer {
-        <locus-poi-map [points]="overview()!.poi_map" />
+        <locus-catalog-explorer />
       } @placeholder {
         <section class="loading-card">Preparando el atlas...</section>
       }
@@ -136,6 +140,10 @@
       <locus-control-plane mode="providers" />
     } @else if (activeSection() === 'Usuarios') {
       <locus-user-directory />
+    } @else if (activeSection() === 'Consumos') {
+      <locus-billing-dashboard />
+    } @else if (activeSection() === 'Registros') {
+      <locus-log-console />
     } @else {
       <section class="section-placeholder">
         <p class="eyebrow">MÓDULO V2</p>

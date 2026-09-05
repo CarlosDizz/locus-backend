@@ -1,15 +1,23 @@
 import asyncio
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from locus_v2.ai.enums import Lifecycle, PublicationStatus, ServiceKind, VoiceMode
-from locus_v2.ai.models import AIModel, AIProvider, PromptDefinition, PromptVersion, RoutingProfile
+from locus_v2.ai.models import (
+    AIModel,
+    AIProvider,
+    AITool,
+    PromptDefinition,
+    PromptVersion,
+    ProviderPriceSnapshot,
+    RoutingProfile,
+)
 from locus_v2.config import get_settings
 from locus_v2.identity.models import Role, User, UserStatus
 from locus_v2.infrastructure.database.session import get_database
 from locus_v2.shared.clock import utc_now
-
 
 PROVIDERS = (
     ("openai", "OpenAI"),
@@ -18,14 +26,224 @@ PROVIDERS = (
 )
 
 MODELS = (
-    ("openai", "gpt-5-mini", "GPT-5 mini", ServiceKind.CHAT, "openai_responses", Lifecycle.STABLE, True),
-    ("openai", "gpt-realtime-mini", "GPT Realtime mini", ServiceKind.VOICE, "openai_realtime", Lifecycle.STABLE, True),
-    ("google", "gemini-3.1-flash-live-preview", "Gemini 3.1 Flash Live", ServiceKind.VOICE, "gemini_live", Lifecycle.PREVIEW, True),
-    ("openai", "gpt-live", "GPT Live", ServiceKind.VOICE, "openai_live", Lifecycle.DISABLED, False),
-    ("locus", "mock-live", "Mock Live", ServiceKind.VOICE, "mock_live", Lifecycle.STABLE, True),
+    (
+        "openai",
+        "gpt-5-mini",
+        "GPT-5 mini",
+        ServiceKind.CHAT,
+        "openai_responses",
+        Lifecycle.STABLE,
+        True,
+    ),
+    (
+        "openai",
+        "gpt-realtime-mini",
+        "GPT Realtime mini",
+        ServiceKind.VOICE,
+        "openai_realtime",
+        Lifecycle.STABLE,
+        True,
+    ),
+    (
+        "google",
+        "gemini-3.1-flash-live-preview",
+        "Gemini 3.1 Flash Live",
+        ServiceKind.VOICE,
+        "gemini_live",
+        Lifecycle.PREVIEW,
+        True,
+    ),
+    (
+        "openai",
+        "gpt-live",
+        "GPT Live",
+        ServiceKind.VOICE,
+        "openai_live",
+        Lifecycle.DISABLED,
+        False,
+    ),
+    (
+        "locus",
+        "mock-live",
+        "Mock Live",
+        ServiceKind.VOICE,
+        "mock_live",
+        Lifecycle.STABLE,
+        True,
+    ),
 )
 
-VOICE_PROMPT = """Eres Locus, un guía local natural y bien documentado. Habla en {locale} y céntrate en {poi_name}. Usa las herramientas siempre que necesites hechos, fechas o contexto; no rellenes con frases genéricas ni expliques tus limitaciones. Responde primero a lo que pide la persona y sugiere escenas o paradas solo cuando aporten valor."""
+PRICE_CARDS = (
+    (
+        "google",
+        "gemini-3.1-flash-live-preview",
+        datetime(2026, 9, 1),
+        "https://ai.google.dev/gemini-api/docs/pricing",
+        {
+            "text_input_per_million_usd": "0.75",
+            "cached_text_input_per_million_usd": "0",
+            "text_output_per_million_usd": "4.50",
+            "audio_input_per_million_tokens_usd": "3.00",
+            "audio_output_per_million_tokens_usd": "12.00",
+        },
+    ),
+    (
+        "openai",
+        "gpt-5-mini",
+        datetime(2026, 9, 1),
+        "https://developers.openai.com/api/docs/models/gpt-5-mini",
+        {
+            "text_input_per_million_usd": "0.25",
+            "cached_text_input_per_million_usd": "0.025",
+            "text_output_per_million_usd": "2.00",
+        },
+    ),
+    (
+        "openai",
+        "gpt-5.4-mini",
+        datetime(2026, 5, 10),
+        "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+        {
+            "text_input_per_million_usd": "0.75",
+            "cached_text_input_per_million_usd": "0.075",
+            "text_output_per_million_usd": "4.50",
+        },
+    ),
+    (
+        "openai",
+        "gpt-realtime-2.1-mini",
+        datetime(2026, 7, 11),
+        "https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini",
+        {
+            "text_input_per_million_usd": "0.60",
+            "cached_text_input_per_million_usd": "0.06",
+            "text_output_per_million_usd": "2.40",
+            "audio_input_per_million_tokens_usd": "10.00",
+            "cached_audio_input_per_million_tokens_usd": "0.30",
+            "audio_output_per_million_tokens_usd": "20.00",
+            "image_input_per_million_tokens_usd": "0.80",
+            "cached_image_input_per_million_tokens_usd": "0.08",
+        },
+    ),
+)
+
+MODEL_RUNTIME_DEFAULTS = {
+    "openai_responses": {
+        "max_output_tokens": 1200,
+        "reasoning_effort": "low",
+        "verbosity": "medium",
+    },
+    "openai_realtime": {"max_output_tokens": 1200, "temperature": 0.8},
+    "gemini_live": {"max_output_tokens": 1200, "temperature": 0.8},
+    "mock_live": {"max_output_tokens": 1200},
+}
+
+VOICE_RUNTIME_DEFAULTS = {
+    "max_output_tokens": 1200,
+    "temperature": 0.8,
+    "interaction_mode": "full_duplex",
+    "turn_detection": {
+        "type": "provider_native",
+        "interrupt_response": True,
+        "create_response": True,
+    },
+    "input_audio_transcription": {"model": "gpt-4o-mini-transcribe"},
+    "provider_overrides": {"openai": {"voice": "marin"}, "google": {"voice": "Kore"}},
+}
+
+CHAT_RUNTIME_DEFAULTS = {
+    "max_output_tokens": 1200,
+    "temperature": 0.8,
+    "reasoning_effort": "low",
+    "verbosity": "medium",
+}
+
+
+def _adapter_for(provider_code: str, service_kind: str) -> str | None:
+    if service_kind == ServiceKind.VOICE:
+        return {"openai": "openai_realtime", "google": "gemini_live"}.get(provider_code)
+    if service_kind == ServiceKind.CHAT and provider_code == "openai":
+        return "openai_responses"
+    return None
+
+
+VOICE_PROMPT = """Eres Locus, un guía local natural y bien documentado.
+Habla en {locale} y céntrate en {poi_name}. Usa las herramientas siempre que necesites
+hechos, fechas o contexto; no rellenes con frases genéricas ni expliques tus limitaciones.
+Responde primero a lo que pide la persona y sugiere escenas o paradas solo cuando
+aporten valor."""
+CHAT_PROMPT = """Eres Locus, un guía local útil y directo.
+Responde en {locale} sobre {poi_name}. Documenta los hechos con las herramientas
+disponibles, evita relleno genérico y ofrece enlaces útiles solo cuando encajen
+de forma natural."""
+
+TOOLS = (
+    {
+        "code": "document_poi",
+        "name": "Documentar POI",
+        "description": "Investiga hechos, historia, arquitectura y contexto fiable del POI actual.",
+        "handler_code": "catalog.document_poi",
+        "service_kinds": [ServiceKind.CHAT, ServiceKind.VOICE],
+        "requires_approval": False,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "Qué se necesita investigar"},
+                "focus": {"type": "string", "description": "Aspecto concreto del lugar"},
+            },
+            "required": ["question"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "code": "plan_poi_visit",
+        "name": "Crear recorrido",
+        "description": "Organiza la visita como escena o como recorrido por paradas.",
+        "handler_code": "catalog.plan_poi_visit",
+        "service_kinds": [ServiceKind.CHAT, ServiceKind.VOICE],
+        "requires_approval": False,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["scene", "stops"]},
+                "user_intent": {"type": "string"},
+            },
+            "required": ["mode", "user_intent"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "code": "find_activities",
+        "name": "Buscar actividades",
+        "description": "Busca actividades reservables relacionadas con el lugar o la ciudad.",
+        "handler_code": "affiliates.find_activities",
+        "service_kinds": [ServiceKind.CHAT],
+        "requires_approval": False,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "city": {"type": "string"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+)
+
+
+def _tool_snapshot(tool: AITool) -> dict:
+    return {
+        "id": tool.id,
+        "code": tool.code,
+        "name": tool.name,
+        "description": tool.description,
+        "handler_code": tool.handler_code,
+        "enabled": tool.enabled,
+        "requires_approval": tool.requires_approval,
+        "service_kinds": tool.service_kinds_json,
+        "schema": tool.schema_json,
+    }
 
 
 async def seed() -> None:
@@ -87,10 +305,79 @@ async def seed() -> None:
                     enabled=selectable,
                     selectable=selectable,
                     capabilities_json={},
+                    runtime_defaults_json=MODEL_RUNTIME_DEFAULTS.get(adapter, {}),
                 )
                 session.add(model)
                 await session.flush()
+            else:
+                model.service_kind = kind
+                model.adapter_code = adapter
+                if not model.runtime_defaults_json and MODEL_RUNTIME_DEFAULTS.get(adapter):
+                    model.runtime_defaults_json = MODEL_RUNTIME_DEFAULTS[adapter]
             models[adapter] = model
+
+        imported_models = (
+            await session.scalars(
+                select(AIModel)
+                .options(selectinload(AIModel.provider))
+                .where(AIModel.adapter_code == "legacy_v1")
+            )
+        ).all()
+        for model in imported_models:
+            adapter = _adapter_for(model.provider.code, model.service_kind)
+            if adapter is not None:
+                model.adapter_code = adapter
+                if not model.runtime_defaults_json:
+                    model.runtime_defaults_json = MODEL_RUNTIME_DEFAULTS.get(adapter, {})
+
+        for provider_code, external_id, effective_from, source_url, pricing in PRICE_CARDS:
+            model = await session.scalar(
+                select(AIModel).where(
+                    AIModel.provider_id == providers[provider_code].id,
+                    AIModel.external_id == external_id,
+                )
+            )
+            if model is None:
+                continue
+            snapshot = await session.scalar(
+                select(ProviderPriceSnapshot).where(
+                    ProviderPriceSnapshot.model_id == model.id,
+                    ProviderPriceSnapshot.effective_from == effective_from,
+                    ProviderPriceSnapshot.source_url == source_url,
+                )
+            )
+            if snapshot is None:
+                session.add(
+                    ProviderPriceSnapshot(
+                        provider_id=providers[provider_code].id,
+                        model_id=model.id,
+                        currency="USD",
+                        pricing_json=pricing,
+                        source_url=source_url,
+                        effective_from=effective_from,
+                        active=True,
+                    )
+                )
+
+        tools: dict[str, AITool] = {}
+        for definition_data in TOOLS:
+            tool = await session.scalar(
+                select(AITool).where(AITool.code == definition_data["code"])
+            )
+            if tool is None:
+                tool = AITool(
+                    code=definition_data["code"],
+                    name=definition_data["name"],
+                    description=definition_data["description"],
+                    handler_code=definition_data["handler_code"],
+                    enabled=True,
+                    requires_approval=definition_data["requires_approval"],
+                    service_kinds_json=definition_data["service_kinds"],
+                    schema_json=definition_data["schema"],
+                )
+                session.add(tool)
+                await session.flush()
+            tools[tool.code] = tool
 
         definition = await session.scalar(
             select(PromptDefinition).where(PromptDefinition.code == "voice.poi.guide")
@@ -100,6 +387,7 @@ async def seed() -> None:
                 code="voice.poi.guide",
                 name="Guía de voz para POI",
                 description="Prompt base versionado para experiencias de escena y paradas.",
+                service_kind=ServiceKind.VOICE,
             )
             session.add(definition)
             await session.flush()
@@ -117,10 +405,23 @@ async def seed() -> None:
                 status=PublicationStatus.PUBLISHED,
                 content=VOICE_PROMPT,
                 variables_json={"required": ["locale", "poi_name"]},
+                tools_json=[
+                    _tool_snapshot(tools["document_poi"]),
+                    _tool_snapshot(tools["plan_poi_visit"]),
+                ],
+                runtime_config_json=VOICE_RUNTIME_DEFAULTS,
                 published_at=utc_now(),
             )
             session.add(prompt)
             await session.flush()
+        else:
+            if not prompt.tools_json:
+                prompt.tools_json = [
+                    _tool_snapshot(tools["document_poi"]),
+                    _tool_snapshot(tools["plan_poi_visit"]),
+                ]
+            if not prompt.runtime_config_json:
+                prompt.runtime_config_json = VOICE_RUNTIME_DEFAULTS
 
         profile = await session.scalar(
             select(RoutingProfile).where(RoutingProfile.code == "voice.poi.local")
@@ -130,6 +431,7 @@ async def seed() -> None:
                 code="voice.poi.local",
                 name="POI voice local",
                 experience_code="poi_guide",
+                service_kind=ServiceKind.VOICE,
                 environment=settings.env,
                 status=PublicationStatus.PUBLISHED,
                 voice_mode=VoiceMode.PUSH_TO_TALK,
@@ -140,6 +442,72 @@ async def seed() -> None:
                 published_at=utc_now(),
             )
             session.add(profile)
+
+        chat_definition = await session.scalar(
+            select(PromptDefinition).where(PromptDefinition.code == "chat.poi.guide")
+        )
+        if chat_definition is None:
+            chat_definition = PromptDefinition(
+                code="chat.poi.guide",
+                name="Chat para POI",
+                description="Prompt base versionado para la conversación escrita de un POI.",
+                service_kind=ServiceKind.CHAT,
+            )
+            session.add(chat_definition)
+            await session.flush()
+
+        chat_prompt = await session.scalar(
+            select(PromptVersion).where(
+                PromptVersion.definition_id == chat_definition.id,
+                PromptVersion.version == 1,
+            )
+        )
+        if chat_prompt is None:
+            chat_prompt = PromptVersion(
+                definition_id=chat_definition.id,
+                version=1,
+                status=PublicationStatus.PUBLISHED,
+                content=CHAT_PROMPT,
+                variables_json={"required": ["locale", "poi_name"]},
+                tools_json=[
+                    _tool_snapshot(tools["document_poi"]),
+                    _tool_snapshot(tools["plan_poi_visit"]),
+                    _tool_snapshot(tools["find_activities"]),
+                ],
+                runtime_config_json=CHAT_RUNTIME_DEFAULTS,
+                published_at=utc_now(),
+            )
+            session.add(chat_prompt)
+            await session.flush()
+        else:
+            if not chat_prompt.tools_json:
+                chat_prompt.tools_json = [
+                    _tool_snapshot(tools["document_poi"]),
+                    _tool_snapshot(tools["plan_poi_visit"]),
+                    _tool_snapshot(tools["find_activities"]),
+                ]
+            if not chat_prompt.runtime_config_json:
+                chat_prompt.runtime_config_json = CHAT_RUNTIME_DEFAULTS
+
+        chat_profile = await session.scalar(
+            select(RoutingProfile).where(RoutingProfile.code == "chat.poi.local")
+        )
+        if chat_profile is None:
+            chat_profile = RoutingProfile(
+                code="chat.poi.local",
+                name="POI chat local",
+                experience_code="poi_guide",
+                service_kind=ServiceKind.CHAT,
+                environment=settings.env,
+                status=PublicationStatus.PUBLISHED,
+                voice_mode="not_applicable",
+                primary_model_id=models["openai_responses"].id,
+                fallback_model_id=None,
+                prompt_version_id=chat_prompt.id,
+                config_json={},
+                published_at=utc_now(),
+            )
+            session.add(chat_profile)
 
         await session.commit()
 

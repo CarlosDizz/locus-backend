@@ -6,7 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from locus_v2.api.admin import router as admin_router
 from locus_v2.api.admin_auth import router as admin_auth_router
+from locus_v2.api.admin_billing import router as admin_billing_router
+from locus_v2.api.admin_catalog import router as admin_catalog_router
 from locus_v2.api.admin_configuration import router as admin_configuration_router
+from locus_v2.api.admin_logs import router as admin_logs_router
 from locus_v2.api.admin_users import router as admin_users_router
 from locus_v2.api.health import router as health_router
 from locus_v2.config import get_settings
@@ -40,5 +43,8 @@ app.add_middleware(
 app.include_router(health_router, prefix="/api/v2")
 app.include_router(admin_router)
 app.include_router(admin_auth_router)
+app.include_router(admin_billing_router)
+app.include_router(admin_catalog_router)
 app.include_router(admin_configuration_router)
+app.include_router(admin_logs_router)
 app.include_router(admin_users_router)

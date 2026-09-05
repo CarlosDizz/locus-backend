@@ -15,9 +15,12 @@ on EC2 now and move independently to ECS later.
 ## Local development
 
 ```bash
-cp .env.example .env
+cp .env.example .env.local
 ./bin/locus up
 ```
+
+Docker Compose reads `.env.local` by default for every service. Set
+`LOCUS_ENV_FILE=.env.production` when a different environment file is required.
 
 `./bin/locus` is the single local operations entry point. It supports `up`, `down`, `rebuild`,
 `logs`, `status`, `migrate`, `seed`, and the idempotent `import-v1` data migration.

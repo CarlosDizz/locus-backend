@@ -1,0 +1,70 @@
+<section class="log-intro">
+  <div>
+    <p class="eyebrow">CUADERNO OPERATIVO</p>
+    <h1>Lo que ocurre,<br><em>cuando ocurre.</em></h1>
+    <p>Eventos persistentes de API, voz y workers. Busca una traza sin abrir una terminal.</p>
+  </div>
+  <div class="log-seal" [class.alert]="problems() > 0">
+    <strong>{{ problems() }}</strong>
+    <span>errores críticos</span>
+  </div>
+</section>
+
+<form class="filters" (submit)="$event.preventDefault(); load()">
+  <label class="search"><span>Buscar evento, mensaje o traza</span><input name="query" [(ngModel)]="query" placeholder="Ej. provider_error o trace ID"></label>
+  <label><span>Servicio</span><select name="service" [(ngModel)]="service"><option value="">Todos</option>@for (item of page()?.services || []; track item) {<option [value]="item">{{ item }}</option>}</select></label>
+  <label><span>Periodo</span><select name="days" [(ngModel)]="days"><option [ngValue]="1">24 horas</option><option [ngValue]="7">7 días</option><option [ngValue]="30">30 días</option><option [ngValue]="0">Todo</option></select></label>
+  <button type="submit">Rastrear</button>
+</form>
+
+<section class="level-strip" aria-label="Filtros por nivel">
+  @for (item of page()?.levels || []; track item.level) {
+    <button type="button" [attr.data-level]="item.level" [class.active]="level === item.level" (click)="filterByLevel(item.level)"><i></i><span>{{ item.level }}</span><strong>{{ item.count }}</strong></button>
+  } @empty {
+    <span class="quiet">Sin eventos en el periodo.</span>
+  }
+</section>
+
+@if (loading()) {
+  <section class="state"><i></i>Leyendo las últimas señales...</section>
+} @else if (error()) {
+  <section class="state error">{{ error() }} <button type="button" (click)="load()">Reintentar</button></section>
+} @else if (page(); as data) {
+  <section class="logbook">
+    <header><span>Momento</span><span>Nivel</span><span>Servicio</span><span>Evento</span><span>Duración</span></header>
+    @for (item of data.items; track item.id) {
+      <button type="button" class="log-row" (click)="open(item)">
+        <time>{{ item.created_at | date:'d MMM, HH:mm:ss' }}</time>
+        <span class="level" [attr.data-level]="item.level"><i></i>{{ item.level }}</span>
+        <span><strong>{{ item.service }}</strong><small>{{ item.environment }}</small></span>
+        <span class="event"><strong>{{ item.event }}</strong><small>{{ item.message || item.error_code || item.trace_id || 'Evento estructurado' }}</small></span>
+        <span>{{ item.elapsed_ms === null ? '—' : item.elapsed_ms + ' ms' }}</span>
+      </button>
+    } @empty {
+      <p class="empty">No hay señales que coincidan con estos filtros.</p>
+    }
+    <footer>Mostrando {{ data.items.length }} de {{ data.total }} eventos</footer>
+  </section>
+}
+
+@if (selected(); as item) {
+  <div class="backdrop" (click)="close()"></div>
+  <aside class="detail" aria-label="Detalle del evento">
+    <button type="button" class="close" (click)="close()" aria-label="Cerrar">×</button>
+    <p class="eyebrow">EVENTO #{{ item.id }}</p>
+    <div class="detail-level" [attr.data-level]="item.level"><i></i>{{ item.level }} · {{ item.service }}</div>
+    <h2>{{ item.event }}</h2>
+    <p class="message">{{ item.message || 'Este evento no añadió un mensaje libre.' }}</p>
+    <dl>
+      <div><dt>Momento</dt><dd>{{ item.created_at | date:'medium' }}</dd></div>
+      <div><dt>Duración</dt><dd>{{ item.elapsed_ms === null ? 'No medida' : item.elapsed_ms + ' ms' }}</dd></div>
+      <div><dt>Trace ID</dt><dd>{{ item.trace_id || '—' }}</dd></div>
+      <div><dt>Usuario</dt><dd>{{ item.user_id || '—' }}</dd></div>
+      <div><dt>Sesión de voz</dt><dd>{{ item.voice_session_id || '—' }}</dd></div>
+      <div><dt>Error</dt><dd>{{ item.error_type || item.error_code || '—' }}</dd></div>
+    </dl>
+    @if (hasContext(item)) {
+      <section class="context"><p class="eyebrow">CONTEXTO</p><pre>{{ formattedContext(item) }}</pre></section>
+    }
+  </aside>
+}

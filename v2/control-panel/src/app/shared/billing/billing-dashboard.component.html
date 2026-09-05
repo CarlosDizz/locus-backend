@@ -1,0 +1,83 @@
+<section class="billing-toolbar">
+  <div><p class="eyebrow">ECONOMÍA DEL SISTEMA</p><strong>De proveedor a monedero, sin zonas oscuras.</strong></div>
+  <label>
+    <span>Periodo</span>
+    <select [(ngModel)]="days" (change)="load()">
+      <option [ngValue]="0">Todo el histórico</option>
+      <option [ngValue]="7">Últimos 7 días</option>
+      <option [ngValue]="30">Últimos 30 días</option>
+      <option [ngValue]="90">Últimos 90 días</option>
+    </select>
+  </label>
+</section>
+
+@if (loading()) {
+  <section class="state"><i></i>Reconciliando eventos y movimientos...</section>
+} @else if (error()) {
+  <section class="state error">{{ error() }} <button type="button" (click)="load()">Reintentar</button></section>
+} @else if (dashboard(); as data) {
+  <section class="money-strip">
+    <article class="cost"><span>Coste proveedor</span><strong>{{ money(data.totals.provider_cost_eur_cents) }}</strong><small>Coste real acumulado</small></article>
+    <article class="charged"><span>Cobrado</span><strong>{{ money(data.totals.charged_amount_cents) }}</strong><small>{{ data.totals.usage_events }} eventos procesados</small></article>
+    <article class="margin"><span>Margen bruto</span><strong>{{ money(data.totals.gross_margin_cents) }}</strong><small>{{ marginPercent(data.totals.provider_cost_eur_cents, data.totals.charged_amount_cents) }} sobre facturación</small></article>
+    <article><span>Llamadas / usuarios</span><strong>{{ data.totals.voice_sessions }} <b>/ {{ data.totals.active_users }}</b></strong><small>{{ data.totals.pending_events }} pendientes · {{ data.totals.failed_events }} fallidos</small></article>
+  </section>
+
+  <section class="billing-grid">
+    <article class="panel rhythm">
+      <div class="title"><div><p class="eyebrow">RITMO</p><h2>Facturación diaria</h2></div><span>{{ data.daily.length }} días con actividad</span></div>
+      <div class="bars">
+        @for (point of data.daily; track point.day) {
+          <div class="bar-column" [title]="shortDate(point.day) + ': ' + money(point.charged_amount_cents)">
+            <div class="bar"><i [style.height.%]="dailyHeight(point.charged_amount_cents)"></i><b [style.height.%]="dailyHeight(point.provider_cost_eur_cents)"></b></div>
+            <span>{{ shortDate(point.day) }}</span>
+          </div>
+        } @empty {
+          <p class="empty">No hay actividad en este periodo.</p>
+        }
+      </div>
+      <footer><span><i class="charge-key"></i>Cobrado</span><span><i class="cost-key"></i>Coste</span></footer>
+    </article>
+
+    <article class="panel model-mix">
+      <div class="title"><div><p class="eyebrow">MEZCLA</p><h2>Coste por modelo</h2></div></div>
+      @for (item of data.by_model; track item.provider + item.model) {
+        <div class="model-item">
+          <div><span class="monogram">{{ item.provider.slice(0, 1).toUpperCase() }}</span><p><strong>{{ item.model }}</strong><small>{{ item.provider }} · {{ item.usage_events }} eventos</small></p><b>{{ money(item.charged_amount_cents) }}</b></div>
+          <div class="model-bar"><i [style.width.%]="modelWidth(item)"></i></div>
+          <small>Coste {{ money(item.provider_cost_eur_cents) }} · margen {{ money(item.gross_margin_cents) }}</small>
+        </div>
+      } @empty {
+        <p class="empty">No hay modelos facturados.</p>
+      }
+    </article>
+  </section>
+
+  <section class="panel event-panel">
+    <div class="title"><div><p class="eyebrow">TRAZABILIDAD</p><h2>Últimos consumos</h2></div><span>Máximo 50</span></div>
+    <div class="event-head"><span>Momento</span><span>Usuario y modelo</span><span>Tokens</span><span>Coste</span><span>Cobrado</span><span>Estado</span></div>
+    @for (event of data.recent_usage; track event.id) {
+      <div class="event-row">
+        <span>{{ event.created_at | date:'d MMM, HH:mm' }}</span>
+        <span><strong>{{ event.user_email || 'Sistema' }}</strong><small>{{ event.provider }} · {{ event.model }} · {{ event.interaction_type }}</small></span>
+        <span><strong>{{ event.audio_tokens | number:'1.0-0' }} A</strong><small>{{ event.text_tokens | number:'1.0-0' }} texto</small></span>
+        <span>{{ money(event.provider_cost_eur_cents) }}</span>
+        <span><strong>{{ money(event.charged_amount_cents) }}</strong><small>+{{ money(event.gross_margin_cents) }}</small></span>
+        <span class="event-status" [attr.data-status]="event.status"><i></i>{{ event.status }}</span>
+      </div>
+    } @empty {
+      <p class="empty">No hay consumos en este periodo.</p>
+    }
+  </section>
+
+  <section class="panel ledger-panel">
+    <div class="title"><div><p class="eyebrow">LIBRO MAYOR</p><h2>Movimientos recientes</h2></div><span>Saldo después de cada apunte</span></div>
+    <div class="ledger-list">
+      @for (entry of data.recent_ledger; track entry.id) {
+        <div class="ledger-row"><i [class.credit]="entry.amount_cents > 0"></i><span><strong>{{ entry.description }}</strong><small>{{ entry.user_email }} · {{ entry.created_at | date:'d MMM, HH:mm' }}</small></span><b [class.credit]="entry.amount_cents > 0">{{ money(entry.amount_cents) }}</b><small>saldo {{ money(entry.balance_after_cents) }}</small></div>
+      } @empty {
+        <p class="empty">No hay movimientos en este periodo.</p>
+      }
+    </div>
+  </section>
+}

@@ -1,15 +1,12 @@
 from collections.abc import Mapping, Sequence
-from typing import Generic, TypeVar
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from locus_v2.infrastructure.database.base import Base
 
-ModelT = TypeVar("ModelT", bound=Base)
 
-
-class SQLAlchemyRepository(Generic[ModelT]):
+class SQLAlchemyRepository[ModelT: Base]:
     model: type[ModelT]
 
     def __init__(self, session: AsyncSession) -> None:
@@ -17,7 +14,10 @@ class SQLAlchemyRepository(Generic[ModelT]):
 
     async def list(self, *, limit: int, offset: int) -> Sequence[ModelT]:
         result = await self.session.scalars(
-            select(self.model).order_by(self.model.id.desc()).limit(limit).offset(offset)
+            select(self.model)
+            .order_by(self.model.__table__.c.id.desc())
+            .limit(limit)
+            .offset(offset)
         )
         return result.all()
 

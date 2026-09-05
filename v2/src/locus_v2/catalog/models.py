@@ -1,6 +1,15 @@
 from decimal import Decimal
 
-from sqlalchemy import JSON, BigInteger, Boolean, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from locus_v2.infrastructure.database.base import Base, TimestampMixin
@@ -56,7 +65,9 @@ class Poi(TimestampMixin, Base):
     source_of_truth: Mapped[str] = mapped_column(String(64), default="manual", nullable=False)
     wikidata_id: Mapped[str] = mapped_column(String(64), default="", index=True, nullable=False)
     wikipedia_title: Mapped[str] = mapped_column(String(255), default="", nullable=False)
-    google_place_id: Mapped[str] = mapped_column(String(128), default="", index=True, nullable=False)
+    google_place_id: Mapped[str] = mapped_column(
+        String(128), default="", index=True, nullable=False
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 

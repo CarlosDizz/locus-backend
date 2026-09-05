@@ -5,8 +5,10 @@ import { Component, inject, signal } from '@angular/core';
 import { LoginComponent } from './auth/login.component';
 import { AdminUser } from './core/admin-auth.model';
 import { AdminOverview, ModelSummary } from './core/admin-overview.model';
+import { BillingDashboardComponent } from './shared/billing/billing-dashboard.component';
 import { OperationsCalendarComponent } from './shared/calendar/operations-calendar.component';
-import { PoiMapComponent } from './shared/maps/poi-map.component';
+import { CatalogExplorerComponent } from './shared/catalog/catalog-explorer.component';
+import { LogConsoleComponent } from './shared/logs/log-console.component';
 import { UsageChartComponent } from './shared/statistics/usage-chart.component';
 import { ControlPlaneComponent } from './shared/configuration/control-plane.component';
 import { UserDirectoryComponent } from './shared/users/user-directory.component';
@@ -14,7 +16,7 @@ import { UserDirectoryComponent } from './shared/users/user-directory.component'
 @Component({
   selector: 'locus-root',
   standalone: true,
-  imports: [CommonModule, ControlPlaneComponent, LoginComponent, OperationsCalendarComponent, PoiMapComponent, UsageChartComponent, UserDirectoryComponent],
+  imports: [BillingDashboardComponent, CatalogExplorerComponent, CommonModule, ControlPlaneComponent, LoginComponent, LogConsoleComponent, OperationsCalendarComponent, UsageChartComponent, UserDirectoryComponent],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
 })
@@ -36,6 +38,7 @@ export class AppComponent {
     { label: 'Ciudades y POIs', glyph: 'map' },
     { label: 'Usuarios', glyph: 'users' },
     { label: 'Consumos', glyph: 'wallet' },
+    { label: 'Registros', glyph: 'logs' },
   ];
 
   constructor() {

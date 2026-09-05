@@ -43,12 +43,27 @@ class AIModel(TimestampMixin, Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     selectable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     capabilities_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    runtime_defaults_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
     provider: Mapped[AIProvider] = relationship(back_populates="models")
 
     @property
     def is_voice(self) -> bool:
         return self.service_kind == ServiceKind.VOICE
+
+
+class AITool(TimestampMixin, Base):
+    __tablename__ = "ai_tools"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
+    handler_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    requires_approval: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    service_kinds_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    schema_json: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
 class PromptDefinition(TimestampMixin, Base):
@@ -58,6 +73,9 @@ class PromptDefinition(TimestampMixin, Base):
     code: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     description: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
+    service_kind: Mapped[str] = mapped_column(
+        String(20), default=ServiceKind.VOICE, nullable=False
+    )
 
     versions: Mapped[list["PromptVersion"]] = relationship(
         back_populates="definition", lazy="selectin"
@@ -78,6 +96,8 @@ class PromptVersion(TimestampMixin, Base):
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     variables_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    tools_json: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    runtime_config_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     created_by_user_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"))
     published_at: Mapped[datetime | None] = mapped_column(DateTime())
 
@@ -91,6 +111,7 @@ class RoutingProfile(TimestampMixin, Base):
     code: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     experience_code: Mapped[str] = mapped_column(String(80), index=True, nullable=False)
+    service_kind: Mapped[str] = mapped_column(String(20), nullable=False)
     environment: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), default=PublicationStatus.DRAFT, nullable=False

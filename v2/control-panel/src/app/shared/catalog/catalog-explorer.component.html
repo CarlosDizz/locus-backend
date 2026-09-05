@@ -1,0 +1,72 @@
+<section class="catalog-head">
+  <div><p class="eyebrow">ARCHIVO VIVO</p><h2>El fondo de Locus.</h2><p>Todo lo heredado de V1, organizado por destino y listo para auditar.</p></div>
+  <div><strong>{{ cityTotal() }}</strong><span>ciudades</span><strong>{{ poiTotal() }}</strong><span>lugares en selección</span></div>
+</section>
+
+@if (error()) { <p class="error">{{ error() }}</p> }
+
+<section class="catalog-grid">
+  <aside class="cities">
+    <form (submit)="$event.preventDefault(); loadCities()"><input name="cityQuery" [(ngModel)]="cityQuery" placeholder="Buscar ciudad"><button type="submit" aria-label="Buscar">⌕</button></form>
+    <div class="city-list">
+      @if (loadingCities()) { <p class="loading">Leyendo destinos...</p> }
+      @for (city of cities(); track city.id) {
+        <button type="button" [class.active]="selectedCity()?.id === city.id" (click)="selectCity(city)">
+          <span class="country">{{ city.country_code || '—' }}</span>
+          <span><strong>{{ city.name }}</strong><small>{{ city.source }} · {{ city.slug }}</small></span>
+          <b>{{ city.active_poi_count }}<small>/{{ city.poi_count }}</small></b>
+        </button>
+      }
+    </div>
+  </aside>
+
+  <article class="pois">
+    <header>
+      <div><p class="eyebrow">{{ selectedCity()?.country_code || 'CATÁLOGO' }}</p><h3>{{ selectedCity()?.name || 'Todos los lugares' }}</h3></div>
+      <div class="view-tabs" role="tablist" aria-label="Vista del catálogo">
+        <button type="button" role="tab" [attr.aria-selected]="viewMode() === 'map'" [class.active]="viewMode() === 'map'" (click)="viewMode.set('map')">Mapa</button>
+        <button type="button" role="tab" [attr.aria-selected]="viewMode() === 'list'" [class.active]="viewMode() === 'list'" (click)="viewMode.set('list')">Lista</button>
+      </div>
+    </header>
+    <form class="filters" (submit)="$event.preventDefault(); offset = 0; loadPois()">
+      <label><span>Buscar</span><input name="poiQuery" [(ngModel)]="poiQuery" placeholder="Nombre o slug del lugar"></label>
+      <label><span>Estado</span><select name="active" [(ngModel)]="active"><option value="">Todos</option><option value="true">Activos</option><option value="false">Inactivos</option></select></label>
+      <button type="submit">Aplicar filtros</button>
+    </form>
+    @if (loadingPois()) {
+      <p class="loading">Abriendo el archivo...</p>
+    } @else if (viewMode() === 'map') {
+        <locus-poi-map
+          [points]="mapPoints()"
+          [cityCenter]="mapCenter()"
+          (poiSelected)="openPoiByPublicId($event)"
+        />
+    } @else {
+      <div class="poi-head"><span>Lugar</span><span>Tipo</span><span>Fuente</span><span>Estado</span></div>
+      @for (poi of pois(); track poi.id) {
+        <button type="button" class="poi-row" (click)="openPoi(poi)">
+          <span><strong>{{ poi.name }}</strong><small>{{ poi.slug }}</small></span>
+          <span>{{ poi.type_name || poi.type_code || 'Sin tipo' }}</span>
+          <span>{{ poi.source_of_truth }}</span>
+          <span class="status" [class.off]="!poi.is_active"><i></i>{{ poi.is_active ? 'Activo' : 'Inactivo' }}</span>
+        </button>
+      } @empty { <p class="empty">No hay lugares con estos filtros.</p> }
+    }
+    <footer><span>{{ pois().length ? offset + 1 : 0 }}–{{ offset + pois().length }} de {{ poiTotal() }}</span><div><button type="button" [disabled]="offset === 0" (click)="previous()">←</button><button type="button" [disabled]="offset + pois().length >= poiTotal()" (click)="next()">→</button></div></footer>
+  </article>
+</section>
+
+@if (selectedPoi(); as poi) {
+  <div class="backdrop" (click)="closePoi()"></div>
+  <aside class="poi-detail">
+    <button type="button" class="close" (click)="closePoi()">×</button>
+    <p class="eyebrow">FICHA DE LUGAR · {{ poi.type_name || 'SIN TIPO' }}</p>
+    <h2>{{ poi.name }}</h2>
+    <p class="location">{{ poi.city_name }} · {{ poi.lat }}, {{ poi.lng }}</p>
+    <p class="description">{{ poi.short_description || 'Sin descripción principal.' }}</p>
+    <section><p class="eyebrow">NOMBRES LOCALIZADOS</p>@for (name of poi.names | keyvalue; track name.key) {<div class="translation"><b>{{ name.key }}</b><span>{{ name.value }}</span></div>}@empty{<p class="empty-line">Sin traducciones.</p>}</section>
+    <section><p class="eyebrow">DESCRIPCIONES LOCALIZADAS</p>@for (description of poi.short_descriptions | keyvalue; track description.key) {<div class="translation"><b>{{ description.key }}</b><span>{{ description.value }}</span></div>}@empty{<p class="empty-line">Sin traducciones.</p>}</section>
+    <dl><div><dt>Fuente</dt><dd>{{ poi.source_of_truth }}</dd></div><div><dt>Wikidata</dt><dd>{{ poi.wikidata_id || '—' }}</dd></div><div><dt>Wikipedia</dt><dd>{{ poi.wikipedia_title || '—' }}</dd></div><div><dt>Google Place</dt><dd>{{ poi.google_place_id || '—' }}</dd></div></dl>
+    <details><summary>Metadatos técnicos</summary><pre>{{ formattedMetadata(poi) }}</pre></details>
+  </aside>
+}

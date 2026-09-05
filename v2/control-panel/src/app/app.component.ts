@@ -5,6 +5,7 @@ import { Component, inject, signal } from '@angular/core';
 import { LoginComponent } from './auth/login.component';
 import { AdminUser } from './core/admin-auth.model';
 import { AdminOverview, ModelSummary } from './core/admin-overview.model';
+import { AuditConsoleComponent } from './shared/audit/audit-console.component';
 import { BillingDashboardComponent } from './shared/billing/billing-dashboard.component';
 import { OperationsCalendarComponent } from './shared/calendar/operations-calendar.component';
 import { CatalogExplorerComponent } from './shared/catalog/catalog-explorer.component';
@@ -16,7 +17,7 @@ import { UserDirectoryComponent } from './shared/users/user-directory.component'
 @Component({
   selector: 'locus-root',
   standalone: true,
-  imports: [BillingDashboardComponent, CatalogExplorerComponent, CommonModule, ControlPlaneComponent, LoginComponent, LogConsoleComponent, OperationsCalendarComponent, UsageChartComponent, UserDirectoryComponent],
+  imports: [AuditConsoleComponent, BillingDashboardComponent, CatalogExplorerComponent, CommonModule, ControlPlaneComponent, LoginComponent, LogConsoleComponent, OperationsCalendarComponent, UsageChartComponent, UserDirectoryComponent],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
 })
@@ -39,6 +40,7 @@ export class AppComponent {
     { label: 'Usuarios', glyph: 'users' },
     { label: 'Consumos', glyph: 'wallet' },
     { label: 'Registros', glyph: 'logs' },
+    { label: 'Auditoría', glyph: 'audit' },
   ];
 
   constructor() {

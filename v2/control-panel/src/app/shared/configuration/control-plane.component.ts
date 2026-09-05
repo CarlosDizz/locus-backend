@@ -8,6 +8,7 @@ import {
   ConfigModel,
   ConfigTool,
   PromptDefinition,
+  ProviderTestResult,
   RoutingProfile,
   ServiceKind,
 } from '../../core/admin-configuration.model';
@@ -52,6 +53,9 @@ export class ControlPlaneComponent {
   readonly error = signal<string | null>(null);
   readonly activeService = signal<ServiceKind>('voice');
   readonly activePromptService = signal<ServiceKind>('voice');
+  readonly testingModelId = signal<number | null>(null);
+  readonly testResult = signal<ProviderTestResult | null>(null);
+  readonly testError = signal<string | null>(null);
 
   routeSelections: Record<number, RouteSelection> = {};
   draftContent: Record<number, string> = {};
@@ -192,6 +196,32 @@ export class ControlPlaneComponent {
       next: () => { this.notice.set('Prompt publicado.'); this.load(); },
       error: ({ error }) => this.error.set(error?.detail ?? 'No se pudo publicar el prompt.'),
     });
+  }
+
+  testModel(model: ConfigModel): void {
+    this.testingModelId.set(model.id);
+    this.testResult.set(null);
+    this.testError.set(null);
+    this.http.post<ProviderTestResult>(`/admin/v2/configuration/models/${model.id}/test`, {})
+      .subscribe({
+        next: (result) => {
+          this.testResult.set(result);
+          this.testingModelId.set(null);
+        },
+        error: ({ error }) => {
+          this.testError.set(error?.detail ?? 'La prueba no ha podido completarse.');
+          this.testingModelId.set(null);
+        },
+      });
+  }
+
+  closeTestResult(): void {
+    this.testResult.set(null);
+    this.testError.set(null);
+  }
+
+  money(cents: number): string {
+    return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format(cents / 100);
   }
 
   private runtimeConfig(promptId: number, service: ServiceKind): Record<string, unknown> | null {

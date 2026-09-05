@@ -31,13 +31,48 @@
           @for (model of modelsForProvider(provider.id, activeService()); track model.id) {
             <div class="model-line">
               <div><strong>{{ model.display_name }}</strong><small>{{ model.external_id }}</small></div>
-              <button type="button" class="switch" [class.on]="model.enabled" [attr.aria-label]="'Cambiar estado de ' + model.display_name" (click)="toggleModel(model)"><i></i></button>
+              <div class="model-actions">
+                <button type="button" class="test-btn" [disabled]="!model.enabled || testingModelId() === model.id" (click)="testModel(model)">
+                  {{ testingModelId() === model.id ? 'Probando…' : 'Probar' }}
+                </button>
+                <button type="button" class="switch" [class.on]="model.enabled" [attr.aria-label]="'Cambiar estado de ' + model.display_name" (click)="toggleModel(model)"><i></i></button>
+              </div>
             </div>
           }
         </article>
         }
       }
     </section>
+
+    @if (testError()) {
+      <section class="test-result error">
+        <p class="eyebrow">PRUEBA FALLIDA</p>
+        <p>{{ testError() }}</p>
+        <button type="button" (click)="closeTestResult()">Cerrar</button>
+      </section>
+    }
+    @if (testResult(); as result) {
+      <section class="test-result">
+        <header>
+          <div><p class="eyebrow">{{ result.provider_code }} · {{ result.model }}</p><h3>Respuesta real de prueba</h3></div>
+          <button type="button" class="close" (click)="closeTestResult()" aria-label="Cerrar">×</button>
+        </header>
+        <p class="reply">"{{ result.reply }}"</p>
+        @if (result.usage) {
+          <div class="usage-grid">
+            <div><b>{{ result.usage.text_input_tokens }}</b><span>tokens texto in</span></div>
+            <div><b>{{ result.usage.text_output_tokens }}</b><span>tokens texto out</span></div>
+            <div><b>{{ result.usage.audio_input_tokens }}</b><span>tokens audio in</span></div>
+            <div><b>{{ result.usage.audio_output_tokens }}</b><span>tokens audio out</span></div>
+          </div>
+        }
+        @if (result.charged_amount_cents !== null) {
+          <p class="cost">Coste real: {{ money(result.charged_amount_cents) }} cobrados{{ result.provider_cost_eur_cents !== null ? ' (' + money(result.provider_cost_eur_cents) + ' de proveedor)' : '' }}.</p>
+        } @else {
+          <p class="cost pending">El worker de facturación todavía no ha tasado esta llamada. Revisa Consumos o Registros en unos segundos.</p>
+        }
+      </section>
+    }
 
     <div class="conversation-label"><span></span><b>Configuración de la conversación</b><span></span></div>
     @for (route of routesFor(activeService()); track route.id) {

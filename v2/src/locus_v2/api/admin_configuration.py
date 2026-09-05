@@ -9,13 +9,21 @@ from locus_v2.admin.application.configuration import (
     ConfigurationError,
     RoutingChange,
 )
+from locus_v2.admin.application.provider_test import (
+    ProviderModelTestService,
+    ProviderTestError,
+    ProviderTestRequest,
+    ProviderTestResult,
+)
 from locus_v2.api.admin_auth import require_admin
+from locus_v2.config import Settings, get_settings
 from locus_v2.identity.models import User
 from locus_v2.infrastructure.database.session import get_session
 
 router = APIRouter(prefix="/admin/v2/configuration", tags=["admin-configuration"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 AdminDep = Annotated[User, Depends(require_admin)]
+SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 class ModelStateRequest(BaseModel):
@@ -76,6 +84,24 @@ async def publish_prompt_version(
         return await AdminConfigurationService(session, admin).publish_prompt_version(version_id)
     except ConfigurationError as error:
         raise _bad_request(error) from error
+
+
+@router.post("/models/{model_id}/test", response_model=ProviderTestResult)
+async def test_model(
+    model_id: int,
+    payload: ProviderTestRequest,
+    session: SessionDep,
+    admin: AdminDep,
+    settings: SettingsDep,
+) -> ProviderTestResult:
+    try:
+        return await ProviderModelTestService(session, settings, admin.id).run(
+            model_id, payload.message
+        )
+    except ProviderTestError as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)
+        ) from error
 
 
 @router.put("/routing-profiles/{profile_id}")

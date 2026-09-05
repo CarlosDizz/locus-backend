@@ -65,6 +65,27 @@ export interface RoutingProfile {
 
 export type ServiceKind = 'chat' | 'voice';
 
+export interface ProviderTestUsage {
+  text_input_tokens: number;
+  text_output_tokens: number;
+  audio_input_tokens: number;
+  audio_output_tokens: number;
+}
+
+export interface ProviderTestResult {
+  model_id: number;
+  provider_code: string;
+  model: string;
+  service_kind: ServiceKind;
+  reply: string;
+  usage: ProviderTestUsage | null;
+  usage_event_id: number | null;
+  billing_status: string;
+  provider_cost_eur_cents: number | null;
+  charged_amount_cents: number | null;
+  created_at: string;
+}
+
 export interface AdminConfiguration {
   providers: ConfigProvider[];
   prompts: PromptDefinition[];

@@ -1,0 +1,71 @@
+<section class="log-intro">
+  <div>
+    <p class="eyebrow">AUDITORÍA</p>
+    <h1>Quién cambió qué,<br><em>y cuándo.</em></h1>
+    <p>Cada modelo, prompt o ruta que se toca desde el panel deja un antes y un después. Nada se pierde.</p>
+  </div>
+  <div class="log-seal">
+    <strong>{{ total() }}</strong>
+    <span>cambios registrados</span>
+  </div>
+</section>
+
+<form class="filters" (submit)="$event.preventDefault(); load()">
+  <label class="search"><span>Buscar acción, recurso o traza</span><input name="query" [(ngModel)]="query" placeholder="Ej. routing.changed o un ID"></label>
+  <label><span>Tipo de recurso</span><select name="resourceType" [(ngModel)]="resourceType"><option value="">Todos</option>@for (item of page()?.resource_types || []; track item) {<option [value]="item">{{ item }}</option>}</select></label>
+  <label><span>Periodo</span><select name="days" [(ngModel)]="days"><option [ngValue]="1">24 horas</option><option [ngValue]="7">7 días</option><option [ngValue]="30">30 días</option><option [ngValue]="0">Todo</option></select></label>
+  <button type="submit">Rastrear</button>
+</form>
+
+<section class="level-strip" aria-label="Filtros por acción">
+  @for (item of page()?.actions || []; track item.action) {
+    <button type="button" [class.active]="action === item.action" (click)="filterByAction(item.action)"><i></i><span>{{ actionLabel(item.action) }}</span><strong>{{ item.count }}</strong></button>
+  } @empty {
+    <span class="quiet">Sin cambios en el periodo.</span>
+  }
+</section>
+
+@if (loading()) {
+  <section class="state"><i></i>Leyendo el historial...</section>
+} @else if (error()) {
+  <section class="state error">{{ error() }} <button type="button" (click)="load()">Reintentar</button></section>
+} @else if (page(); as data) {
+  <section class="logbook">
+    <header><span>Momento</span><span>Quién</span><span>Recurso</span><span>Acción</span><span></span></header>
+    @for (item of data.items; track item.id) {
+      <button type="button" class="log-row" (click)="open(item)">
+        <time>{{ item.created_at | date:'d MMM, HH:mm:ss' }}</time>
+        <span><strong>{{ item.actor_name }}</strong><small>{{ item.actor_email }}</small></span>
+        <span><strong>{{ item.resource_type }}</strong><small>#{{ item.resource_id }}</small></span>
+        <span class="event"><strong>{{ actionLabel(item.action) }}</strong><small>{{ changedKeys(item).join(', ') || item.trace_id }}</small></span>
+        <span>→</span>
+      </button>
+    } @empty {
+      <p class="empty">No hay cambios que coincidan con estos filtros.</p>
+    }
+    <footer>Mostrando {{ data.items.length }} de {{ data.total }} cambios</footer>
+  </section>
+}
+
+@if (selected(); as item) {
+  <div class="backdrop" (click)="close()"></div>
+  <aside class="detail" aria-label="Detalle del cambio">
+    <button type="button" class="close" (click)="close()" aria-label="Cerrar">×</button>
+    <p class="eyebrow">CAMBIO #{{ item.id }}</p>
+    <div class="detail-level"><i></i>{{ item.resource_type }} · #{{ item.resource_id }}</div>
+    <h2>{{ actionLabel(item.action) }}</h2>
+    <p class="message">{{ item.actor_name }} ({{ item.actor_email }}) · {{ item.created_at | date:'medium' }}</p>
+    <dl>
+      <div><dt>Traza</dt><dd>{{ item.trace_id }}</dd></div>
+      <div><dt>Campos cambiados</dt><dd>{{ changedKeys(item).join(', ') || 'Sin antes registrado (creación)' }}</dd></div>
+    </dl>
+    <section class="context">
+      <p class="eyebrow">ANTES</p>
+      <pre>{{ formatted(item.before) }}</pre>
+    </section>
+    <section class="context">
+      <p class="eyebrow">DESPUÉS</p>
+      <pre>{{ formatted(item.after) }}</pre>
+    </section>
+  </aside>
+}

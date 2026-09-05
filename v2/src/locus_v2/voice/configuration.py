@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from string import Formatter
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +8,7 @@ from locus_v2.ai.enums import PublicationStatus, ServiceKind
 from locus_v2.ai.models import AIModel, AIProvider, RoutingProfile
 from locus_v2.catalog.models import Poi
 from locus_v2.config import Settings
+from locus_v2.shared.prompting import PromptRenderingError, localized_field, render_prompt
 from locus_v2.voice.protocol import SessionStart
 from locus_v2.voice.providers.base import LiveSessionConfig
 
@@ -69,7 +69,10 @@ class VoiceConfigurationResolver:
             "poi_description": context.get("description", ""),
             "city_name": context.get("city_name", ""),
         }
-        prompt = _render_prompt(profile.prompt_version.content, variables)
+        try:
+            prompt = render_prompt(profile.prompt_version.content, variables)
+        except PromptRenderingError as error:
+            raise VoiceConfigurationError(str(error)) from error
         tools = [
             {
                 "type": "function",
@@ -140,9 +143,9 @@ class VoiceConfigurationResolver:
         if poi is None:
             raise VoiceConfigurationError("POI not found")
         language = request.locale.split("-", 1)[0].lower()
-        name = _localized(poi.names_json, request.locale, language) or poi.name
+        name = localized_field(poi.names_json, request.locale, language) or poi.name
         description = (
-            _localized(poi.short_descriptions_json, request.locale, language)
+            localized_field(poi.short_descriptions_json, request.locale, language)
             or poi.short_description
         )
         return {
@@ -188,22 +191,6 @@ class VoiceConfigurationResolver:
                 provider_options=options,
             ),
         )
-
-
-def _localized(values: dict, locale: str, language: str) -> str | None:
-    for key in (locale, locale.lower(), language, "local", "en"):
-        value = values.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
-
-
-def _render_prompt(template: str, variables: dict[str, str]) -> str:
-    required = {name for _, name, _, _ in Formatter().parse(template) if name}
-    missing = required - variables.keys()
-    if missing:
-        raise VoiceConfigurationError(f"Prompt variables are missing: {', '.join(sorted(missing))}")
-    return template.format_map(variables)
 
 
 def _provider_snapshot(provider: ResolvedProvider) -> dict:

@@ -1,5 +1,22 @@
 # Locus Backend V2 - Hoja de ruta
 
+## 0. Contexto de negocio y estrategia de corte
+
+Locus V1 fue una prueba de viabilidad: demostrar que el producto funcionaba, no un backend
+pensado para operarse. Está en la rama `main`, desplegado en ECS y es lo que usa la app Ionic
+distribuida hoy. No se toca su contrato de cara a la app.
+
+El objetivo de V2 no es solo paridad tecnica: es que prompts, tools, modelos, parametros de
+sesion y catalogo se puedan editar **en caliente desde el panel de control**, sin redeploy ni
+tocar codigo, mientras la app Ionic distribuida sigue funcionando exactamente igual.
+
+Estrategia de corte: V2 se construye y se prueba a fondo en local hablando el mismo contrato
+HTTP/WebSocket que V1. El cambio a produccion no es una reescritura de la app ni un despliegue
+paralelo con riesgo: es cambiar unicamente la URL base del backend que usa Ionic (ver seccion 5),
+una vez V2 haya demostrado en local paridad de datos, facturacion y comportamiento. V1 se
+mantiene disponible en ECS durante la ventana de observacion por si hay que revertir el cambio
+de URL sin tocar la app.
+
 ## 1. Objetivo
 
 Construir un backend V2 mantenible, observable y configurable que pueda sustituir al backend actual sin obligarnos a modificar inicialmente la aplicacion Ionic.

@@ -76,6 +76,31 @@ class AdminAuditEvent(TimestampMixin, Base):
     trace_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
 
 
+class UserSession(TimestampMixin, Base):
+    """Opaque bearer session for the Ionic mobile app.
+
+    Distinct from AdminSession (cookie-based, admin-only, control panel). Mobile clients
+    carry this token in an Authorization header, matching the V1 contract shape even though
+    the token itself is minted fresh by V2 (see docs/roadmap.md section 11: users re-login
+    once on cutover, sessions are not carried over from V1).
+    """
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    public_id: Mapped[str] = mapped_column(
+        String(36), default=new_public_id, unique=True, nullable=False
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(), index=True, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime())
+    user_agent: Mapped[str | None] = mapped_column(String(500))
+
+
 class AdminSession(TimestampMixin, Base):
     __tablename__ = "admin_sessions"
 

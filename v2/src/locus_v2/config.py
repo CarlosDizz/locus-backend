@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     google_auth_client_ids: list[str] = Field(default_factory=list)
     admin_session_days: int = 7
     admin_session_cookie: str = "locus_admin_session"
+    auth_enable_password_auth: bool = False
     cors_origins: list[str] = ["http://localhost:4201", "http://localhost:8100"]
 
     openai_api_key: SecretStr | None = None

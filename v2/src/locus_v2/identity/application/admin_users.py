@@ -4,6 +4,7 @@ from sqlalchemy.orm import selectinload
 
 from locus_v2.billing.models import LedgerEntry, UsageEvent, Wallet
 from locus_v2.identity.models import User
+from locus_v2.shared.clock import as_utc
 from locus_v2.voice.models import VoiceSession
 
 
@@ -115,8 +116,8 @@ class AdminUserQueryService:
                     "status": item.status,
                     "locale": item.locale,
                     "context_type": item.context_type,
-                    "started_at": item.started_at,
-                    "ended_at": item.ended_at,
+                    "started_at": as_utc(item.started_at) if item.started_at else None,
+                    "ended_at": as_utc(item.ended_at) if item.ended_at else None,
                 }
                 for item in voice_sessions
             ],
@@ -127,7 +128,7 @@ class AdminUserQueryService:
                     "amount_cents": item.amount_cents,
                     "balance_after_cents": item.balance_after_cents,
                     "description": item.description,
-                    "created_at": item.created_at,
+                    "created_at": as_utc(item.created_at),
                 }
                 for item in ledger_entries
             ],
@@ -147,5 +148,5 @@ class AdminUserQueryService:
             "balance_cents": balance or 0,
             "voice_sessions": sessions,
             "charged_amount_cents": charged,
-            "created_at": user.created_at,
+            "created_at": as_utc(user.created_at),
         }

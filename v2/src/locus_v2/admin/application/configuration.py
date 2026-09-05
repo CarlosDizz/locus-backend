@@ -16,7 +16,7 @@ from locus_v2.ai.models import (
     RoutingProfile,
 )
 from locus_v2.identity.models import AdminAuditEvent, User
-from locus_v2.shared.clock import utc_now
+from locus_v2.shared.clock import as_utc, utc_now
 
 
 class ConfigurationError(ValueError):
@@ -87,7 +87,9 @@ class AdminConfigurationService:
                             "variables": version.variables_json,
                             "tools": version.tools_json,
                             "runtime_config": version.runtime_config_json,
-                            "published_at": version.published_at,
+                            "published_at": as_utc(version.published_at)
+                            if version.published_at
+                            else None,
                         }
                         for version in sorted(
                             definition.versions, key=lambda item: item.version, reverse=True

@@ -1,7 +1,8 @@
-from datetime import datetime
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
+
+from locus_v2.shared.clock import UtcDatetime
 
 
 class LogLevelCount(BaseModel):
@@ -23,7 +24,7 @@ class LogItem(BaseModel):
     error_code: str | None
     elapsed_ms: int | None
     context: dict[str, Any]
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class AdminLogPage(BaseModel):

@@ -1,6 +1,8 @@
-from datetime import date, datetime
+from datetime import date
 
 from pydantic import BaseModel
+
+from locus_v2.shared.clock import UtcDatetime
 
 
 class OverviewMetric(BaseModel):
@@ -32,7 +34,7 @@ class DailyUsageSummary(BaseModel):
 class CalendarActivity(BaseModel):
     id: str
     title: str
-    start: datetime
+    start: UtcDatetime
     kind: str
 
 

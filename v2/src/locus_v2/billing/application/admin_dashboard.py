@@ -1,7 +1,9 @@
-from datetime import date, datetime
+from datetime import date
 from typing import Protocol
 
 from pydantic import BaseModel
+
+from locus_v2.shared.clock import UtcDatetime
 
 
 class BillingTotals(BaseModel):
@@ -43,7 +45,7 @@ class BillingUsageItem(BaseModel):
     gross_margin_cents: int
     text_tokens: int
     audio_tokens: int
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class BillingLedgerItem(BaseModel):
@@ -53,7 +55,7 @@ class BillingLedgerItem(BaseModel):
     description: str
     amount_cents: int
     balance_after_cents: int
-    created_at: datetime
+    created_at: UtcDatetime
 
 
 class AdminBillingDashboard(BaseModel):

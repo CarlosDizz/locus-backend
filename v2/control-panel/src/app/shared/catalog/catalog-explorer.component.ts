@@ -9,6 +9,7 @@ import {
   AdminPoiDetail,
   AdminPoiPage,
   AdminPoiSummary,
+  BootstrapResult,
 } from '../../core/admin-catalog.model';
 import { PoiMapPoint } from '../../core/admin-overview.model';
 import { PoiMapComponent } from '../maps/poi-map.component';
@@ -62,16 +63,26 @@ export class CatalogExplorerComponent {
     return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
   });
 
+  readonly seedPanelOpen = signal(false);
+  readonly seeding = signal(false);
+  readonly seedResult = signal<BootstrapResult | null>(null);
+  readonly seedError = signal<string | null>(null);
+
   cityQuery = '';
   poiQuery = '';
   active = '';
   offset = 0;
+  seedLat: number | null = null;
+  seedLng: number | null = null;
+  seedRadiusKm = 3;
+  seedLimit = 40;
+  seedUseAi = false;
 
   constructor() {
     this.loadCities();
   }
 
-  loadCities(): void {
+  loadCities(selectPublicId?: string): void {
     this.loadingCities.set(true);
     const params = new HttpParams().set('q', this.cityQuery.trim()).set('limit', 300);
     this.http.get<AdminCityList>('/admin/v2/catalog/cities', { params }).subscribe({
@@ -79,7 +90,14 @@ export class CatalogExplorerComponent {
         this.cities.set(result.items);
         this.cityTotal.set(result.total);
         this.loadingCities.set(false);
-        if (!this.selectedCity() && result.items.length) this.selectCity(result.items[0]);
+        const toSelect = selectPublicId
+          ? result.items.find((city) => city.public_id === selectPublicId)
+          : null;
+        if (toSelect) {
+          this.selectCity(toSelect);
+        } else if (!this.selectedCity() && result.items.length) {
+          this.selectCity(result.items[0]);
+        }
       },
       error: () => {
         this.error.set('No hemos podido abrir el catálogo de ciudades.');
@@ -151,6 +169,48 @@ export class CatalogExplorerComponent {
     if (this.offset + this.pageSize >= this.poiTotal()) return;
     this.offset += this.pageSize;
     this.loadPois();
+  }
+
+  toggleSeedPanel(): void {
+    this.seedPanelOpen.set(!this.seedPanelOpen());
+    this.seedError.set(null);
+  }
+
+  onMapClicked(point: { lat: number; lng: number }): void {
+    if (!this.seedPanelOpen()) return;
+    this.seedLat = Math.round(point.lat * 1e6) / 1e6;
+    this.seedLng = Math.round(point.lng * 1e6) / 1e6;
+  }
+
+  runSeed(): void {
+    if (this.seedLat === null || this.seedLng === null) {
+      this.seedError.set('Fija primero un punto: clica el mapa o escribe lat/lng.');
+      return;
+    }
+    this.seeding.set(true);
+    this.seedError.set(null);
+    this.seedResult.set(null);
+    this.http.post<BootstrapResult>('/admin/v2/catalog/bootstrap-from-location', {
+      lat: this.seedLat,
+      lng: this.seedLng,
+      radius_km: this.seedRadiusKm,
+      limit: this.seedLimit,
+      use_ai_candidates: this.seedUseAi,
+    }).subscribe({
+      next: (result) => {
+        this.seedResult.set(result);
+        this.seeding.set(false);
+        this.loadCities(result.city_public_id);
+      },
+      error: ({ error }) => {
+        this.seedError.set(error?.detail ?? 'El sembrado no ha podido completarse.');
+        this.seeding.set(false);
+      },
+    });
+  }
+
+  closeSeedResult(): void {
+    this.seedResult.set(null);
   }
 
   formattedMetadata(poi: AdminPoiDetail): string {

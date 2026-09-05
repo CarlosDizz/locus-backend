@@ -3,6 +3,54 @@
   <div><strong>{{ cityTotal() }}</strong><span>ciudades</span><strong>{{ poiTotal() }}</strong><span>lugares en selección</span></div>
 </section>
 
+<section class="seed-panel" [class.open]="seedPanelOpen()">
+  <button type="button" class="seed-toggle" (click)="toggleSeedPanel()">
+    {{ seedPanelOpen() ? 'Cerrar sembrado' : 'Sembrar POIs desde un punto' }}
+  </button>
+  @if (seedPanelOpen()) {
+    <div class="seed-form">
+      <p class="hint">Clica un punto en el mapa (pestaña Mapa) o escribe coordenadas, y siembra POIs reales desde Wikidata alrededor de ese punto.</p>
+      <div class="seed-fields">
+        <label>Latitud<input type="number" step="0.000001" [(ngModel)]="seedLat" placeholder="Ej. 20.8817"></label>
+        <label>Longitud<input type="number" step="0.000001" [(ngModel)]="seedLng" placeholder="Ej. -103.8395"></label>
+        <label>Radio (km)<input type="number" min="1" max="15" step="0.5" [(ngModel)]="seedRadiusKm"></label>
+        <label>Máximo POIs<input type="number" min="1" max="150" [(ngModel)]="seedLimit"></label>
+        <button type="button" class="seed-run" [disabled]="seeding()" (click)="runSeed()">
+          {{ seeding() ? 'Sembrando…' : 'Sembrar aquí' }}
+        </button>
+      </div>
+      <label class="seed-ai-toggle">
+        <input type="checkbox" [(ngModel)]="seedUseAi">
+        <span>Usar IA para proponer candidatos (gasto real de OpenAI por cada sembrado)</span>
+      </label>
+    </div>
+  }
+  @if (seedError()) { <p class="error seed-error">{{ seedError() }}</p> }
+</section>
+
+@if (seedResult(); as result) {
+  <section class="seed-result">
+    <header>
+      <div>
+        <p class="eyebrow">{{ result.source }}</p>
+        <h3>{{ result.city_name }}{{ result.city_created ? ' (ciudad nueva)' : '' }}</h3>
+      </div>
+      <button type="button" class="close" (click)="closeSeedResult()" aria-label="Cerrar">×</button>
+    </header>
+    <p class="summary">{{ result.imported_count }} POIs nuevos, {{ result.updated_count }} actualizados.</p>
+    <div class="seed-poi-list">
+      @for (poi of result.pois; track poi.id) {
+        <div class="seed-poi" [class.new]="poi.created">
+          <strong>{{ poi.name }}</strong>
+          <span>{{ poi.type_code || 'sin tipo' }}{{ poi.created ? ' · nuevo' : ' · actualizado' }}</span>
+        </div>
+      } @empty {
+        <p class="empty-line">No se encontraron candidatos válidos en ese radio.</p>
+      }
+    </div>
+  </section>
+}
+
 @if (error()) { <p class="error">{{ error() }}</p> }
 
 <section class="catalog-grid">
@@ -40,6 +88,7 @@
           [points]="mapPoints()"
           [cityCenter]="mapCenter()"
           (poiSelected)="openPoiByPublicId($event)"
+          (mapClicked)="onMapClicked($event)"
         />
     } @else {
       <div class="poi-head"><span>Lugar</span><span>Tipo</span><span>Fuente</span><span>Estado</span></div>

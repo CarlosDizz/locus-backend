@@ -22,6 +22,7 @@ export class PoiMapComponent {
   readonly points = input.required<PoiMapPoint[]>();
   readonly cityCenter = input<{ lat: number; lng: number } | null>(null);
   readonly poiSelected = output<string>();
+  readonly mapClicked = output<{ lat: number; lng: number }>();
   readonly mapElement = viewChild.required<ElementRef<HTMLDivElement>>('map');
 
   private map?: L.Map;
@@ -35,6 +36,9 @@ export class PoiMapComponent {
         maxZoom: 19,
       }).addTo(this.map);
       this.markers.addTo(this.map);
+      this.map.on('click', (event: L.LeafletMouseEvent) => {
+        this.mapClicked.emit({ lat: event.latlng.lat, lng: event.latlng.lng });
+      });
       this.render(this.points(), this.cityCenter());
       window.setTimeout(() => this.map?.invalidateSize(), 0);
     });

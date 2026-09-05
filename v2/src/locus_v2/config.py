@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     billing_min_realtime_call_charge_cents: int = Field(default=3, ge=0)
     billing_worker_poll_seconds: float = Field(default=1.0, gt=0, le=60)
 
+    wikidata_base_url: str = "https://www.wikidata.org"
+    wikidata_language: str = "es"
+    wikidata_sparql_url: str = "https://query.wikidata.org/sparql"
+    nominatim_base_url: str = "https://nominatim.openstreetmap.org"
+    overpass_api_url: str = "https://overpass-api.de/api/interpreter"
+    overpass_timeout_seconds: int = 25
+
 
 @lru_cache
 def get_settings() -> Settings:

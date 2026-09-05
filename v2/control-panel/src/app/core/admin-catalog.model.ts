@@ -49,3 +49,27 @@ export interface AdminPoiDetail extends AdminPoiSummary {
   google_place_id: string;
   metadata: Record<string, unknown>;
 }
+
+export interface BootstrapPoi {
+  id: number;
+  public_id: string;
+  name: string;
+  slug: string;
+  type_code: string | null;
+  lat: number | null;
+  lng: number | null;
+  short_description: string;
+  source_of_truth: string;
+  created: boolean;
+}
+
+export interface BootstrapResult {
+  city_id: number;
+  city_public_id: string;
+  city_name: string;
+  city_created: boolean;
+  source: string;
+  imported_count: number;
+  updated_count: number;
+  pois: BootstrapPoi[];
+}

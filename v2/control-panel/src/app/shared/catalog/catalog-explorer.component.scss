@@ -10,3 +10,27 @@
 .filters input,.filters select{width:100%}
 .filters button{height:38px;padding:0 16px;border:0;background:var(--locus-terracotta);color:#fff;font:800 8px "Manrope";cursor:pointer}
 @media(max-width:700px){.filters{grid-template-columns:1fr}.view-tabs{width:100%}.view-tabs button{flex:1}}
+
+.seed-panel{margin-top:16px;border:1px solid var(--locus-line);background:rgba(255,250,242,.6)}
+.seed-toggle{width:100%;padding:14px 18px;border:0;background:transparent;color:var(--locus-blue);font:800 9px "Manrope";text-transform:uppercase;letter-spacing:.1em;text-align:left;cursor:pointer}
+.seed-panel.open .seed-toggle{border-bottom:1px solid var(--locus-line)}
+.seed-form{padding:18px}
+.seed-form .hint{margin:0 0 14px;color:var(--locus-muted);font-size:10px;line-height:1.5;max-width:640px}
+.seed-fields{display:grid;grid-template-columns:repeat(4,1fr) auto;gap:10px;align-items:end}
+.seed-fields label{display:grid;gap:6px;font-size:7px;text-transform:uppercase;letter-spacing:.08em;color:var(--locus-muted)}
+.seed-fields input{height:38px;padding:0 10px;border:1px solid var(--locus-line);background:var(--locus-paper);font:500 10px "Manrope"}
+.seed-run{height:38px;padding:0 18px;border:0;background:var(--locus-terracotta);color:#fff;font:800 9px "Manrope";text-transform:uppercase;letter-spacing:.08em;cursor:pointer}
+.seed-run:disabled{opacity:.6;cursor:default}
+.seed-error{margin:0 18px 14px}
+.seed-ai-toggle{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:9px;color:var(--locus-muted)}
+.seed-ai-toggle input{accent-color:var(--locus-terracotta)}
+.seed-result{margin-top:16px;padding:22px;border:1px solid var(--locus-line);background:rgba(255,250,242,.85)}
+.seed-result header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.seed-result h3{margin:2px 0 0;font:600 22px "Fraunces",serif}
+.seed-result .summary{margin:14px 0;font-size:11px;color:var(--locus-muted)}
+.seed-poi-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
+.seed-poi{padding:10px 12px;border:1px solid var(--locus-line);background:#fffdf8}
+.seed-poi.new{border-color:var(--locus-green)}
+.seed-poi strong{display:block;font-size:10px}
+.seed-poi span{display:block;margin-top:4px;color:var(--locus-muted);font-size:7px;text-transform:uppercase;letter-spacing:.06em}
+@media(max-width:700px){.seed-fields{grid-template-columns:1fr 1fr}}

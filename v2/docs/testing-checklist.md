@@ -134,20 +134,28 @@ documentados en `roadmap.md` §11), falta escribir el router V2.
       5. `OverpassClient` (`app/clients/overpass_client.py`) como respaldo cuando Wikidata no
          alcanza el mínimo de candidatos — **hecho** (ver Fase 2 arriba).
       6. Candidatos por IA (`_generate_ai_candidates`, `_upsert_ai_seed_candidates`) vía
-         `OpenAIClient` — **hecho** (ver Fase 3 arriba). `_resolve_ai_candidate` no se portó a
-         propósito: en el V1 actual es código muerto — la rama que la invoca nunca se alcanza
-         porque `import_city_pois` ya retorna antes si `ai_candidates` tiene contenido.
+         `OpenAIClient` — **hecho** (ver Fase 3 arriba). `_resolve_ai_candidate` SÍ se portó
+         (`catalog/bootstrap/enrichment.py`) — corrección de una nota anterior de este mismo
+         documento que lo daba por código muerto: en V1 la rama que lo invoca dentro de
+         `import_city_pois` es efectivamente inalcanzable, pero la función se usa de verdad
+         desde `enrich_city_pending_pois` (el worker de reintento, ver punto 7).
       7. Localización a 9 idiomas (`_localize_content_candidates`) — **hecho** (ver Fase 3).
-         La cola de enriquecimiento en segundo plano (`start_pending_enrichment`) de V1 sigue
-         **pendiente**: no hay todavía un worker en V2 que reintente resolver los POIs que
-         quedan en `pending_wikidata` contra Wikidata más tarde.
+         La cola de enriquecimiento en segundo plano de V1 (`start_pending_enrichment`) —
+         **hecho** (2026-09-05): `CatalogEnrichmentService.enrich_city_pending_pois`,
+         disparado como `BackgroundTasks` de FastAPI tras un sembrado con IA, resuelve los
+         POIs en `pending_wikidata` contra Wikidata real y, si falla, contra Overpass.
       Interfaz en el panel — **hecho** (2026-09-05): botón "Sembrar POIs desde un punto" en
       Ciudades y POIs, clic en el mapa o coordenadas manuales, resultado con POIs
       creados/actualizados o error, probado con Playwright real.
-- [ ] CRUD de ciudades/POIs para uso interno (los mismos endpoints ya cubiertos por
-      `admin_catalog.py` del panel; decidir si se reutilizan o se separan). Editar POIs ya
-      existentes desde el panel sigue pendiente y es independiente del sembrado — no hace
-      falta esperar al sembrado completo para construirlo.
+- [x] CRUD de POIs desde el panel (2026-09-06): `PUT /admin/v2/catalog/pois/{id}`
+      (`catalog/admin_write.py::AdminCatalogWriteService`) — nombre, nombres/descripciones
+      localizadas (añadir/quitar idioma), descripción corta/larga, lat/lng, tipo (desplegable
+      real desde `poi_types`), activo/inactivo, wikidata/wikipedia/google place. Marca
+      `source_of_truth="manual"` y escribe un `AdminAuditEvent` con el antes/después completo.
+      Sin equivalente en V1 (no tenía panel de administración). Probado en caliente con
+      Playwright de principio a fin sobre un POI de prueba desechable: edición de nombre y
+      tipo, verificado en la ficha, en la base de datos y en el evento de auditoría (actor,
+      antes, después), y limpiado al terminar.
 
 ## Capítulo 3 — Chat (`/api/chat/*`)
 
@@ -258,7 +266,8 @@ Estado: parcialmente **probado** (conectado a datos reales), resto **construido*
       `VoiceTurn` persistidos. Tres routing profiles de prueba nuevos (OpenAI, Gemini, Mock
       sin coste) para fijar el proveedor deliberadamente. No incluye la sala multiusuario
       (eso es Capítulo 6).
-- [ ] CRUD de catálogo (sigue siendo explorador de solo lectura).
+- [x] Editar un POI existente (2026-09-06) — ver Capítulo 2. Sigue sin haber alta/baja de
+      ciudades ni un editor de tipos de POI desde el panel, solo edición de POIs.
 - [ ] Historial de prompts navegable más allá de las versiones ya listadas, dashboard de
       salud más allá de Pulso.
 - [x] Bug investigado y cerrado (2026-09-06): la sesión de Gemini Live que falló el

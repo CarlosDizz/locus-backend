@@ -17,9 +17,11 @@ from typing import Any, Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from locus_v2.billing.application.onboarding import create_signup_wallet
 from locus_v2.config import Settings
 from locus_v2.identity.models import Role, User, UserSession, UserStatus
 from locus_v2.shared.clock import utc_now
+from locus_v2.shared.mobile_ids import mobile_id
 
 MOBILE_SESSION_DAYS = 30
 
@@ -145,9 +147,9 @@ class MobileAuthService:
             )
             self.session.add(user)
             await self.session.flush()
-            # TODO(billing): grant the signup bonus wallet credit V1 gives new users
-            # (see app/services/auth_service.py::_grant_signup_bonus) once this facade
-            # is wired to the Billing domain.
+            await create_signup_wallet(
+                self.session, user.id, self.settings.billing_signup_bonus_cents
+            )
         else:
             if user.provider_subject and user.provider_subject != google_sub:
                 raise MobileAuthError("Esta cuenta ya está vinculada a otro acceso de Google")
@@ -182,7 +184,7 @@ class MobileAuthService:
     @staticmethod
     def _view(user: User) -> MobileUserView:
         return MobileUserView(
-            id=user.legacy_v1_id if user.legacy_v1_id is not None else user.id,
+            id=mobile_id(user),
             email=user.email,
             display_name=user.display_name,
             auth_provider=user.auth_provider,

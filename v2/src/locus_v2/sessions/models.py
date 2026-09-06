@@ -58,6 +58,17 @@ class MapSession(TimestampMixin, Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
+class SessionProfileView(BaseModel):
+    raw_context: str = ""
+    language: str = "es"
+    preferences: dict[str, Any] = Field(default_factory=dict)
+
+
+class SessionLocationView(BaseModel):
+    lat: float | None = None
+    lng: float | None = None
+
+
 class SessionParticipantState(BaseModel):
     user_id: int
     display_name: str = ""
@@ -87,13 +98,20 @@ class SessionCallLogEntryState(BaseModel):
 
 
 class SessionStateView(BaseModel):
+    """Wire shape must match V1's SessionState exactly (app/schemas/session.py):
+    `profile` and `location` are nested objects, not flattened fields — the
+    real Ionic app (home.page.ts, profile.page.ts) reads
+    `session.profile.raw_context`/`.preferences` and `session.location.lat`/
+    `.lng` directly, and throws if `profile`/`location` are missing. Found by
+    running the real app against this API with Playwright (2026-09-06): the
+    Profile page crashed with "Cannot read properties of undefined (reading
+    'preferences')" because an earlier version of this model flattened these.
+    """
+
     session_id: str
     user_id: int | None = None
-    profile_context: str = ""
-    profile_language: str = "es"
-    profile_preferences: dict[str, Any] = Field(default_factory=dict)
-    lat: float | None = None
-    lng: float | None = None
+    profile: SessionProfileView = Field(default_factory=SessionProfileView)
+    location: SessionLocationView = Field(default_factory=SessionLocationView)
     active_poi: SessionPoi | None = None
     nearby_pois: list[SessionPoi] = Field(default_factory=list)
     ephemeral_map_pois: list[SessionPoi] = Field(default_factory=list)

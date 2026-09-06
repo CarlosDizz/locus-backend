@@ -5,21 +5,20 @@ engine (billing/application/processor.py, run by the worker) already existed
 in V2 and needed no changes — this is the missing public read/write surface
 on top of it.
 
-One deliberate shape difference from V1: V1's ledger response denormalizes
-ad-hoc `source`/`endpoint`/`call_id` strings from UsageEvent. V2's UsageEvent
-has no such fields — it links to a real VoiceSession row instead, which
-already carries started_at/ended_at. The ledger view here surfaces that
-relationship directly rather than re-deriving V1's shape artificially.
+Public views preserve Ionic's V1 field names while persistence stays V2-native.
 """
 
 from dataclasses import dataclass
 from datetime import datetime
+from hashlib import sha256
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from locus_v2.ai.models import AIModel, AIProvider
 from locus_v2.billing.infrastructure.google_play import (
     GooglePlayVerificationError,
     GooglePlayVerifier,
@@ -27,6 +26,7 @@ from locus_v2.billing.infrastructure.google_play import (
 from locus_v2.billing.models import LedgerEntry, LedgerEntryKind, TopUp, UsageEvent, Wallet
 from locus_v2.config import Settings
 from locus_v2.shared.clock import utc_now
+from locus_v2.shared.mobile_ids import mobile_id
 from locus_v2.voice.models import VoiceSession
 
 GOOGLE_PLAY_TOPUP_PRODUCTS: dict[str, int] = {
@@ -51,27 +51,38 @@ class WalletView:
 @dataclass(frozen=True)
 class LedgerEntryView:
     id: int
-    kind: str
+    entry_type: str
     amount_cents: int
     balance_after_cents: int
     description: str
     reference_type: str
     reference_id: str
-    usage_event_id: int | None
     usage_interaction_type: str | None
-    voice_session_id: int | None
-    voice_call_started_at: datetime | None
-    voice_call_ended_at: datetime | None
+    usage_source: str | None
+    usage_endpoint: str | None
+    usage_call_id: str | None
+    usage_call_started_at: datetime | None
+    usage_call_ended_at: datetime | None
+    usage_audio_input_tokens: int | None
+    usage_audio_output_tokens: int | None
+    usage_image_input_tokens: int | None
     created_at: datetime
 
 
 @dataclass(frozen=True)
 class UsageEventView:
     id: int
+    session_id: str | None
+    provider: str
+    endpoint: str
+    model: str
     interaction_type: str
-    text_input_tokens: int
-    cached_text_input_tokens: int
-    text_output_tokens: int
+    source: str
+    response_id: str
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    reasoning_tokens: int
     audio_input_tokens: int
     audio_output_tokens: int
     image_input_tokens: int
@@ -141,20 +152,45 @@ class MobileBillingService:
             )
             views.append(
                 LedgerEntryView(
-                    id=row.id,
-                    kind=row.kind,
+                    id=mobile_id(row),
+                    entry_type=str(
+                        (row.metadata_json or {}).get("legacy_entry_type")
+                        or {
+                            "charge": "usage_charge",
+                            "credit": "top_up",
+                            "refund": "refund",
+                            "adjustment": "adjustment",
+                        }.get(row.kind, row.kind)
+                    ),
                     amount_cents=row.amount_cents,
                     balance_after_cents=row.balance_after_cents,
                     description=row.description,
                     reference_type=row.reference_type,
                     reference_id=row.reference_id,
-                    usage_event_id=usage_event.id if usage_event is not None else None,
                     usage_interaction_type=(
                         usage_event.interaction_type if usage_event is not None else None
                     ),
-                    voice_session_id=voice_session.id if voice_session is not None else None,
-                    voice_call_started_at=voice_session.started_at if voice_session else None,
-                    voice_call_ended_at=voice_session.ended_at if voice_session else None,
+                    usage_source=_usage_source(usage_event),
+                    usage_endpoint=_usage_endpoint(usage_event),
+                    usage_call_id=(
+                        str(
+                            (voice_session.config_snapshot_json or {}).get("call_id")
+                            or voice_session.public_id
+                        )
+                        if voice_session
+                        else _raw_string(usage_event, "call_id")
+                    ),
+                    usage_call_started_at=voice_session.started_at if voice_session else None,
+                    usage_call_ended_at=voice_session.ended_at if voice_session else None,
+                    usage_audio_input_tokens=usage_event.audio_input_tokens
+                    if usage_event
+                    else None,
+                    usage_audio_output_tokens=usage_event.audio_output_tokens
+                    if usage_event
+                    else None,
+                    usage_image_input_tokens=usage_event.image_input_tokens
+                    if usage_event
+                    else None,
                     created_at=row.created_at,
                 )
             )
@@ -162,8 +198,10 @@ class MobileBillingService:
 
     async def list_usage_events(self, user_id: int, *, limit: int) -> list[UsageEventView]:
         rows = (
-            await self.session.scalars(
-                select(UsageEvent)
+            await self.session.execute(
+                select(UsageEvent, AIModel.external_id, AIProvider.code)
+                .join(AIModel, AIModel.id == UsageEvent.model_id)
+                .join(AIProvider, AIProvider.id == UsageEvent.provider_id)
                 .where(UsageEvent.user_id == user_id)
                 .order_by(UsageEvent.id.desc())
                 .limit(limit)
@@ -171,11 +209,33 @@ class MobileBillingService:
         ).all()
         return [
             UsageEventView(
-                id=row.id,
+                id=mobile_id(row),
+                session_id=_raw_string(row, "session_id"),
+                provider=provider,
+                endpoint=_usage_endpoint(row) or "",
+                model=model,
                 interaction_type=row.interaction_type,
-                text_input_tokens=row.text_input_tokens,
-                cached_text_input_tokens=row.cached_text_input_tokens,
-                text_output_tokens=row.text_output_tokens,
+                source=_usage_source(row) or "",
+                response_id=str(row.raw_usage_json.get("response_id") or row.request_id or ""),
+                input_tokens=int(row.raw_usage_json.get("input_tokens", _input_tokens(row))),
+                cached_input_tokens=int(
+                    row.raw_usage_json.get(
+                        "cached_input_tokens",
+                        row.cached_text_input_tokens
+                        + row.cached_audio_input_tokens
+                        + row.cached_image_input_tokens,
+                    )
+                ),
+                output_tokens=int(
+                    row.raw_usage_json.get(
+                        "output_tokens", row.text_output_tokens + row.audio_output_tokens
+                    )
+                ),
+                reasoning_tokens=int(
+                    row.raw_usage_json.get(
+                        "reasoning_tokens", row.raw_usage_json.get("_reasoning_tokens", 0)
+                    )
+                ),
                 audio_input_tokens=row.audio_input_tokens,
                 audio_output_tokens=row.audio_output_tokens,
                 image_input_tokens=row.image_input_tokens,
@@ -186,7 +246,7 @@ class MobileBillingService:
                 status=row.status,
                 created_at=row.created_at,
             )
-            for row in rows
+            for row, model, provider in rows
         ]
 
     async def create_topup(
@@ -228,17 +288,48 @@ class MobileBillingService:
         if not purchase_token.strip():
             raise BillingError("Falta el token de compra de Google Play")
 
+        purchase_token = purchase_token.strip()
+        if package_name and package_name != self.settings.google_play_package_name:
+            raise BillingError("El paquete de Google Play no corresponde a esta aplicación")
+        dedupe_key = sha256(purchase_token.encode()).hexdigest()
+
         existing = await self.session.scalar(
-            select(TopUp).where(
-                TopUp.provider == "google_play", TopUp.provider_reference == purchase_token
-            )
+            select(TopUp).where(TopUp.purchase_dedupe_key == dedupe_key)
         )
         if existing is not None:
             if existing.user_id != user_id:
                 raise BillingError("Esta compra ya fue aplicada a otra cuenta")
             return _topup_view(existing)
 
-        effective_package_name = package_name or self.settings.google_play_package_name
+        # Reserve the purchase before the network call. The unique key blocks other
+        # transactions until this one commits or rolls back, including another account.
+        wallet = await self._wallet_or_raise(user_id)
+        topup = TopUp(
+            user_id=user_id,
+            wallet_id=wallet.id,
+            amount_cents=amount_cents,
+            bonus_cents=0,
+            provider="google_play",
+            provider_reference=purchase_token,
+            purchase_dedupe_key=dedupe_key,
+            status="pending",
+            metadata_json={},
+        )
+        try:
+            async with self.session.begin_nested():
+                self.session.add(topup)
+                await self.session.flush()
+        except IntegrityError:
+            existing = await self.session.scalar(
+                select(TopUp).where(TopUp.purchase_dedupe_key == dedupe_key).with_for_update()
+            )
+            if existing is None:
+                raise
+            if existing.user_id != user_id:
+                raise BillingError("Esta compra ya fue aplicada a otra cuenta") from None
+            return _topup_view(existing)
+
+        effective_package_name = self.settings.google_play_package_name
         active_verifier = verifier or GooglePlayVerifier(self.settings)
         try:
             verification = await active_verifier.verify_and_consume(
@@ -247,6 +338,7 @@ class MobileBillingService:
                 package_name=effective_package_name,
             )
         except GooglePlayVerificationError as error:
+            await self.session.rollback()
             raise BillingError(str(error)) from error
 
         topup = await self._apply_topup(
@@ -261,6 +353,7 @@ class MobileBillingService:
                 "raw_purchase": raw_purchase or {},
                 "verification": verification,
             },
+            reserved_topup=topup,
         )
         return _topup_view(topup)
 
@@ -272,9 +365,10 @@ class MobileBillingService:
         provider: str,
         provider_reference: str,
         metadata: dict[str, Any],
+        reserved_topup: TopUp | None = None,
     ) -> TopUp:
-        wallet = await self._wallet_or_raise(user_id)
-        topup = TopUp(
+        wallet = await self._wallet_or_raise(user_id, lock=True)
+        topup = reserved_topup or TopUp(
             user_id=user_id,
             wallet_id=wallet.id,
             amount_cents=amount_cents,
@@ -285,6 +379,9 @@ class MobileBillingService:
             metadata_json=metadata,
             completed_at=utc_now(),
         )
+        topup.status = "completed"
+        topup.completed_at = utc_now()
+        topup.metadata_json = metadata
         self.session.add(topup)
         await self.session.flush()
 
@@ -308,8 +405,11 @@ class MobileBillingService:
         await self.session.refresh(topup)
         return topup
 
-    async def _wallet_or_raise(self, user_id: int) -> Wallet:
-        wallet = await self.session.scalar(select(Wallet).where(Wallet.user_id == user_id))
+    async def _wallet_or_raise(self, user_id: int, *, lock: bool = False) -> Wallet:
+        query = select(Wallet).where(Wallet.user_id == user_id)
+        if lock:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        wallet = await self.session.scalar(query)
         if wallet is None:
             raise BillingError("Wallet no encontrada")
         return wallet
@@ -317,11 +417,47 @@ class MobileBillingService:
 
 def _topup_view(topup: TopUp) -> TopUpView:
     return TopUpView(
-        id=topup.id,
+        id=mobile_id(topup),
         amount_cents=topup.amount_cents,
         bonus_cents=topup.bonus_cents,
         provider=topup.provider,
         provider_reference=topup.provider_reference,
         status=topup.status,
         created_at=topup.created_at,
+    )
+
+
+def _raw_string(event: UsageEvent | None, key: str) -> str | None:
+    if event is None:
+        return None
+    raw = event.raw_usage_json or {}
+    metadata = raw.get("metadata_json") or {}
+    value = raw.get(key) or (metadata.get(key) if isinstance(metadata, dict) else None)
+    return str(value) if value else None
+
+
+def _usage_endpoint(event: UsageEvent | None) -> str | None:
+    if event is None:
+        return None
+    return _raw_string(event, "endpoint") or (
+        "realtime" if event.voice_session_id is not None else "responses"
+    )
+
+
+def _usage_source(event: UsageEvent | None) -> str | None:
+    if event is None:
+        return None
+    return _raw_string(event, "source") or (
+        "call_room" if event.voice_session_id is not None else "chat"
+    )
+
+
+def _input_tokens(event: UsageEvent) -> int:
+    return (
+        event.text_input_tokens
+        + event.cached_text_input_tokens
+        + event.audio_input_tokens
+        + event.cached_audio_input_tokens
+        + event.image_input_tokens
+        + event.cached_image_input_tokens
     )

@@ -34,7 +34,9 @@ class Settings(BaseSettings):
     admin_session_days: int = 7
     admin_session_cookie: str = "locus_admin_session"
     auth_enable_password_auth: bool = False
-    cors_origins: list[str] = ["http://localhost:4201", "http://localhost:8100"]
+    cors_origins: list[str] = [
+        "http://localhost:4201", "http://localhost:8100", "http://localhost:8200"
+    ]
 
     openai_api_key: SecretStr | None = None
     gemini_api_key: SecretStr | None = None
@@ -60,6 +62,7 @@ class Settings(BaseSettings):
     google_play_service_account_file: str = ""
 
     billing_min_reserve_cents: int = 25
+    billing_signup_bonus_cents: int = Field(default=100, ge=0)
     billing_manual_topups_enabled: bool = False
 
     getyourguide_referrals_enabled: bool = True

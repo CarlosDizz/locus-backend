@@ -23,8 +23,10 @@ from locus_v2.sessions.models import (
     MapSession,
     SessionCallLiveState,
     SessionCallLogEntryState,
+    SessionLocationView,
     SessionParticipantState,
     SessionPoi,
+    SessionProfileView,
     SessionStateView,
 )
 
@@ -442,11 +444,12 @@ def _serialize(row: MapSession) -> SessionStateView:
     return SessionStateView(
         session_id=row.session_id,
         user_id=row.user_id,
-        profile_context=row.profile_context or "",
-        profile_language=row.profile_language or "es",
-        profile_preferences=row.profile_preferences_json or {},
-        lat=fallback_lat,
-        lng=fallback_lng,
+        profile=SessionProfileView(
+            raw_context=row.profile_context or "",
+            language=row.profile_language or "es",
+            preferences=row.profile_preferences_json or {},
+        ),
+        location=SessionLocationView(lat=fallback_lat, lng=fallback_lng),
         active_poi=active_poi,
         nearby_pois=nearby_pois,
         ephemeral_map_pois=ephemeral_map_pois,

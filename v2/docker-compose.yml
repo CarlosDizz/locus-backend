@@ -12,7 +12,7 @@ services:
     env_file: ${LOCUS_ENV_FILE:-.env.local}
     command: sh -c "alembic upgrade head && python -m locus_v2.entrypoints.seed && uvicorn locus_v2.entrypoints.api:app --host 0.0.0.0 --port 8100 --reload"
     ports:
-      - "8100:8100"
+      - "${LOCUS_API_HOST_PORT:-8100}:8100"
     volumes:
       - ./src:/app/src
       - ./migrations:/app/migrations

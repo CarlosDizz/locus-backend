@@ -20,6 +20,7 @@ from locus_v2.chat.configuration import ChatConfigurationResolver, ChatRequest
 from locus_v2.chat.providers.openai_responses import OpenAIResponsesAdapter
 from locus_v2.config import Settings
 from locus_v2.observability import LocusEventLogger
+from locus_v2.sessions.models import SessionStateView
 
 logger = structlog.get_logger()
 
@@ -57,6 +58,7 @@ class ChatService:
         context_id: str | None,
         locale: str,
         message: str,
+        map_session: SessionStateView | None = None,
     ) -> ChatResult:
         trace_id = uuid4().hex
         configuration = await ChatConfigurationResolver(self.session, self.settings).resolve(
@@ -66,6 +68,7 @@ class ChatService:
                 context_type=context_type,
                 context_id=context_id,
                 message=message,
+                map_session=map_session,
             )
         )
         primary = configuration.primary
@@ -100,7 +103,13 @@ class ChatService:
             text_input_tokens=result.usage.text_input_tokens,
             cached_text_input_tokens=result.usage.cached_text_input_tokens,
             text_output_tokens=result.usage.text_output_tokens,
-            raw_usage_json=result.usage.raw,
+            raw_usage_json={
+                **result.usage.raw,
+                "session_id": map_session.session_id if map_session else None,
+                "response_id": result.raw_response_id,
+                "source": "map_chat" if map_session else "poi_chat",
+                "endpoint": "responses",
+            },
             status=UsageStatus.PENDING,
             trace_id=trace_id,
         )

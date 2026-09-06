@@ -4,6 +4,7 @@ Mounted at /api/billing, same prefix and shapes (adapted where V2's schema
 genuinely differs — see mobile_billing.py's docstring) as app/routes/billing.py.
 """
 
+from dataclasses import asdict
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,6 +15,8 @@ from locus_v2.api.auth import CurrentUserDep
 from locus_v2.billing.application.mobile_billing import BillingError, MobileBillingService
 from locus_v2.config import Settings, get_settings
 from locus_v2.infrastructure.database.session import get_session
+from locus_v2.shared.clock import UtcDatetime
+from locus_v2.shared.mobile_ids import mobile_id
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -28,26 +31,37 @@ class WalletResponse(BaseModel):
 
 class LedgerEntryResponse(BaseModel):
     id: int
-    kind: str
+    entry_type: str
     amount_cents: int
     balance_after_cents: int
     description: str
     reference_type: str
     reference_id: str
-    usage_event_id: int | None
     usage_interaction_type: str | None
-    voice_session_id: int | None
-    voice_call_started_at: str | None
-    voice_call_ended_at: str | None
-    created_at: str
+    usage_source: str | None
+    usage_endpoint: str | None
+    usage_call_id: str | None
+    usage_call_started_at: UtcDatetime | None
+    usage_call_ended_at: UtcDatetime | None
+    usage_audio_input_tokens: int | None
+    usage_audio_output_tokens: int | None
+    usage_image_input_tokens: int | None
+    created_at: UtcDatetime
 
 
 class UsageEventResponse(BaseModel):
     id: int
+    session_id: str | None
+    provider: str
+    endpoint: str
+    model: str
     interaction_type: str
-    text_input_tokens: int
-    cached_text_input_tokens: int
-    text_output_tokens: int
+    source: str
+    response_id: str
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    reasoning_tokens: int
     audio_input_tokens: int
     audio_output_tokens: int
     image_input_tokens: int
@@ -56,7 +70,7 @@ class UsageEventResponse(BaseModel):
     gross_margin_cents: int
     currency: str
     status: str
-    created_at: str
+    created_at: UtcDatetime
 
 
 class TopUpResponse(BaseModel):
@@ -66,7 +80,7 @@ class TopUpResponse(BaseModel):
     provider: str
     provider_reference: str
     status: str
-    created_at: str
+    created_at: UtcDatetime
 
 
 class TopUpRequest(BaseModel):
@@ -97,7 +111,9 @@ async def get_wallet(
     except BillingError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return WalletResponse(
-        user_id=wallet.user_id, currency=wallet.currency, balance_cents=wallet.balance_cents
+        user_id=mobile_id(current_user),
+        currency=wallet.currency,
+        balance_cents=wallet.balance_cents,
     )
 
 
@@ -112,28 +128,7 @@ async def get_ledger(
     entries = await _service(session, settings).list_ledger(
         current_user.id, limit=limit, offset=offset
     )
-    return [
-        LedgerEntryResponse(
-            id=entry.id,
-            kind=entry.kind,
-            amount_cents=entry.amount_cents,
-            balance_after_cents=entry.balance_after_cents,
-            description=entry.description,
-            reference_type=entry.reference_type,
-            reference_id=entry.reference_id,
-            usage_event_id=entry.usage_event_id,
-            usage_interaction_type=entry.usage_interaction_type,
-            voice_session_id=entry.voice_session_id,
-            voice_call_started_at=(
-                entry.voice_call_started_at.isoformat() if entry.voice_call_started_at else None
-            ),
-            voice_call_ended_at=(
-                entry.voice_call_ended_at.isoformat() if entry.voice_call_ended_at else None
-            ),
-            created_at=entry.created_at.isoformat(),
-        )
-        for entry in entries
-    ]
+    return [LedgerEntryResponse(**asdict(entry)) for entry in entries]
 
 
 @router.get("/usage-events", response_model=list[UsageEventResponse])
@@ -144,25 +139,7 @@ async def get_usage_events(
     limit: int = Query(default=100, ge=1, le=250),
 ) -> list[UsageEventResponse]:
     events = await _service(session, settings).list_usage_events(current_user.id, limit=limit)
-    return [
-        UsageEventResponse(
-            id=event.id,
-            interaction_type=event.interaction_type,
-            text_input_tokens=event.text_input_tokens,
-            cached_text_input_tokens=event.cached_text_input_tokens,
-            text_output_tokens=event.text_output_tokens,
-            audio_input_tokens=event.audio_input_tokens,
-            audio_output_tokens=event.audio_output_tokens,
-            image_input_tokens=event.image_input_tokens,
-            provider_cost_eur_cents=event.provider_cost_eur_cents,
-            charged_amount_cents=event.charged_amount_cents,
-            gross_margin_cents=event.gross_margin_cents,
-            currency=event.currency,
-            status=event.status,
-            created_at=event.created_at.isoformat(),
-        )
-        for event in events
-    ]
+    return [UsageEventResponse(**asdict(event)) for event in events]
 
 
 @router.post("/topups", response_model=TopUpResponse)

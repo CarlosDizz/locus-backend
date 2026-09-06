@@ -13,7 +13,7 @@ dependencies = [
   "email-validator>=2.2,<3",
   "fastapi>=0.115,<1",
   "google-auth>=2.38,<3",
-  "google-genai>=1.0,<2",
+  "google-genai==1.75.0",
   "openai[realtime]>=2.0,<3",
   "orjson>=3.10,<4",
   "pydantic-settings>=2.7,<3",
@@ -47,6 +47,11 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+# Embedded static HTML strings, not code — wrapping them would just make the
+# markup harder to read without improving anything.
+"src/locus_v2/api/legal.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"

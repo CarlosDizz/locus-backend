@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import traceback
 from contextlib import suppress
 from time import perf_counter
 from uuid import uuid4
@@ -153,6 +154,12 @@ class VoiceGateway:
                 message=str(error),
                 error_type=type(error).__name__,
                 elapsed_ms=(perf_counter() - self.started_at) * 1000,
+                context={
+                    "traceback": traceback.format_exc(),
+                    "provider": (
+                        self.resolved_provider.provider_code if self.resolved_provider else None
+                    ),
+                },
             )
             with suppress(Exception):
                 await self._send(
@@ -258,6 +265,7 @@ class VoiceGateway:
                         "provider": resolved.provider_code,
                         "adapter": resolved.adapter_code,
                         "model": resolved.config.model,
+                        "traceback": traceback.format_exc(),
                     },
                 )
                 errors.append(f"{resolved.adapter_code}: {error}")
@@ -446,6 +454,7 @@ class VoiceGateway:
                     else None,
                     "tool": event.tool_name,
                     "handler": definition["handler_code"],
+                    "traceback": traceback.format_exc(),
                 },
             )
             raise

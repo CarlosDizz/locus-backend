@@ -23,8 +23,9 @@ The routing profile is looked up by experience_code="group_call_guide" (not
 prompt: proactive ("who's there?"), scene-vs-stops planning, tool calling.
 Nothing here touches the CP's profile/prompt.
 
-Scope note: image submissions are acknowledged but not analyzed — LiveProvider
-has no image-input method today.
+Image submissions go to the provider for real when capabilities.image_input is
+true (only GeminiLiveProvider today) - otherwise acknowledged with an apology
+instead of hanging.
 
 Known gap, next candidate to fix: while a tool call is in flight the model cannot
 speak at all (confirmed live 2026-09-06 - see the audio_burst log below), so a
@@ -58,7 +59,7 @@ from locus_v2.ai.models import AIModel, AIProvider, RoutingProfile
 from locus_v2.billing.models import UsageEvent, UsageStatus
 from locus_v2.billing.pricing import NormalizedUsage
 from locus_v2.calls.models import CallError
-from locus_v2.calls.service import CallService
+from locus_v2.calls.service import CallService, decode_image
 from locus_v2.calls.store import RoomStore
 from locus_v2.catalog.models import Poi
 from locus_v2.config import Settings
@@ -266,14 +267,27 @@ class _CallVoiceBridge:
             }
             for tool in self.tool_definitions
         ]
+        # Same merge chain voice/configuration.py's _provider() uses for the CP path -
+        # this file never applied it, so config_json/runtime_config_json (voice,
+        # turn_detection, temperature...) set from the panel's Prompt workshop were
+        # silently ignored for calls; confirmed live (2026-09-06) as the "voice stays
+        # Kore no matter what I pick in the panel" bug.
+        runtime_config = _deep_merge(
+            profile.config_json, profile.prompt_version.runtime_config_json
+        )
+        options = _deep_merge(model.runtime_defaults_json, runtime_config)
+        provider_overrides = options.pop("provider_overrides", {})
+        options = _deep_merge(options, provider_overrides.get(model.provider.code, {}))
+        voice = options.pop("voice", None)
         await provider.connect(
             LiveSessionConfig(
                 model=model.external_id,
                 prompt=prompt,
                 locale=room.language,
+                voice=voice,
                 audio_format=AudioFormat.PCM16_24KHZ,
                 tools=tools,
-                provider_options=dict(model.runtime_defaults_json or {}),
+                provider_options=options,
             )
         )
         logger.info(
@@ -360,11 +374,18 @@ class _CallVoiceBridge:
                         f"{author}: {command['text']}" if author else command["text"]
                     )
                 elif kind == "image.submit":
-                    # LiveProvider has no image-input method yet; acknowledge instead of hanging.
-                    await self.provider.send_text(
-                        f"{command.get('author', 'Alguien')} ha enviado una foto, pero todavia "
-                        "no puedo analizar imagenes durante una llamada."
-                    )
+                    if self.provider.capabilities.image_input:
+                        mime_subtype, image_bytes = decode_image(command["image_data_url"])
+                        author = command.get("author", "")
+                        caption = f"{author} ha enviado esta foto:" if author else None
+                        await self.provider.send_image(
+                            image_bytes, f"image/{mime_subtype}", caption=caption
+                        )
+                    else:
+                        await self.provider.send_text(
+                            f"{command.get('author', 'Alguien')} ha enviado una foto, pero "
+                            "no puedo analizar imagenes con este proveedor."
+                        )
             except Exception as error:  # noqa: BLE001 - one bad command must not kill the bridge
                 logger.warning(
                     "call_voice_bridge_command_failed",
@@ -535,6 +556,18 @@ class _CallVoiceBridge:
                 return
             if room.status == "ended":
                 return
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Same logic as voice/configuration.py's private helper of the same name -
+    duplicated rather than imported across modules for a four-line function."""
+    merged = dict(base or {})
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 async def _ignore_consume(user_id: int) -> None:

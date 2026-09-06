@@ -62,6 +62,18 @@ class GeminiLiveProvider(LiveProvider):
             turn_complete=True,
         )
 
+    async def send_image(
+        self, image_bytes: bytes, mime_type: str, caption: str | None = None
+    ) -> None:
+        self._require_session()
+        parts = [types.Part(inline_data=types.Blob(data=image_bytes, mime_type=mime_type))]
+        if caption:
+            parts.insert(0, types.Part(text=caption))
+        await self._session.send_client_content(
+            turns=types.Content(role="user", parts=parts),
+            turn_complete=True,
+        )
+
     async def submit_tool_result(self, call_id: str, result: dict) -> None:
         self._require_session()
         payload = dict(result)

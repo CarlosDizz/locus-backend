@@ -107,19 +107,16 @@ una introducción ni menciones limitaciones. Si un dato no es fiable, omítelo."
         }
 
     async def _plan_visit(self, arguments: dict, context: dict, locale: str) -> dict:
+        # No model call here on purpose (2026-09-06): confirmed live that gemini_live
+        # documents places well from its own knowledge, no document_poi round-trip
+        # needed - the same is true of *deciding* scene vs. stops, which this tool's
+        # caller already had to reason through to pick `mode` in the first place.
+        # Asking a second model (gpt-5-mini) to write a "plan" the caller then narrates
+        # anyway was pure latency and cost for a decision already made. This tool now
+        # just records that decision (free, instant) and lets the calling model narrate
+        # directly, which it does fine on its own.
         mode = arguments.get("mode", "scene")
-        intent = arguments.get("user_intent", "Conocer bien el lugar")
-        prompt = f"""Diseña una experiencia guiada para {context.get('name', '')},
-en {context.get('city_name', '')}. Modo: {mode}. Intención: {intent}. Idioma: {locale}.
-Si es scene, crea una secuencia natural de observación y relato. Si es stops, devuelve paradas
-ordenadas con qué mirar y qué contar. Sé concreto y útil para que otro modelo lo narre en vivo."""
-        answer = await self._ask_model(prompt)
-        return {
-            "kind": "poi_visit_plan",
-            "mode": mode,
-            "answer": answer,
-            "model": self.settings.tool_model,
-        }
+        return {"kind": "poi_visit_plan", "mode": mode, "answer": ""}
 
     async def _find_activities(self, arguments: dict, context: dict) -> dict:
         referrals = ReferralService(self.settings)

@@ -75,6 +75,17 @@ class LiveProvider(ABC):
     async def send_text(self, text: str) -> None:
         raise NotImplementedError
 
+    async def send_image(
+        self, image_bytes: bytes, mime_type: str, caption: str | None = None
+    ) -> None:
+        """Send an image as part of the conversation. Not abstract - most providers
+
+        (capabilities.image_input=False) never call this; only GeminiLiveProvider
+        overrides it today. Default raises so a caller that skips the capability
+        check gets a clear error instead of silently doing nothing.
+        """
+        raise NotImplementedError(f"{self.code} does not support image input")
+
     @abstractmethod
     async def submit_tool_result(self, call_id: str, result: dict) -> None:
         raise NotImplementedError

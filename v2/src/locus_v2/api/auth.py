@@ -87,6 +87,20 @@ async def get_current_user_required(
 CurrentUserDep = Annotated[User, Depends(get_current_user_required)]
 
 
+async def get_current_user_optional(
+    session: SessionDep,
+    settings: SettingsDep,
+    authorization: str | None = Header(default=None),
+) -> User | None:
+    token = _extract_bearer(authorization)
+    if not token:
+        return None
+    return await MobileAuthService(session, settings).authenticate(token)
+
+
+OptionalUserDep = Annotated[User | None, Depends(get_current_user_optional)]
+
+
 @router.post("/register", response_model=AuthResponse)
 async def register(
     payload: RegisterRequest, session: SessionDep, settings: SettingsDep

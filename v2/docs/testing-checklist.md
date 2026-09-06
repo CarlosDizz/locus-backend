@@ -9,7 +9,8 @@ stack real) · `pendiente` (no empezado).
 
 ## Capítulo 1 — Auth (`/api/auth/*`)
 
-Estado: **construido**, no probado en caliente todavía.
+Estado: **probado en caliente** (2026-09-06) contra MySQL real, salvo la app Ionic real
+(pendiente por depender de un login Google interactivo real, ver más abajo).
 
 - [x] Modelos: `UserSession` (tabla `user_sessions`, distinta de `AdminSession`).
 - [x] Migración `f3a6c9d21b74_add_user_sessions`.
@@ -22,10 +23,29 @@ Estado: **construido**, no probado en caliente todavía.
 - [x] Separación estricta del login de admin: rol `user` únicamente, nunca `admin`; tabla y
       servicio distintos de `/admin/v2/auth/*`.
 - [x] Ruff, mypy focalizado y suite de tests existente en verde.
-- [ ] Arrancar `./bin/locus up`, aplicar `alembic upgrade head`, y hacer login Google real desde
-      Postman/curl.
-- [ ] Confirmar que un usuario ya importado (de los 19 de V1) se reconoce por email y no crea
-      duplicado.
+- [x] `POST /api/auth/register` y `/login` en caliente vía curl contra la API real: 400
+      "El acceso con email y contraseña está desactivado" y 401 "Usa el acceso con Google"
+      respectivamente — texto y código idénticos a `app/services/auth_service.py` (comparado
+      línea a línea).
+- [x] `POST /api/auth/google` con un token inválido → 401 real ("No he podido verificar la
+      cuenta de Google"). No se pudo probar con un token de Google real y válido: exigiría un
+      login interactivo real contra una cuenta de Google, no disponible en este entorno.
+- [x] Confirmado que un usuario ya importado de V1 (`carlos.garcia@ganbaru.es`, id 42,
+      `legacy_v1_id=3`) se reconoce por `provider_subject` y NO crea duplicado: se instanció
+      `MobileAuthService` real contra la BD real con un verificador de Google sustituido
+      (solo se sustituye la llamada de red a Google — imposible de obtener un JWT firmado
+      real sin ese login interactivo; toda la lógica de negocio, la BD y el token de sesión
+      resultante son reales). El token real emitido se probó después contra `GET /api/auth/me`
+      por HTTP real → 200 con `id=3` (el legacy id, correcto). Un segundo caso con un email
+      nuevo (`zzz-auth-hot-test-new-user@example.com`, sin colisión) confirmó la rama de
+      creación; se limpió el usuario de prueba al terminar.
+- [x] `logout()` real revoca la sesión: tras revocar, `GET /me` con el mismo token vuelve a
+      dar 401. **Hallazgo, no defecto**: no existe ruta HTTP `/api/auth/logout` ni en V1 ni en
+      V2 — el cierre de sesión de la app Ionic es puramente local (`auth.service.ts::logout`
+      solo limpia el storage y cierra sesión de Google en el SDK), nunca llama al backend. Es
+      paridad exacta con V1, no una regresión: el método de servicio existe pero no está
+      expuesto por ninguna ruta en ninguna de las dos versiones.
+- [ ] Login Google real desde Postman/curl con un token válido de verdad.
 - [ ] Apuntar la app Ionic real (`environment.local.ts`, `apiBaseUrl`) a V2 y loguear de verdad.
 - [ ] Bono de bienvenida al crear usuario nuevo — pendiente conectar con Billing (ver TODO en
       `mobile_auth.py`).

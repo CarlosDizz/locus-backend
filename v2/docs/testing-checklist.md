@@ -187,13 +187,32 @@ Estado: **pendiente** el dominio V1-compatible; **probado** un slice mínimo int
 
 ## Capítulo 4 — Billing (`/api/billing/*`, Google Play)
 
-Estado: **pendiente** en la fachada pública; el motor de pricing/ledger interno ya existe
-(`billing/application/processor.py`, con tests).
+Estado: **probado en caliente** (2026-09-06) contra datos reales, salvo la verificación
+real de compras de Google Play (sin credenciales de service account en este entorno).
 
-- [ ] `GET /billing/wallet`, `GET /ledger`, `GET /usage-events`, `POST /topups` compatibles.
-- [ ] `POST /billing/google-play/topups/confirm` — no hay ninguna referencia a Google Play en
-      `v2/src` todavía; es ingreso real activo en V1, máxima prioridad de negocio.
-- [ ] Idempotencia de cargos y compras (clave por interacción/compra, no solo por request).
+- [x] `GET /api/billing/wallet`, `GET /ledger`, `GET /usage-events` — probados con un
+      usuario real migrado de V1 (`carlos.garcia@ganbaru.es`), devolviendo su saldo y su
+      historial real (incluido el asiento de "Saldo promocional de bienvenida" importado de
+      V1). Forma de respuesta adaptada donde el esquema de V2 ya es mejor que el de V1: en
+      vez de reconstruir a mano los campos `source`/`endpoint`/`call_id` que V1 guardaba
+      sueltos en `UsageEvent`, el ledger enlaza directamente con la `VoiceSession` real
+      (`billing/application/mobile_billing.py`, ver su docstring).
+- [x] `POST /topups` (recarga manual) — probado el guardado (403 real cuando
+      `billing_manual_topups_enabled=False`, que es el valor por defecto, igual que V1) y,
+      con el flag activado solo para la prueba sobre un usuario y wallet desechables, el
+      camino real de abono: wallet actualizada y asiento de ledger `credit` correctos.
+      Limpiado al terminar.
+- [x] `POST /billing/google-play/topups/confirm` (`billing/infrastructure/google_play.py`,
+      port de `_verify_google_play_purchase`, versión async con `httpx`) — probado el
+      rechazo real de un producto desconocido (400, sin efectos secundarios). La
+      verificación real contra la API de Android Publisher **no se ha podido probar**: este
+      entorno no tiene `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`/`_FILE` configurado (tampoco lo
+      tenía V1 en `.env.example`), así que ese tramo queda construido pero sin verificar
+      contra Google de verdad.
+- [ ] Idempotencia de cargos y compras — la comprobación de duplicados en
+      `confirm_google_play_topup` es una consulta previa a nivel de aplicación, no una
+      restricción única en la base de datos (igual que V1: mismo hueco de condición de
+      carrera bajo concurrencia real, no es una regresión pero tampoco está resuelto).
 - [ ] Bono de bienvenida al registrar usuario (enlazar con Capítulo 1).
 
 ## Capítulo 5 — Afiliación GetYourGuide

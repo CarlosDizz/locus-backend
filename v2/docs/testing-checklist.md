@@ -220,10 +220,15 @@ token móvil real de `/api/auth`. Es el capítulo de mayor riesgo técnico en lo
 
 ## Capítulo 7 — Legal y metadatos de app
 
-Estado: **pendiente**, bajo riesgo técnico.
+Estado: **probado en caliente** (2026-09-06) contra la API real.
 
-- [ ] `/privacy-policy`, `/legal` servidos desde V2.
-- [ ] `/api/app/version` (control de versión mínima Android/iOS).
+- [x] `/privacy-policy` y `/account-deletion` servidos desde V2, HTML idéntico a
+      `app/routes/legal.py` (V1 no tiene una ruta genérica `/legal`, solo estas dos).
+- [x] `GET /api/app/version` — mismo shape que V1 (`android.latest_version_code`,
+      `android.update_url`, `ios.latest_build`, `ios.update_url`), settings nuevas en
+      `config.py` con los mismos valores por defecto que V1.
+- [x] Verificado con curl real contra la API viva: los tres endpoints devuelven 200 con
+      el contenido esperado.
 
 ## Capítulo 8 — Panel de control (control-panel Angular)
 
@@ -256,10 +261,20 @@ Estado: parcialmente **probado** (conectado a datos reales), resto **construido*
 - [ ] CRUD de catálogo (sigue siendo explorador de solo lectura).
 - [ ] Historial de prompts navegable más allá de las versiones ya listadas, dashboard de
       salud más allá de Pulso.
-- [ ] Bug encontrado (no corregido, no es de esta sesión de trabajo): una sesión de Gemini
-      Live falló en producción-local con `'UsageMetadata' object has no attribute
-      'candidates_token_count'` (ver Registros, 2026-09-05 16:11). Está en el mapeo de
-      eventos de `voice/providers/gemini_live.py`.
+- [x] Bug investigado y cerrado (2026-09-06): la sesión de Gemini Live que falló el
+      2026-09-05 con `'UsageMetadata' object has no attribute 'candidates_token_count'`
+      NO era un bug en `gemini_live.py` — ese código nunca referencia ese nombre; es el
+      campo equivalente en la clase de uso de la API estándar de generación
+      (`GenerateContentResponseUsageMetadata`), no en la del Live API. La causa real:
+      `google-genai` estaba fijado como `>=1.0,<2` (sin lock), así que cada reconstrucción
+      de imagen podía instalar una versión 1.x distinta sin aviso; probablemente una
+      versión de tránsito de esas fechas tenía esta inconsistencia interna en el SDK. Con
+      la versión actual (1.75.0) una llamada real de texto contra Gemini Live funciona de
+      principio a fin sin ese error (probado con un script aislado). Corregido fijando
+      `google-genai==1.75.0` exacto en `pyproject.toml` para que no vuelva a ocurrir por
+      deriva de versión, y añadido el traceback completo al `context_json` de los eventos
+      de error del gateway de voz (antes solo se guardaba el mensaje, lo que hizo más
+      difícil diagnosticar esto la primera vez).
 
 ## Capítulo 9 — Corte a producción
 

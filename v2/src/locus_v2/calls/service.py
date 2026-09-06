@@ -178,6 +178,40 @@ class CallService:
 
         return await self.store.change(call_id, change)
 
+    async def mark_ready(self, call_id: str) -> Room:
+        """Flip Room.ready once the AI bridge has a live provider connection.
+
+        Room.ui() gates can_talk/can_text/can_image on `ready` (reason
+        "provider_connecting" until then) — nothing else in this domain ever
+        sets it, so a call's controls stayed disabled forever until the AI
+        bridge (calls/bridge.py) called this after connecting.
+        """
+
+        def change(room, commands, events):
+            if room.status != "ended":
+                room.ready = True
+
+        return await self.store.change(call_id, change)
+
+    async def assistant_finished(self, call_id: str, text: str) -> Room:
+        """Close out the assistant's turn once the live provider stops speaking.
+
+        `event()` moves a room into "assistant_speaking" but has no reason to know
+        when the provider is done — that only happens once the AI bridge consuming
+        the command stream sees AUDIO_DONE, so it calls back in here.
+        """
+
+        def change(room, commands, events):
+            if room.status == "ended":
+                return
+            room.status = "idle"
+            room.speaker_id = None
+            if text:
+                room.append_log("ai", text)  # matches call.page.ts's trackLabel(), not a free label
+            events.append({"type": "assistant.done", "text": text})
+
+        return await self.store.change(call_id, change)
+
     async def event(self, call_id: str, user_id: int, connection: str, event: dict) -> Room:
         kind = event.get("type")
         if kind == "call.leave":

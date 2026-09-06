@@ -41,7 +41,12 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     gemini_api_key: SecretStr | None = None
     tool_model: str = "gpt-5-mini"
-    tool_timeout_seconds: float = Field(default=60.0, gt=0)
+    # gpt-5-mini's reasoning tokens count against wall-clock time, not just the token
+    # budget: a real document_poi call at the 8000-token ceiling (see voice/tools.py)
+    # timed out at exactly 60s (2026-09-06, live), got killed mid-reasoning, and the
+    # model narrated the group-call opening without it. Raised so raising the token
+    # ceiling doesn't just trade "empty answer" for "no answer at all".
+    tool_timeout_seconds: float = Field(default=120.0, gt=0)
     event_log_retention_days: int = Field(default=30, ge=1, le=365)
 
     billing_usd_to_eur: Decimal = Field(default=Decimal("0.87"), gt=0)

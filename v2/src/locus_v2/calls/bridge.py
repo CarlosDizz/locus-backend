@@ -13,19 +13,40 @@ Usage/billing reuses the exact voice_sessions/usage_events path voice/gateway.py
 uses for the single-user POI guide: a VoiceSession row gives UsageEvent
 somewhere to point its required FK, and the billing worker (entrypoints/worker.py)
 picks up any usage_events row left PENDING here the same way it already
-processes chat_call/realtime_call rows — no worker change needed.
+processes chat_call/realtime_call rows — no worker change needed. Tool calls
+(document_poi, plan_poi_visit, find_activities) are billed the same way
+voice/gateway.py's _persist_tool_usage() does, against the same priced
+tool_model AIModel row — see shared/openai_usage.py.
 
-Scope note: tool calling (document_poi, plan_poi_visit, find_activities) is
-intentionally not wired here yet — the prompt still renders and the model
-still answers from its own knowledge, but a call does not (yet) invoke
-catalog tools. Image submissions are acknowledged but not analyzed:
-LiveProvider has no image-input method today.
+The routing profile is looked up by experience_code="group_call_guide" (not
+"poi_guide", the single-user CP guide's profile) — a call needs its own
+prompt: proactive ("who's there?"), scene-vs-stops planning, tool calling.
+Nothing here touches the CP's profile/prompt.
+
+Scope note: image submissions are acknowledged but not analyzed — LiveProvider
+has no image-input method today.
+
+Known gap, next candidate to fix: while a tool call is in flight the model cannot
+speak at all (confirmed live 2026-09-06 - see the audio_burst log below), so a
+long document_poi/plan_poi_visit run is dead air no matter how the turns are
+split. OpenAI's GA `gpt-realtime` model supports real async tool calling
+(`async: true` on the tool definition - the model keeps talking while the tool
+runs, https://openai.com/index/introducing-gpt-realtime/); our own
+voice/providers/openai_realtime.py already declares
+`async_function_calling=True` but nothing sets that flag or builds the
+non-blocking flow yet. Gemini Live has no equivalent. Switching the group-call
+profile's primary model to gpt-realtime and wiring async tools through would
+fix this properly, instead of the two-turn "announce, then research" split
+below, which only gets the announcement out promptly - the research itself is
+still silent.
 """
 
 import asyncio
 import base64
 import contextlib
 from functools import partial
+from time import perf_counter
+from typing import Any
 from uuid import uuid4
 
 import structlog
@@ -33,20 +54,28 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from locus_v2.ai.enums import PublicationStatus, ServiceKind
-from locus_v2.ai.models import AIModel, RoutingProfile
+from locus_v2.ai.models import AIModel, AIProvider, RoutingProfile
 from locus_v2.billing.models import UsageEvent, UsageStatus
 from locus_v2.billing.pricing import NormalizedUsage
 from locus_v2.calls.models import CallError
 from locus_v2.calls.service import CallService
 from locus_v2.calls.store import RoomStore
+from locus_v2.catalog.models import Poi
 from locus_v2.config import Settings
 from locus_v2.infrastructure.database.session import Database
 from locus_v2.shared.clock import utc_now
-from locus_v2.shared.prompting import PromptRenderingError, render_prompt
+from locus_v2.shared.openai_usage import ToolUsage
+from locus_v2.shared.prompting import PromptRenderingError, localized_field, render_prompt
 from locus_v2.voice.models import VoiceSession, VoiceSessionStatus
 from locus_v2.voice.protocol import AudioFormat
-from locus_v2.voice.providers.base import LiveProvider, LiveSessionConfig, ProviderEventType
+from locus_v2.voice.providers.base import (
+    LiveProvider,
+    LiveSessionConfig,
+    ProviderEvent,
+    ProviderEventType,
+)
 from locus_v2.voice.providers.factory import build_provider_registry
+from locus_v2.voice.tools import VoiceToolDispatcher
 
 logger = structlog.get_logger()
 
@@ -90,6 +119,20 @@ class _CallVoiceBridge:
         self.host_id: int | None = None
         self.model_id: int | None = None
         self.voice_session_id: int | None = None
+        self.locale = "es"
+        self.tool_dispatcher = VoiceToolDispatcher(settings)
+        self.tool_definitions: list[dict[str, Any]] = []
+        self.tool_context: dict[str, Any] = {}
+        # Two-turn handshake for the opening research pass - see _on_assistant_turn_done().
+        # Confirmed live (2026-09-06): Gemini Live does not stream any audio for a response
+        # until the whole turn, tool round-trips included, is done. Letting the model say
+        # "give me a moment" and call document_poi in the *same* turn means that line
+        # arrives bundled with the narration 45-90s later - useless, the group already sat
+        # through the silence it was meant to explain. Splitting the announcement into its
+        # own tool-free turn, then nudging research as a second turn, makes it audible when
+        # it's supposed to be.
+        self._assistant_turn_count = 0
+        self._research_kicked_off = False
 
     async def run(self) -> None:
         final_status = VoiceSessionStatus.COMPLETED
@@ -132,6 +175,7 @@ class _CallVoiceBridge:
 
     async def _connect(self) -> LiveProvider:
         room = await self.store.get(self.call_id)
+        self.locale = room.language
         async with self.database.sessions() as session:
             profile = await session.scalar(
                 select(RoutingProfile)
@@ -143,19 +187,42 @@ class _CallVoiceBridge:
                     RoutingProfile.environment == self.settings.env,
                     RoutingProfile.service_kind == ServiceKind.VOICE,
                     RoutingProfile.status == PublicationStatus.PUBLISHED,
-                    RoutingProfile.experience_code == "poi_guide",
+                    RoutingProfile.experience_code == "group_call_guide",
                 )
             )
             if profile is None:
-                raise CallError("No hay un guia de voz publicado para llamadas", 503)
+                raise CallError("No hay un guia de llamadas publicado", 503)
+            poi = await session.scalar(
+                select(Poi).options(joinedload(Poi.city)).where(Poi.public_id == room.poi_public_id)
+            )
+            language = room.language.split("-", 1)[0].lower()
+            self.tool_context = {
+                "public_id": room.poi_public_id,
+                "name": (
+                    (localized_field(poi.names_json, room.language, language) or poi.name)
+                    if poi is not None
+                    else room.poi_name
+                )
+                or room.poi_name
+                or "este lugar",
+                "description": (
+                    localized_field(poi.short_descriptions_json, room.language, language)
+                    or poi.short_description
+                    if poi is not None
+                    else ""
+                ),
+                "city_name": poi.city.name if poi is not None and poi.city else "",
+                "wikidata_id": poi.wikidata_id if poi is not None else "",
+                "wikipedia_title": poi.wikipedia_title if poi is not None else "",
+            }
             try:
                 prompt = render_prompt(
                     profile.prompt_version.content,
                     {
                         "locale": room.language,
-                        "poi_name": room.poi_name or "este lugar",
-                        "poi_description": "",
-                        "city_name": "",
+                        "poi_name": self.tool_context["name"],
+                        "poi_description": self.tool_context["description"],
+                        "city_name": self.tool_context["city_name"],
                     },
                 )
             except PromptRenderingError as error:
@@ -163,6 +230,11 @@ class _CallVoiceBridge:
             model = profile.primary_model
             self.host_id = room.host_id
             self.model_id = model.id
+            self.tool_definitions = [
+                tool
+                for tool in (profile.prompt_version.tools_json or [])
+                if tool.get("enabled", True)
+            ]
             # config_snapshot_json.call_id is what mobile_billing.py's list_ledger() reads back
             # as usage_call_id (falling back to the session's own public_id otherwise) - this is
             # how the wallet page groups every charge from one call under a single card instead
@@ -185,13 +257,22 @@ class _CallVoiceBridge:
             self.voice_session_id = voice_session.id
         registry = build_provider_registry(self.settings)
         provider = registry.create(model.adapter_code)
+        tools = [
+            {
+                "type": "function",
+                "name": tool["code"],
+                "description": tool["description"],
+                "parameters": tool["schema"],
+            }
+            for tool in self.tool_definitions
+        ]
         await provider.connect(
             LiveSessionConfig(
                 model=model.external_id,
                 prompt=prompt,
                 locale=room.language,
                 audio_format=AudioFormat.PCM16_24KHZ,
-                tools=[],
+                tools=tools,
                 provider_options=dict(model.runtime_defaults_json or {}),
             )
         )
@@ -200,8 +281,18 @@ class _CallVoiceBridge:
             call_id=self.call_id,
             adapter=model.adapter_code,
             model=model.external_id,
+            tool_count=len(tools),
         )
         await self.service.mark_ready(self.call_id)
+        # Nobody has said anything yet — the bridge has to speak first, same trick V1's
+        # RealtimeBridge.handle_session_updated() used (request a response with an empty
+        # room log). CALL_GUIDE_PROMPT's opening instruction is "greet and ask if everyone
+        # is there"; this line is what actually makes the model say it unprompted.
+        await provider.send_text(
+            "[instruccion de sistema, no la leas en voz alta: la llamada acaba de "
+            "conectar y nadie ha hablado todavia. Saluda y pregunta si ya estan todos, "
+            "como indica tu guion. No documentes ni expliques nada todavia.]"
+        )
         return provider
 
     async def _finish(self, status: str) -> None:
@@ -284,8 +375,19 @@ class _CallVoiceBridge:
 
     async def _pump_provider_events(self) -> None:
         assert self.provider is not None
+        last_audio_log = 0.0
         async for event in self.provider.events():
             if event.type == ProviderEventType.AUDIO_DELTA:
+                # Marks when a burst of speech starts (once per burst, not per chunk, to
+                # stay readable) - this is what proved live (2026-09-06) that Gemini Live
+                # emits zero audio between a tool call starting and both tools finishing:
+                # the two-turn split in _on_assistant_turn_done() exists because of what
+                # this log showed. Worth keeping while that area of the design is still
+                # moving (e.g. mid-tool filler chatter, see the model notes below).
+                now = perf_counter()
+                if now - last_audio_log > 1.0:
+                    logger.info("call_voice_bridge_audio_burst", call_id=self.call_id)
+                last_audio_log = now
                 await self.store.publish(
                     self.call_id,
                     {
@@ -301,22 +403,128 @@ class _CallVoiceBridge:
             elif event.type == ProviderEventType.TEXT_DONE:
                 text = event.text or self._assistant_text
                 self._assistant_text = ""
-                await self.service.assistant_finished(self.call_id, text)
+                await self._on_assistant_turn_done(text)
             elif event.type == ProviderEventType.AUDIO_DONE:
                 if self._assistant_text:
-                    await self.service.assistant_finished(self.call_id, self._assistant_text)
+                    text = self._assistant_text
                     self._assistant_text = ""
+                    await self._on_assistant_turn_done(text)
             elif event.type == ProviderEventType.INPUT_TRANSCRIPT_DONE:
                 if event.text:
                     await self.service.log_user_voice(self.call_id, event.text)
             elif event.type == ProviderEventType.USAGE and event.usage is not None:
                 await self._persist_usage(event.usage)
+            elif event.type == ProviderEventType.TOOL_CALL:
+                await self._handle_tool_call(event)
             elif event.type == ProviderEventType.ERROR:
                 await self.store.publish(
                     self.call_id, {"type": "call.error", "message": event.text or "assistant_error"}
                 )
                 if not event.retryable:
                     return
+
+    async def _on_assistant_turn_done(self, text: str) -> None:
+        assert self.provider is not None
+        await self.service.assistant_finished(self.call_id, text)
+        self._assistant_turn_count += 1
+        # Turn 1 is the proactive kickoff greeting (_connect()'s send_text). Turn 2 is
+        # whatever the model said in response to the group's confirmation - per
+        # CALL_GUIDE_PROMPT that should be *only* the "give me a moment" line, no tool
+        # call. If it really came back tool-free, nudge research now as its own turn so
+        # the announcement's audio has already gone out before the long wait starts.
+        # (If the model ignored the instruction and called a tool anyway,
+        # _handle_tool_call() already set _research_kicked_off - this is a no-op then.)
+        if self._assistant_turn_count == 2 and not self._research_kicked_off:
+            self._research_kicked_off = True
+            await self.provider.send_text(
+                "[instruccion de sistema, no la leas en voz alta: ahora si, documenta a "
+                "fondo el lugar y decide el plan de la visita, como tienes indicado]"
+            )
+
+    async def _handle_tool_call(self, event: ProviderEvent) -> None:
+        """Run a document_poi/plan_poi_visit/find_activities call the model made.
+
+        None of calls' tools set requires_approval (see entrypoints/seed.py's TOOLS) —
+        voice/gateway.py's approval round-trip (pending_tools, tool.approval_required)
+        doesn't apply here, only the run-and-submit half of it.
+        """
+        assert self.provider is not None
+        self._research_kicked_off = True
+        definition = next(
+            (tool for tool in self.tool_definitions if tool.get("code") == event.tool_name), None
+        )
+        if definition is None or not event.tool_call_id:
+            logger.warning(
+                "call_voice_bridge_unknown_tool", call_id=self.call_id, tool=event.tool_name
+            )
+            return
+        started_at = perf_counter()
+        try:
+            result = await self.tool_dispatcher.execute(
+                definition["handler_code"], event.arguments or {}, self.tool_context, self.locale
+            )
+        except Exception as error:  # noqa: BLE001 - the call must not die from a bad tool run
+            logger.warning(
+                "call_voice_bridge_tool_failed",
+                call_id=self.call_id,
+                tool=event.tool_name,
+                error=str(error),
+            )
+            with contextlib.suppress(Exception):
+                await self.provider.submit_tool_result(
+                    event.tool_call_id, {"_tool_name": event.tool_name, "error": str(error)}
+                )
+            return
+        usage = self.tool_dispatcher.last_usage
+        if usage is not None and usage.billable:
+            await self._persist_tool_usage(
+                event.tool_name or "unknown", definition["handler_code"], usage
+            )
+        result["_tool_name"] = event.tool_name
+        await self.provider.submit_tool_result(event.tool_call_id, result)
+        logger.info(
+            "call_voice_bridge_tool_completed",
+            call_id=self.call_id,
+            tool=event.tool_name,
+            elapsed_ms=round((perf_counter() - started_at) * 1000, 1),
+        )
+
+    async def _persist_tool_usage(
+        self, tool_name: str, handler_code: str, usage: ToolUsage
+    ) -> None:
+        if self.voice_session_id is None or self.host_id is None:
+            return
+        async with self.database.sessions() as session:
+            model = await session.scalar(
+                select(AIModel)
+                .join(AIProvider, AIProvider.id == AIModel.provider_id)
+                .where(AIProvider.code == "openai", AIModel.external_id == self.settings.tool_model)
+            )
+            if model is None:
+                logger.warning(
+                    "call_voice_bridge_tool_usage_unpriced",
+                    call_id=self.call_id,
+                    tool_model=self.settings.tool_model,
+                )
+                return
+            session.add(
+                UsageEvent(
+                    user_id=self.host_id,
+                    voice_session_id=self.voice_session_id,
+                    provider_id=model.provider_id,
+                    model_id=model.id,
+                    dedupe_key=f"{self.trace_id}:tool:{uuid4().hex}",
+                    interaction_type="tool_call",
+                    text_input_tokens=usage.text_input_tokens,
+                    cached_text_input_tokens=usage.cached_text_input_tokens,
+                    text_output_tokens=usage.text_output_tokens,
+                    raw_usage_json={"tool": tool_name, "handler": handler_code, **usage.raw},
+                    status=UsageStatus.PENDING,
+                    trace_id=self.trace_id,
+                )
+            )
+            await session.commit()
+        logger.info("call_voice_bridge_tool_usage_recorded", call_id=self.call_id, tool=tool_name)
 
     async def _watch_room_ended(self) -> None:
         while True:

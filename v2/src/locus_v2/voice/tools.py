@@ -149,7 +149,19 @@ ordenadas con qué mirar y qué contar. Sé concreto y útil para que otro model
                 # document_poi burned all 1792 of its 1800-token budget on reasoning and
                 # returned an empty answer, a billed call with nothing to show for it. The
                 # same failure mode as affiliates/service.py's web_search call (220 -> 1500).
-                max_output_tokens=4000,
+                # Raised again to 8000 for the group-call guide's opening research pass
+                # (CALL_GUIDE_PROMPT explicitly asks it to document thoroughly before ever
+                # speaking) - it's a single call at the start of the tour, not per turn, so
+                # a generous ceiling here is cheap insurance against another silent 0-char
+                # answer rather than real spend (the model still stops as soon as it's done).
+                max_output_tokens=8000,
+                # Left at the model's default effort (unset) this took 45-58s live - all
+                # spent on hidden reasoning tokens a fact lookup doesn't need, and long
+                # enough that a live group call sits in dead air. chat/providers already
+                # sets reasoning_effort=low for this same model (openai_responses.py);
+                # this tool never inherited it. "low" is plenty for factual synthesis,
+                # not multi-step logic - confirmed live it still returns a full answer.
+                reasoning={"effort": "low"},
             )
             self._accumulate_usage(usage_from_openai_response(response))
             return response.output_text.strip()

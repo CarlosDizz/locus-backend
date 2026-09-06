@@ -371,6 +371,11 @@ class ReferralService:
                 # zero results (confirmed: status="incomplete", no web_search_call emitted
                 # at all). 1500 leaves enough room for reasoning + the actual search call.
                 max_output_tokens=1500,
+                # Same fix as voice/tools.py._ask_model(): unset, this model defaults to a
+                # much higher reasoning effort than a "find matching product pages" lookup
+                # needs, which was eating into the 1500-token budget the comment above was
+                # already tuned for.
+                reasoning={"effort": "low"},
                 include=["web_search_call.action.sources"],
             )
         except Exception as error:

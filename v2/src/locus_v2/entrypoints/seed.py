@@ -177,6 +177,39 @@ Responde en {locale} sobre {poi_name}. Documenta los hechos con las herramientas
 disponibles, evita relleno genérico y ofrece enlaces útiles solo cuando encajen
 de forma natural."""
 
+CALL_GUIDE_PROMPT = """Eres Locus, guía turístico dirigiendo una llamada en grupo sobre
+{poi_name}. Hablas en {locale}. Puede haber varias personas escuchando y hablando a la vez.
+
+Al conectar la llamada nadie ha dicho nada todavía. Saluda de forma breve y natural,
+preséntate como guía de {poi_name} y pregunta si ya están todos antes de continuar. No
+documentes el lugar ni empieces a explicar nada todavía: solo saluda y pregunta.
+
+En cuanto alguien del grupo confirme que ya están todos (aunque no use esas palabras
+exactas, cualquier respuesta afirmativa vale), responde ÚNICAMENTE con un aviso breve y
+coloquial — algo como "dame un momento que me documente y ahora empezamos" — y nada más:
+NO uses ninguna herramienta todavía en esa respuesta, aunque tengas ganas de investigar ya.
+Investigar tarda y el grupo necesita oírte decir eso antes de quedarse en silencio, no
+después. El sistema te avisará con una instrucción explícita cuando debas empezar a
+documentar de verdad — hasta entonces, no llames a ninguna herramienta.
+
+Cuando el sistema te indique que documentes, usa la herramienta de documentación para
+investigar el lugar a fondo antes de hablar: pide hechos concretos, fechas, arquitectura y
+contexto histórico fiable, sin miedo a pedir una respuesta extensa — es una única
+investigación al principio de la llamada, no cada turno. Después, usa la herramienta de
+planificación de visita para decidir cómo contarlo: si el
+lugar tiene distintos espacios o partes que se recorren caminando (una catedral, un museo,
+un yacimiento arqueológico), organízalo por paradas y guía una por una. Al terminar de
+explicar una parada, antes de nada indícales por dónde tienen que ir físicamente para
+llegar a la siguiente (una referencia concreta y corta: "giren a la derecha hacia la
+arena", "bajen las escaleras que tienen enfrente", "sigan de frente hasta la fachada
+norte") — no des la explicación de la siguiente parada hasta que confirmen que ya están
+allí. Si es un punto único que se ve entero desde donde están (una fuente, una estatua,
+un monumento aislado), cuéntalo de una vez, completo, sin trocearlo.
+
+Cualquiera del grupo puede interrumpirte en cualquier momento para preguntar, pedir que
+repitas o cambiar de tema. Cuando pase, atiende lo que te pidan antes de retomar el hilo —
+no ignores la interrupción ni sigas como si no hubiera pasado nada."""
+
 TOOLS = (
     {
         "code": "document_poi",
@@ -498,6 +531,86 @@ async def seed() -> None:
                         published_at=utc_now(),
                     )
                 )
+
+        call_definition = await session.scalar(
+            select(PromptDefinition).where(PromptDefinition.code == "voice.call.guide")
+        )
+        if call_definition is None:
+            call_definition = PromptDefinition(
+                code="voice.call.guide",
+                name="Guía de voz para llamadas de grupo",
+                description=(
+                    "Variante de voice.poi.guide para calls/ (multi-participante): saluda y "
+                    "espera confirmación del grupo antes de documentar y narrar, en vez de "
+                    "responder directamente a la primera pregunta como hace el guía en solitario."
+                ),
+                service_kind=ServiceKind.VOICE,
+            )
+            session.add(call_definition)
+            await session.flush()
+
+        call_prompt = await session.scalar(
+            select(PromptVersion)
+            .where(
+                PromptVersion.definition_id == call_definition.id,
+                PromptVersion.status == PublicationStatus.PUBLISHED,
+            )
+            .order_by(PromptVersion.version.desc())
+        )
+        if call_prompt is None:
+            call_prompt = PromptVersion(
+                definition_id=call_definition.id,
+                version=1,
+                status=PublicationStatus.PUBLISHED,
+                content=CALL_GUIDE_PROMPT,
+                variables_json={"required": ["locale", "poi_name"]},
+                tools_json=[
+                    _tool_snapshot(tools["document_poi"]),
+                    _tool_snapshot(tools["plan_poi_visit"]),
+                    _tool_snapshot(tools["find_activities"]),
+                ],
+                runtime_config_json=VOICE_RUNTIME_DEFAULTS,
+                published_at=utc_now(),
+            )
+            session.add(call_prompt)
+            await session.flush()
+        else:
+            if call_prompt.content != CALL_GUIDE_PROMPT:
+                # Design is still settling (2026-09-06) - self-heal the published row in
+                # place instead of bumping the version each iteration, same reasoning as
+                # the tools_json self-heal above: nothing has published a v2 of this one.
+                call_prompt.content = CALL_GUIDE_PROMPT
+            if not call_prompt.tools_json:
+                call_prompt.tools_json = [
+                    _tool_snapshot(tools["document_poi"]),
+                    _tool_snapshot(tools["plan_poi_visit"]),
+                    _tool_snapshot(tools["find_activities"]),
+                ]
+            if not call_prompt.runtime_config_json:
+                call_prompt.runtime_config_json = VOICE_RUNTIME_DEFAULTS
+
+        call_profile = await session.scalar(
+            select(RoutingProfile).where(RoutingProfile.code == "voice.call.local")
+        )
+        if call_profile is None:
+            session.add(
+                RoutingProfile(
+                    code="voice.call.local",
+                    name="Group call guide local",
+                    experience_code="group_call_guide",
+                    service_kind=ServiceKind.VOICE,
+                    environment=settings.env,
+                    status=PublicationStatus.PUBLISHED,
+                    voice_mode=VoiceMode.PUSH_TO_TALK,
+                    primary_model_id=models["gemini_live"].id,
+                    fallback_model_id=models["openai_realtime"].id,
+                    prompt_version_id=call_prompt.id,
+                    config_json={"audio_persistence": False},
+                    published_at=utc_now(),
+                )
+            )
+        else:
+            call_profile.prompt_version_id = call_prompt.id
 
         chat_definition = await session.scalar(
             select(PromptDefinition).where(PromptDefinition.code == "chat.poi.guide")

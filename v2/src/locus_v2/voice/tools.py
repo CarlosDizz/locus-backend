@@ -4,6 +4,7 @@ from time import perf_counter
 import structlog
 from openai import AsyncOpenAI
 
+from locus_v2.affiliates.service import ReferralService
 from locus_v2.config import Settings
 
 logger = structlog.get_logger()
@@ -37,6 +38,8 @@ class VoiceToolDispatcher:
                     result = await self._research(arguments, context, locale)
                 elif handler_code == "catalog.plan_poi_visit":
                     result = await self._plan_visit(arguments, context, locale)
+                elif handler_code == "affiliates.find_activities":
+                    result = await self._find_activities(arguments, context)
                 else:
                     raise VoiceToolError(
                         f"Unsupported voice tool handler: {handler_code}"
@@ -104,6 +107,18 @@ ordenadas con qué mirar y qué contar. Sé concreto y útil para que otro model
             "answer": await self._ask_model(prompt),
             "model": self.settings.tool_model,
         }
+
+    async def _find_activities(self, arguments: dict, context: dict) -> dict:
+        referrals = ReferralService(self.settings)
+        result = await referrals.activity_referrals(
+            session_id="",
+            query=arguments.get("query", ""),
+            poi_name=arguments.get("poi_name") or context.get("name", ""),
+            city_name=arguments.get("city_name") or context.get("city_name", ""),
+            intent=arguments.get("intent", ""),
+        )
+        result.setdefault("answer", "")
+        return result
 
     async def _ask_model(self, prompt: str) -> str:
         if self.settings.openai_api_key is None:

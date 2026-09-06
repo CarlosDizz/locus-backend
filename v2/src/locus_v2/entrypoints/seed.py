@@ -215,15 +215,26 @@ TOOLS = (
     {
         "code": "find_activities",
         "name": "Buscar actividades",
-        "description": "Busca actividades reservables relacionadas con el lugar o la ciudad.",
+        "description": (
+            "Busca actividades, entradas o tours reservables (GetYourGuide) "
+            "relacionados con el lugar o la ciudad."
+        ),
         "handler_code": "affiliates.find_activities",
-        "service_kinds": [ServiceKind.CHAT],
+        "service_kinds": [ServiceKind.CHAT, ServiceKind.VOICE],
         "requires_approval": False,
         "schema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string"},
-                "city": {"type": "string"},
+                "query": {
+                    "type": "string",
+                    "description": "Qué actividad, entrada o experiencia busca la persona",
+                },
+                "poi_name": {"type": "string", "description": "Nombre del lugar, si aplica"},
+                "city_name": {"type": "string", "description": "Ciudad donde buscar"},
+                "intent": {
+                    "type": "string",
+                    "description": "Tipo de experiencia: ticket, tour, transporte...",
+                },
             },
             "required": ["query"],
             "additionalProperties": False,
@@ -392,11 +403,19 @@ async def seed() -> None:
             session.add(definition)
             await session.flush()
 
+        # Look up whatever version is actually PUBLISHED, not hardcoded version==1: a
+        # real admin-panel "advance prompt version" publish (which happened for this
+        # exact prompt — version 2 is live) retires version 1 and repoints routing
+        # profiles to the new row. Self-healing version==1 unconditionally would patch
+        # a retired row nothing actually uses, exactly the bug found on 2026-09-06 when
+        # find_activities silently never reached the live voice prompt.
         prompt = await session.scalar(
-            select(PromptVersion).where(
+            select(PromptVersion)
+            .where(
                 PromptVersion.definition_id == definition.id,
-                PromptVersion.version == 1,
+                PromptVersion.status == PublicationStatus.PUBLISHED,
             )
+            .order_by(PromptVersion.version.desc())
         )
         if prompt is None:
             prompt = PromptVersion(
@@ -408,6 +427,7 @@ async def seed() -> None:
                 tools_json=[
                     _tool_snapshot(tools["document_poi"]),
                     _tool_snapshot(tools["plan_poi_visit"]),
+                    _tool_snapshot(tools["find_activities"]),
                 ],
                 runtime_config_json=VOICE_RUNTIME_DEFAULTS,
                 published_at=utc_now(),
@@ -419,7 +439,13 @@ async def seed() -> None:
                 prompt.tools_json = [
                     _tool_snapshot(tools["document_poi"]),
                     _tool_snapshot(tools["plan_poi_visit"]),
+                    _tool_snapshot(tools["find_activities"]),
                 ]
+            elif not any(tool.get("code") == "find_activities" for tool in prompt.tools_json):
+                # find_activities (GetYourGuide referrals) was added to voice after this
+                # prompt was first seeded — self-heal an already-published row instead of
+                # requiring a manual version bump for a seed-managed tool list.
+                prompt.tools_json = [*prompt.tools_json, _tool_snapshot(tools["find_activities"])]
             if not prompt.runtime_config_json:
                 prompt.runtime_config_json = VOICE_RUNTIME_DEFAULTS
 
@@ -487,10 +513,12 @@ async def seed() -> None:
             await session.flush()
 
         chat_prompt = await session.scalar(
-            select(PromptVersion).where(
+            select(PromptVersion)
+            .where(
                 PromptVersion.definition_id == chat_definition.id,
-                PromptVersion.version == 1,
+                PromptVersion.status == PublicationStatus.PUBLISHED,
             )
+            .order_by(PromptVersion.version.desc())
         )
         if chat_prompt is None:
             chat_prompt = PromptVersion(

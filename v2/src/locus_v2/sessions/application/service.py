@@ -89,6 +89,10 @@ class MapSessionService:
         row = await self.session.get(MapSession, session_id.upper())
         return _serialize(row) if row is not None else None
 
+    async def get_or_create(self, session_id: str) -> SessionStateView:
+        row = await self._get_or_create(session_id)
+        return _serialize(row)
+
     async def update_session(
         self,
         session_id: str,

@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     billing_min_reserve_cents: int = 25
     billing_manual_topups_enabled: bool = False
 
+    getyourguide_referrals_enabled: bool = True
+    getyourguide_partner_id: str = ""
+
     app_android_latest_version_code: int = 10
     app_android_update_url: str = ""
     app_ios_latest_build: int = 1

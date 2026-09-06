@@ -53,6 +53,9 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 # Embedded static HTML strings, not code — wrapping them would just make the
 # markup harder to read without improving anything.
 "src/locus_v2/api/legal.py" = ["E501"]
+# Faithful line-by-line port of V1's dense referral heuristics (policy
+# strings, regexes, URL logic) — reformatting risks subtle behavior changes.
+"src/locus_v2/affiliates/service.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"

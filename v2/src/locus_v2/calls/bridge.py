@@ -9,18 +9,24 @@ does for the single-user POI guide, translating provider events back into the
 room's own event vocabulary (assistant.audio_chunk / assistant.transcript /
 assistant.done) so every connected participant sees the same thing.
 
-Scope note: tool calling (document_poi, plan_poi_visit, find_activities) and
-usage/billing persistence are intentionally not wired here yet — the prompt
-still renders and the model still answers from its own knowledge, but a call
-does not (yet) invoke catalog tools or record a UsageEvent the way voice
-sessions do. Image submissions are acknowledged but not analyzed: LiveProvider
-has no image-input method today.
+Usage/billing reuses the exact voice_sessions/usage_events path voice/gateway.py
+uses for the single-user POI guide: a VoiceSession row gives UsageEvent
+somewhere to point its required FK, and the billing worker (entrypoints/worker.py)
+picks up any usage_events row left PENDING here the same way it already
+processes chat_call/realtime_call rows — no worker change needed.
+
+Scope note: tool calling (document_poi, plan_poi_visit, find_activities) is
+intentionally not wired here yet — the prompt still renders and the model
+still answers from its own knowledge, but a call does not (yet) invoke
+catalog tools. Image submissions are acknowledged but not analyzed:
+LiveProvider has no image-input method today.
 """
 
 import asyncio
 import base64
 import contextlib
 from functools import partial
+from uuid import uuid4
 
 import structlog
 from sqlalchemy import select
@@ -28,12 +34,16 @@ from sqlalchemy.orm import joinedload
 
 from locus_v2.ai.enums import PublicationStatus, ServiceKind
 from locus_v2.ai.models import AIModel, RoutingProfile
+from locus_v2.billing.models import UsageEvent, UsageStatus
+from locus_v2.billing.pricing import NormalizedUsage
 from locus_v2.calls.models import CallError
 from locus_v2.calls.service import CallService
 from locus_v2.calls.store import RoomStore
 from locus_v2.config import Settings
 from locus_v2.infrastructure.database.session import Database
+from locus_v2.shared.clock import utc_now
 from locus_v2.shared.prompting import PromptRenderingError, render_prompt
+from locus_v2.voice.models import VoiceSession, VoiceSessionStatus
 from locus_v2.voice.protocol import AudioFormat
 from locus_v2.voice.providers.base import LiveProvider, LiveSessionConfig, ProviderEventType
 from locus_v2.voice.providers.factory import build_provider_registry
@@ -76,8 +86,13 @@ class _CallVoiceBridge:
         self.service = CallService(store, settings, consume=_ignore_consume)
         self.provider: LiveProvider | None = None
         self._assistant_text = ""
+        self.trace_id = uuid4().hex
+        self.host_id: int | None = None
+        self.model_id: int | None = None
+        self.voice_session_id: int | None = None
 
     async def run(self) -> None:
+        final_status = VoiceSessionStatus.COMPLETED
         try:
             self.provider = await self._connect()
         except CallError as error:
@@ -106,9 +121,14 @@ class _CallVoiceBridge:
                 if task is not watchdog_task:
                     with contextlib.suppress(Exception):
                         task.result()
+        except Exception:  # noqa: BLE001 - still need to close out the session below
+            final_status = VoiceSessionStatus.FAILED
+            raise
         finally:
             with contextlib.suppress(Exception):
                 await self.provider.close()
+            with contextlib.suppress(Exception):
+                await self._finish(final_status)
 
     async def _connect(self) -> LiveProvider:
         room = await self.store.get(self.call_id)
@@ -141,6 +161,28 @@ class _CallVoiceBridge:
             except PromptRenderingError as error:
                 raise CallError(str(error), 503) from error
             model = profile.primary_model
+            self.host_id = room.host_id
+            self.model_id = model.id
+            # config_snapshot_json.call_id is what mobile_billing.py's list_ledger() reads back
+            # as usage_call_id (falling back to the session's own public_id otherwise) - this is
+            # how the wallet page groups every charge from one call under a single card instead
+            # of listing each turn separately.
+            voice_session = VoiceSession(
+                user_id=self.host_id,
+                routing_profile_id=profile.id,
+                prompt_version_id=profile.prompt_version_id,
+                primary_model_id=model.id,
+                active_model_id=model.id,
+                status=VoiceSessionStatus.ACTIVE,
+                locale=room.language,
+                context_type="poi",
+                context_public_id=room.poi_public_id,
+                config_snapshot_json={"call_id": self.call_id},
+                started_at=utc_now(),
+            )
+            session.add(voice_session)
+            await session.commit()
+            self.voice_session_id = voice_session.id
         registry = build_provider_registry(self.settings)
         provider = registry.create(model.adapter_code)
         await provider.connect(
@@ -161,6 +203,54 @@ class _CallVoiceBridge:
         )
         await self.service.mark_ready(self.call_id)
         return provider
+
+    async def _finish(self, status: str) -> None:
+        if self.voice_session_id is None:
+            return
+        async with self.database.sessions() as session:
+            voice_session = await session.get(VoiceSession, self.voice_session_id)
+            if voice_session is not None and voice_session.ended_at is None:
+                voice_session.status = status
+                voice_session.ended_at = utc_now()
+                await session.commit()
+
+    async def _persist_usage(self, usage: NormalizedUsage) -> None:
+        if self.voice_session_id is None or self.model_id is None or self.host_id is None:
+            return
+        async with self.database.sessions() as session:
+            model = await session.get(AIModel, self.model_id)
+            if model is None:
+                return
+            session.add(
+                UsageEvent(
+                    user_id=self.host_id,
+                    voice_session_id=self.voice_session_id,
+                    provider_id=model.provider_id,
+                    model_id=model.id,
+                    dedupe_key=f"{self.trace_id}:{uuid4().hex}",
+                    interaction_type="realtime_call",
+                    text_input_tokens=usage.text_input_tokens,
+                    cached_text_input_tokens=usage.cached_text_input_tokens,
+                    text_output_tokens=usage.text_output_tokens,
+                    audio_input_tokens=usage.audio_input_tokens,
+                    cached_audio_input_tokens=usage.cached_audio_input_tokens,
+                    audio_output_tokens=usage.audio_output_tokens,
+                    image_input_tokens=usage.image_input_tokens,
+                    cached_image_input_tokens=usage.cached_image_input_tokens,
+                    audio_input_milliseconds=usage.audio_input_milliseconds,
+                    audio_output_milliseconds=usage.audio_output_milliseconds,
+                    tool_calls=usage.tool_calls,
+                    raw_usage_json=usage.raw,
+                    status=UsageStatus.PENDING,
+                    trace_id=self.trace_id,
+                )
+            )
+            await session.commit()
+        logger.info(
+            "call_voice_bridge_usage_recorded",
+            call_id=self.call_id,
+            voice_session_id=self.voice_session_id,
+        )
 
     async def _consume_commands(self) -> None:
         assert self.provider is not None
@@ -216,6 +306,11 @@ class _CallVoiceBridge:
                 if self._assistant_text:
                     await self.service.assistant_finished(self.call_id, self._assistant_text)
                     self._assistant_text = ""
+            elif event.type == ProviderEventType.INPUT_TRANSCRIPT_DONE:
+                if event.text:
+                    await self.service.log_user_voice(self.call_id, event.text)
+            elif event.type == ProviderEventType.USAGE and event.usage is not None:
+                await self._persist_usage(event.usage)
             elif event.type == ProviderEventType.ERROR:
                 await self.store.publish(
                     self.call_id, {"type": "call.error", "message": event.text or "assistant_error"}

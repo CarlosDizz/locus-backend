@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from locus_v2.ai.models import AIModel
+from locus_v2.ai.models import AIModel, AIProvider
 from locus_v2.billing.models import UsageEvent, UsageStatus
 from locus_v2.config import Settings
 from locus_v2.identity.models import User
@@ -458,6 +458,7 @@ class VoiceGateway:
                 },
             )
             raise
+        await self._persist_tool_usage(event.tool_name, definition["handler_code"])
         result["_tool_name"] = event.tool_name
         await self._persist_turn(
             VoiceTurnRole.TOOL,
@@ -579,6 +580,55 @@ class VoiceGateway:
                 "audio_input_tokens": usage.audio_input_tokens,
                 "audio_output_tokens": usage.audio_output_tokens,
             },
+        )
+
+    async def _persist_tool_usage(self, tool_name: str, handler_code: str) -> None:
+        """Bill the plain OpenAI call a voice tool just made on its own.
+
+        VoiceToolDispatcher.execute() (voice/tools.py) calls the OpenAI Responses
+        API directly for document_poi/plan_poi_visit/find_activities - outside
+        the LiveProvider abstraction, so _persist_usage() above never sees it.
+        That cost was going completely unbilled until this existed.
+        """
+        usage = self.tools.last_usage
+        if usage is None or not usage.billable or self.voice_session is None:
+            return
+        async with self.database.sessions() as session:
+            model = await session.scalar(
+                select(AIModel)
+                .join(AIProvider, AIProvider.id == AIModel.provider_id)
+                .where(AIProvider.code == "openai", AIModel.external_id == self.settings.tool_model)
+            )
+            if model is None:
+                logger.warning(
+                    "voice_tool_usage_unpriced",
+                    trace_id=self.trace_id,
+                    tool_model=self.settings.tool_model,
+                )
+                return
+            session.add(
+                UsageEvent(
+                    user_id=self.user.id,
+                    voice_session_id=self.voice_session.id,
+                    provider_id=model.provider_id,
+                    model_id=model.id,
+                    dedupe_key=f"{self.trace_id}:tool:{uuid4().hex}",
+                    interaction_type="tool_call",
+                    text_input_tokens=usage.text_input_tokens,
+                    cached_text_input_tokens=usage.cached_text_input_tokens,
+                    text_output_tokens=usage.text_output_tokens,
+                    raw_usage_json={"tool": tool_name, "handler": handler_code, **usage.raw},
+                    status=UsageStatus.PENDING,
+                    trace_id=self.trace_id,
+                )
+            )
+            await session.commit()
+        logger.info(
+            "voice_tool_usage_recorded",
+            trace_id=self.trace_id,
+            tool=tool_name,
+            text_input_tokens=usage.text_input_tokens,
+            text_output_tokens=usage.text_output_tokens,
         )
 
     async def _finish(self, status: str) -> None:

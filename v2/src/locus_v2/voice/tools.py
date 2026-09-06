@@ -6,6 +6,7 @@ from openai import AsyncOpenAI
 
 from locus_v2.affiliates.service import ReferralService
 from locus_v2.config import Settings
+from locus_v2.shared.openai_usage import ToolUsage, usage_from_openai_response
 
 logger = structlog.get_logger()
 
@@ -17,6 +18,11 @@ class VoiceToolError(RuntimeError):
 class VoiceToolDispatcher:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        # Set by execute() on every call - real cost incurred by the plain OpenAI calls
+        # below, outside the LiveProvider abstraction whose usage voice/gateway.py's
+        # _persist_usage() already captures. Read this right after execute() returns
+        # and bill it the same way, or the tool call is free money out the door.
+        self.last_usage: ToolUsage | None = None
 
     async def execute(
         self,
@@ -25,6 +31,7 @@ class VoiceToolDispatcher:
         context: dict,
         locale: str,
     ) -> dict:
+        self.last_usage = None
         started_at = perf_counter()
         logger.info(
             "voice_tool_started",
@@ -70,8 +77,12 @@ class VoiceToolDispatcher:
             model=self.settings.tool_model,
             elapsed_ms=round((perf_counter() - started_at) * 1000, 1),
             answer_chars=len(result.get("answer", "")),
+            billable=bool(self.last_usage and self.last_usage.billable),
         )
         return result
+
+    def _accumulate_usage(self, usage: ToolUsage) -> None:
+        self.last_usage = usage if self.last_usage is None else self.last_usage + usage
 
     async def _research(self, arguments: dict, context: dict, locale: str) -> dict:
         question = arguments.get("question") or "Historia y detalles relevantes del lugar"
@@ -88,9 +99,10 @@ Idioma de respuesta: {locale}
 
 Devuelve hechos concretos, fechas, protagonistas, contexto y detalles observables. No escribas
 una introducción ni menciones limitaciones. Si un dato no es fiable, omítelo."""
+        answer = await self._ask_model(prompt)
         return {
             "kind": "poi_research",
-            "answer": await self._ask_model(prompt),
+            "answer": answer,
             "model": self.settings.tool_model,
         }
 
@@ -101,10 +113,11 @@ una introducción ni menciones limitaciones. Si un dato no es fiable, omítelo."
 en {context.get('city_name', '')}. Modo: {mode}. Intención: {intent}. Idioma: {locale}.
 Si es scene, crea una secuencia natural de observación y relato. Si es stops, devuelve paradas
 ordenadas con qué mirar y qué contar. Sé concreto y útil para que otro modelo lo narre en vivo."""
+        answer = await self._ask_model(prompt)
         return {
             "kind": "poi_visit_plan",
             "mode": mode,
-            "answer": await self._ask_model(prompt),
+            "answer": answer,
             "model": self.settings.tool_model,
         }
 
@@ -117,6 +130,9 @@ ordenadas con qué mirar y qué contar. Sé concreto y útil para que otro model
             city_name=arguments.get("city_name") or context.get("city_name", ""),
             intent=arguments.get("intent", ""),
         )
+        usage = result.pop("_usage", None)
+        if usage is not None:
+            self._accumulate_usage(usage)
         result.setdefault("answer", "")
         return result
 
@@ -128,8 +144,14 @@ ordenadas con qué mirar y qué contar. Sé concreto y útil para que otro model
             response = await client.responses.create(
                 model=self.settings.tool_model,
                 input=prompt,
-                max_output_tokens=1800,
+                # tool_model (gpt-5-mini) is a reasoning model that spends hidden reasoning
+                # tokens before writing any visible answer - confirmed live (2026-09-06):
+                # document_poi burned all 1792 of its 1800-token budget on reasoning and
+                # returned an empty answer, a billed call with nothing to show for it. The
+                # same failure mode as affiliates/service.py's web_search call (220 -> 1500).
+                max_output_tokens=4000,
             )
+            self._accumulate_usage(usage_from_openai_response(response))
             return response.output_text.strip()
         finally:
             await client.close()

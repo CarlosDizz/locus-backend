@@ -26,6 +26,7 @@ from openai import AsyncOpenAI
 
 from locus_v2.config import Settings
 from locus_v2.sessions.application.service import MapSessionService
+from locus_v2.shared.openai_usage import ToolUsage, usage_from_openai_response
 from locus_v2.shared.text import clean_text
 
 logger = structlog.get_logger()
@@ -192,9 +193,13 @@ class ReferralService:
                     ),
                 }
 
-        web_links = await self._search_getyourguide_product_links(
+        web_links, usage = await self._search_getyourguide_product_links(
             query=search_text, poi_name=clean_poi, city_name=clean_city, intent=intent, max_results=max_results
         )
+        # The web_search call above costs real tokens whether or not it finds a link (the
+        # fallback branch below still made the same call) - _usage rides along on every
+        # return path so the caller can bill it. VoiceToolDispatcher pops this key before
+        # the result ever reaches the model.
         if web_links:
             return {
                 "ok": True,
@@ -206,6 +211,7 @@ class ReferralService:
                     "Presentalos como enlaces Markdown clicables con titulo humano: [titulo](url), no como busqueda. "
                     "No uses backticks para sustituir el enlace. Si dudas de encaje, ofrece tambien contrastar la web oficial."
                 ),
+                "_usage": usage,
             }
 
         fallback_link = self._fallback_getyourguide_search_link(search_text, poi_name=clean_poi, city_name=clean_city)
@@ -219,6 +225,7 @@ class ReferralService:
                 "de GetYourGuide, no una entrada oficial ni una recomendacion garantizada. Presentalo como opcion "
                 "secundaria con lenguaje honesto: 'ver opciones en GetYourGuide'."
             ),
+            "_usage": usage,
         }
 
     def _infer_poi_access_profile(
@@ -319,9 +326,9 @@ class ReferralService:
 
     async def _search_getyourguide_product_links(
         self, *, query: str, poi_name: str, city_name: str, intent: str, max_results: int
-    ) -> list[AccessReferralLink]:
+    ) -> tuple[list[AccessReferralLink], ToolUsage]:
         if self.settings.openai_api_key is None:
-            return []
+            return [], ToolUsage()
         client = AsyncOpenAI(api_key=self.settings.openai_api_key.get_secret_value())
         try:
             response = await client.responses.create(
@@ -368,10 +375,11 @@ class ReferralService:
             )
         except Exception as error:
             logger.warning("referral_websearch_failed", query=query, error=str(error))
-            return []
+            return [], ToolUsage()
         finally:
             await client.close()
 
+        usage = usage_from_openai_response(response)
         candidates = self._extract_web_sources(response)
         links: list[AccessReferralLink] = []
         seen_urls: set[str] = set()
@@ -399,7 +407,7 @@ class ReferralService:
             )
             if len(links) >= max(1, min(max_results, 5)):
                 break
-        return links
+        return links, usage
 
     def _fallback_getyourguide_search_link(
         self, query: str, *, poi_name: str, city_name: str

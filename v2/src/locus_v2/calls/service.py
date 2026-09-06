@@ -193,6 +193,24 @@ class CallService:
 
         return await self.store.change(call_id, change)
 
+    async def log_user_voice(self, call_id: str, text: str) -> Room:
+        """Record what the current speaker actually said, once the provider transcribes it.
+
+        event()'s audio.chunk/audio.commit branches only move floor state and
+        forward raw audio to the provider — nothing appended a log entry for a
+        voice turn, so the shared log showed the assistant answering out of
+        nowhere with no record of the question that prompted it. The bridge
+        calls this from ProviderEventType.INPUT_TRANSCRIPT_DONE once Gemini
+        hands back the transcript; room.speaker_id (read fresh in this
+        transaction) attributes it to whoever was actually holding the floor.
+        """
+
+        def change(room, commands, events):
+            if room.status != "ended" and text:
+                room.append_log("user-voice", text, room.speaker_id)
+
+        return await self.store.change(call_id, change)
+
     async def assistant_finished(self, call_id: str, text: str) -> Room:
         """Close out the assistant's turn once the live provider stops speaking.
 

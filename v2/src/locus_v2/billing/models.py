@@ -141,3 +141,4 @@ class LedgerEntry(TimestampMixin, Base):
     trace_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
 
     wallet: Mapped[Wallet] = relationship(back_populates="ledger_entries")
+    usage_event: Mapped["UsageEvent | None"] = relationship(lazy="joined")

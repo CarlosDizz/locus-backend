@@ -14,6 +14,7 @@ from locus_v2.api.admin_logs import router as admin_logs_router
 from locus_v2.api.admin_users import router as admin_users_router
 from locus_v2.api.app_info import router as app_info_router
 from locus_v2.api.auth import router as mobile_auth_router
+from locus_v2.api.billing import router as mobile_billing_router
 from locus_v2.api.health import router as health_router
 from locus_v2.api.legal import router as legal_router
 from locus_v2.config import get_settings
@@ -56,3 +57,4 @@ app.include_router(admin_users_router)
 app.include_router(app_info_router)
 app.include_router(legal_router)
 app.include_router(mobile_auth_router)
+app.include_router(mobile_billing_router)

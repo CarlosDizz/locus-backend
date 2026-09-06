@@ -245,10 +245,14 @@ Estado: parcialmente **probado** (conectado a datos reales), resto **construido*
       (chat vía Responses, voz vía el mismo `ProviderRegistry`/`LiveProvider` que usa
       `/ws/v2/live`), espera a que el worker de billing lo cobre y muestra respuesta, tokens
       y coste en el momento.
-- [ ] Pedido explícito (2026-09-05): desde el mapa de Ciudades y POIs, poder lanzar una
-      llamada real de chat o voz sobre un POI concreto (usando su prompt y contexto real,
-      no el prompt neutro de "Probar proveedor") para ajustar prompts y tools viendo el
-      comportamiento en caliente, directamente desde el panel.
+- [x] Pedido explícito (2026-09-05, hecho 2026-09-06): desde la ficha de un POI en
+      Ciudades y POIs, se puede lanzar una llamada real por WebSocket sobre ese POI
+      concreto (`PoiCallTestComponent`, contra `/ws/v2/live`, usando su prompt y contexto
+      real vía el `routing_profile` elegido — no el prompt neutro de "Probar proveedor").
+      Verificado en caliente por Playwright: sesión real, turno de texto, `VoiceSession`/
+      `VoiceTurn` persistidos. Tres routing profiles de prueba nuevos (OpenAI, Gemini, Mock
+      sin coste) para fijar el proveedor deliberadamente. No incluye la sala multiusuario
+      (eso es Capítulo 6).
 - [ ] CRUD de catálogo (sigue siendo explorador de solo lectura).
 - [ ] Historial de prompts navegable más allá de las versiones ya listadas, dashboard de
       salud más allá de Pulso.

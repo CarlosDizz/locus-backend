@@ -3,6 +3,7 @@ from typing import Annotated
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from locus_v2.api.admin_auth import require_admin
@@ -13,9 +14,11 @@ from locus_v2.catalog.admin import (
     AdminPoiPage,
 )
 from locus_v2.catalog.admin_sqlalchemy import SQLAlchemyAdminCatalogReader
+from locus_v2.catalog.admin_write import AdminCatalogWriteService, PoiUpdate, PoiUpdateError
 from locus_v2.catalog.bootstrap.dto import BootstrapResult
 from locus_v2.catalog.bootstrap.enrichment import CatalogEnrichmentService
 from locus_v2.catalog.bootstrap.service import CatalogBootstrapError, CatalogBootstrapService
+from locus_v2.catalog.models import PoiType
 from locus_v2.config import Settings, get_settings
 from locus_v2.identity.models import User
 from locus_v2.infrastructure.database.session import get_database, get_session
@@ -83,6 +86,49 @@ async def list_pois(
 
 @router.get("/pois/{poi_id}", response_model=AdminPoiDetail)
 async def poi_detail(poi_id: int, session: SessionDep) -> AdminPoiDetail:
+    result = await service(session).detail(poi_id)
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="POI not found")
+    return result
+
+
+class PoiTypeOption(BaseModel):
+    code: str
+    name: str
+
+
+@router.get("/poi-types", response_model=list[PoiTypeOption])
+async def list_poi_types(session: SessionDep) -> list[PoiTypeOption]:
+    rows = (await session.scalars(select(PoiType).order_by(PoiType.name))).all()
+    return [PoiTypeOption(code=row.code, name=row.name) for row in rows]
+
+
+class PoiUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=255)
+    names: dict[str, str] | None = None
+    short_description: str | None = Field(default=None, max_length=500)
+    short_descriptions: dict[str, str] | None = None
+    long_description: str | None = None
+    lat: str | None = None
+    lng: str | None = None
+    poi_type_code: str | None = None
+    is_active: bool | None = None
+    wikidata_id: str | None = Field(default=None, max_length=64)
+    wikipedia_title: str | None = Field(default=None, max_length=255)
+    google_place_id: str | None = Field(default=None, max_length=128)
+
+
+@router.put("/pois/{poi_id}", response_model=AdminPoiDetail)
+async def update_poi(
+    poi_id: int, payload: PoiUpdateRequest, session: SessionDep, admin: AdminDep
+) -> AdminPoiDetail:
+    try:
+        await AdminCatalogWriteService(session, admin.id).update_poi(
+            poi_id, PoiUpdate(**payload.model_dump())
+        )
+    except PoiUpdateError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+
     result = await service(session).detail(poi_id)
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="POI not found")

@@ -109,14 +109,71 @@
   <div class="backdrop" (click)="closePoi()"></div>
   <aside class="poi-detail">
     <button type="button" class="close" (click)="closePoi()">×</button>
-    <p class="eyebrow">FICHA DE LUGAR · {{ poi.type_name || 'SIN TIPO' }}</p>
-    <h2>{{ poi.name }}</h2>
-    <p class="location">{{ poi.city_name }} · {{ poi.lat }}, {{ poi.lng }}</p>
-    <p class="description">{{ poi.short_description || 'Sin descripción principal.' }}</p>
-    <section><p class="eyebrow">NOMBRES LOCALIZADOS</p>@for (name of poi.names | keyvalue; track name.key) {<div class="translation"><b>{{ name.key }}</b><span>{{ name.value }}</span></div>}@empty{<p class="empty-line">Sin traducciones.</p>}</section>
-    <section><p class="eyebrow">DESCRIPCIONES LOCALIZADAS</p>@for (description of poi.short_descriptions | keyvalue; track description.key) {<div class="translation"><b>{{ description.key }}</b><span>{{ description.value }}</span></div>}@empty{<p class="empty-line">Sin traducciones.</p>}</section>
-    <dl><div><dt>Fuente</dt><dd>{{ poi.source_of_truth }}</dd></div><div><dt>Wikidata</dt><dd>{{ poi.wikidata_id || '—' }}</dd></div><div><dt>Wikipedia</dt><dd>{{ poi.wikipedia_title || '—' }}</dd></div><div><dt>Google Place</dt><dd>{{ poi.google_place_id || '—' }}</dd></div></dl>
-    <details><summary>Metadatos técnicos</summary><pre>{{ formattedMetadata(poi) }}</pre></details>
-    <locus-poi-call-test [poi]="poi" />
+    @if (!editingPoi()) {
+      <p class="eyebrow">FICHA DE LUGAR · {{ poi.type_name || 'SIN TIPO' }}</p>
+      <div class="detail-title-row">
+        <h2>{{ poi.name }}</h2>
+        <button type="button" class="edit-toggle" (click)="startEdit()">Editar</button>
+      </div>
+      <p class="location">{{ poi.city_name }} · {{ poi.lat }}, {{ poi.lng }}</p>
+      <p class="description">{{ poi.short_description || 'Sin descripción principal.' }}</p>
+      <section><p class="eyebrow">NOMBRES LOCALIZADOS</p>@for (name of poi.names | keyvalue; track name.key) {<div class="translation"><b>{{ name.key }}</b><span>{{ name.value }}</span></div>}@empty{<p class="empty-line">Sin traducciones.</p>}</section>
+      <section><p class="eyebrow">DESCRIPCIONES LOCALIZADAS</p>@for (description of poi.short_descriptions | keyvalue; track description.key) {<div class="translation"><b>{{ description.key }}</b><span>{{ description.value }}</span></div>}@empty{<p class="empty-line">Sin traducciones.</p>}</section>
+      <dl><div><dt>Fuente</dt><dd>{{ poi.source_of_truth }}</dd></div><div><dt>Wikidata</dt><dd>{{ poi.wikidata_id || '—' }}</dd></div><div><dt>Wikipedia</dt><dd>{{ poi.wikipedia_title || '—' }}</dd></div><div><dt>Google Place</dt><dd>{{ poi.google_place_id || '—' }}</dd></div></dl>
+      <details><summary>Metadatos técnicos</summary><pre>{{ formattedMetadata(poi) }}</pre></details>
+      <locus-poi-call-test [poi]="poi" />
+    } @else {
+      <p class="eyebrow">EDITANDO · {{ poi.name }}</p>
+      <form class="poi-edit-form" (submit)="$event.preventDefault(); saveEdit()">
+        <label>Nombre<input type="text" [(ngModel)]="editForm.name" name="editName" required></label>
+        <div class="edit-row-2">
+          <label>Latitud<input type="text" [(ngModel)]="editForm.lat" name="editLat" placeholder="20.8846000"></label>
+          <label>Longitud<input type="text" [(ngModel)]="editForm.lng" name="editLng" placeholder="-103.8459000"></label>
+        </div>
+        <label>Tipo
+          <select [(ngModel)]="editForm.poi_type_code" name="editType">
+            <option value="">Sin tipo</option>
+            @for (type of poiTypes(); track type.code) {
+              <option [value]="type.code">{{ type.name }}</option>
+            }
+          </select>
+        </label>
+        <label class="active-toggle"><input type="checkbox" [(ngModel)]="editForm.is_active" name="editActive"><span>Activo (visible en la app)</span></label>
+        <label>Descripción corta<textarea rows="2" [(ngModel)]="editForm.short_description" name="editShort" maxlength="500"></textarea></label>
+        <label>Descripción larga<textarea rows="5" [(ngModel)]="editForm.long_description" name="editLong"></textarea></label>
+
+        <p class="eyebrow edit-section">Nombres localizados</p>
+        @for (row of editNames; track $index) {
+          <div class="edit-row-lang">
+            <input type="text" [(ngModel)]="row.lang" [name]="'nameLang' + $index" placeholder="es" maxlength="8">
+            <input type="text" [(ngModel)]="row.value" [name]="'nameValue' + $index" placeholder="Nombre en ese idioma">
+            <button type="button" class="row-remove" (click)="removeNameRow($index)" aria-label="Quitar">×</button>
+          </div>
+        }
+        <button type="button" class="row-add" (click)="addNameRow()">+ Añadir idioma</button>
+
+        <p class="eyebrow edit-section">Descripciones localizadas</p>
+        @for (row of editShortDescriptions; track $index) {
+          <div class="edit-row-lang">
+            <input type="text" [(ngModel)]="row.lang" [name]="'descLang' + $index" placeholder="es" maxlength="8">
+            <input type="text" [(ngModel)]="row.value" [name]="'descValue' + $index" placeholder="Descripción en ese idioma">
+            <button type="button" class="row-remove" (click)="removeDescriptionRow($index)" aria-label="Quitar">×</button>
+          </div>
+        }
+        <button type="button" class="row-add" (click)="addDescriptionRow()">+ Añadir idioma</button>
+
+        <p class="eyebrow edit-section">Identificadores externos</p>
+        <label>Wikidata<input type="text" [(ngModel)]="editForm.wikidata_id" name="editWikidata"></label>
+        <label>Wikipedia<input type="text" [(ngModel)]="editForm.wikipedia_title" name="editWikipedia"></label>
+        <label>Google Place<input type="text" [(ngModel)]="editForm.google_place_id" name="editGooglePlace"></label>
+
+        @if (editError()) { <p class="error">{{ editError() }}</p> }
+
+        <div class="edit-actions">
+          <button type="button" class="cancel" (click)="cancelEdit()">Cancelar</button>
+          <button type="submit" class="save" [disabled]="savingPoi()">{{ savingPoi() ? 'Guardando…' : 'Guardar cambios' }}</button>
+        </div>
+      </form>
+    }
   </aside>
 }

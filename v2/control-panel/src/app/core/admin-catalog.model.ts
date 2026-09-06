@@ -50,6 +50,26 @@ export interface AdminPoiDetail extends AdminPoiSummary {
   metadata: Record<string, unknown>;
 }
 
+export interface PoiTypeOption {
+  code: string;
+  name: string;
+}
+
+export interface PoiUpdateRequest {
+  name?: string | null;
+  names?: Record<string, string> | null;
+  short_description?: string | null;
+  short_descriptions?: Record<string, string> | null;
+  long_description?: string | null;
+  lat?: string | null;
+  lng?: string | null;
+  poi_type_code?: string | null;
+  is_active?: boolean | null;
+  wikidata_id?: string | null;
+  wikipedia_title?: string | null;
+  google_place_id?: string | null;
+}
+
 export interface BootstrapPoi {
   id: number;
   public_id: string;

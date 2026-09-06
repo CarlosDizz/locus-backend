@@ -10,6 +10,8 @@ import {
   AdminPoiPage,
   AdminPoiSummary,
   BootstrapResult,
+  PoiTypeOption,
+  PoiUpdateRequest,
 } from '../../core/admin-catalog.model';
 import { PoiMapPoint } from '../../core/admin-overview.model';
 import { PoiMapComponent } from '../maps/poi-map.component';
@@ -68,6 +70,14 @@ export class CatalogExplorerComponent {
   readonly seeding = signal(false);
   readonly seedResult = signal<BootstrapResult | null>(null);
   readonly seedError = signal<string | null>(null);
+
+  readonly editingPoi = signal(false);
+  readonly savingPoi = signal(false);
+  readonly editError = signal<string | null>(null);
+  readonly poiTypes = signal<PoiTypeOption[]>([]);
+  editForm = this.blankEditForm();
+  editNames: { lang: string; value: string }[] = [];
+  editShortDescriptions: { lang: string; value: string }[] = [];
 
   cityQuery = '';
   poiQuery = '';
@@ -159,6 +169,118 @@ export class CatalogExplorerComponent {
 
   closePoi(): void {
     this.selectedPoi.set(null);
+    this.editingPoi.set(false);
+  }
+
+  startEdit(): void {
+    const poi = this.selectedPoi();
+    if (!poi) return;
+    if (!this.poiTypes().length) this.loadPoiTypes();
+    this.editForm = {
+      name: poi.name,
+      short_description: poi.short_description,
+      long_description: poi.long_description,
+      lat: poi.lat === null ? '' : String(poi.lat),
+      lng: poi.lng === null ? '' : String(poi.lng),
+      poi_type_code: poi.type_code ?? '',
+      is_active: poi.is_active,
+      wikidata_id: poi.wikidata_id,
+      wikipedia_title: poi.wikipedia_title,
+      google_place_id: poi.google_place_id,
+    };
+    this.editNames = Object.entries(poi.names).map(([lang, value]) => ({ lang, value }));
+    this.editShortDescriptions = Object.entries(poi.short_descriptions).map(([lang, value]) => ({ lang, value }));
+    this.editError.set(null);
+    this.editingPoi.set(true);
+  }
+
+  cancelEdit(): void {
+    this.editingPoi.set(false);
+    this.editError.set(null);
+  }
+
+  loadPoiTypes(): void {
+    this.http.get<PoiTypeOption[]>('/admin/v2/catalog/poi-types').subscribe({
+      next: (types) => this.poiTypes.set(types),
+      error: () => this.poiTypes.set([]),
+    });
+  }
+
+  addNameRow(): void {
+    this.editNames = [...this.editNames, { lang: '', value: '' }];
+  }
+
+  removeNameRow(index: number): void {
+    this.editNames = this.editNames.filter((_, i) => i !== index);
+  }
+
+  addDescriptionRow(): void {
+    this.editShortDescriptions = [...this.editShortDescriptions, { lang: '', value: '' }];
+  }
+
+  removeDescriptionRow(index: number): void {
+    this.editShortDescriptions = this.editShortDescriptions.filter((_, i) => i !== index);
+  }
+
+  saveEdit(): void {
+    const poi = this.selectedPoi();
+    if (!poi) return;
+    this.savingPoi.set(true);
+    this.editError.set(null);
+
+    const payload: PoiUpdateRequest = {
+      name: this.editForm.name,
+      short_description: this.editForm.short_description,
+      long_description: this.editForm.long_description,
+      lat: this.editForm.lat,
+      lng: this.editForm.lng,
+      poi_type_code: this.editForm.poi_type_code || null,
+      is_active: this.editForm.is_active,
+      wikidata_id: this.editForm.wikidata_id,
+      wikipedia_title: this.editForm.wikipedia_title,
+      google_place_id: this.editForm.google_place_id,
+      names: this.rowsToRecord(this.editNames),
+      short_descriptions: this.rowsToRecord(this.editShortDescriptions),
+    };
+
+    this.http.put<AdminPoiDetail>(`/admin/v2/catalog/pois/${poi.id}`, payload).subscribe({
+      next: (updated) => {
+        this.selectedPoi.set(updated);
+        this.pois.update((items) =>
+          items.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)),
+        );
+        this.savingPoi.set(false);
+        this.editingPoi.set(false);
+      },
+      error: ({ error }) => {
+        this.editError.set(error?.detail ?? 'No se ha podido guardar el POI.');
+        this.savingPoi.set(false);
+      },
+    });
+  }
+
+  private rowsToRecord(rows: { lang: string; value: string }[]): Record<string, string> {
+    const record: Record<string, string> = {};
+    for (const row of rows) {
+      const lang = row.lang.trim().toLowerCase();
+      if (lang && row.value.trim()) record[lang] = row.value.trim();
+    }
+    return record;
+  }
+
+  private blankEditForm() {
+    return {
+      name: '',
+      short_description: '',
+      long_description: '',
+      lat: '',
+      lng: '',
+      poi_type_code: '',
+      is_active: true,
+      wikidata_id: '',
+      wikipedia_title: '',
+      google_place_id: '',
+    };
   }
 
   previous(): void {

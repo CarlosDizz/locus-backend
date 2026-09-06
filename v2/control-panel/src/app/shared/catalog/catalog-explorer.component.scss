@@ -34,3 +34,23 @@
 .seed-poi strong{display:block;font-size:10px}
 .seed-poi span{display:block;margin-top:4px;color:var(--locus-muted);font-size:7px;text-transform:uppercase;letter-spacing:.06em}
 @media(max-width:700px){.seed-fields{grid-template-columns:1fr 1fr}}
+
+.detail-title-row{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin:22px 0 7px}
+.detail-title-row h2{margin:0;max-width:400px}
+.edit-toggle{flex:none;height:32px;padding:0 14px;border:1px solid var(--locus-blue);background:transparent;color:var(--locus-blue);font:800 8px "Manrope";text-transform:uppercase;letter-spacing:.06em;cursor:pointer}
+.poi-edit-form{display:grid;gap:14px;margin-top:22px}
+.poi-edit-form label{display:grid;gap:6px;font-size:7px;text-transform:uppercase;letter-spacing:.08em;color:var(--locus-muted)}
+.poi-edit-form input[type="text"],.poi-edit-form select,.poi-edit-form textarea{padding:9px 10px;border:1px solid var(--locus-line);background:var(--locus-paper);font:500 10px "Manrope";color:var(--locus-ink)}
+.poi-edit-form textarea{resize:vertical;font-family:"Manrope"}
+.edit-row-2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.active-toggle{display:flex !important;flex-direction:row-reverse;justify-content:flex-end;align-items:center;gap:8px}
+.active-toggle input{accent-color:var(--locus-terracotta)}
+.edit-section{margin-top:6px}
+.edit-row-lang{display:grid;grid-template-columns:70px 1fr 28px;gap:8px;align-items:center}
+.edit-row-lang input{padding:8px 9px;border:1px solid var(--locus-line);background:var(--locus-paper);font:500 9px "Manrope"}
+.row-remove{width:28px;height:28px;border:1px solid var(--locus-line);background:transparent;color:var(--locus-terracotta);font-size:14px;cursor:pointer}
+.row-add{justify-self:start;border:0;background:none;color:var(--locus-blue);font:800 8px "Manrope";text-transform:uppercase;letter-spacing:.06em;cursor:pointer;padding:4px 0}
+.edit-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:6px;padding-top:16px;border-top:1px solid var(--locus-line)}
+.edit-actions .cancel{height:38px;padding:0 16px;border:1px solid var(--locus-line);background:transparent;color:var(--locus-muted);font:800 9px "Manrope";cursor:pointer}
+.edit-actions .save{height:38px;padding:0 18px;border:0;background:var(--locus-green);color:#fff;font:800 9px "Manrope";text-transform:uppercase;letter-spacing:.06em;cursor:pointer}
+.edit-actions .save:disabled{opacity:.6;cursor:default}

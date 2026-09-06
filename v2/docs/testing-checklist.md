@@ -181,9 +181,30 @@ Estado: **pendiente** el dominio V1-compatible; **probado** un slice mínimo int
 - [ ] Tools reenchufadas al chat (se resuelven en la config pero no se envían al modelo
       todavía; falta el bucle de tool-calling que sí tiene Voice).
 - [ ] Fallback provider como en Voice.
-- [ ] `POST /chat/setup`, `POST /chat/messages` compatibles con V1 (endpoint público real,
-      distinto de "Probar proveedor", que es solo de administración).
 - [ ] Tool `activity_referrals` (afiliación) enchufada al chat, no solo a voz.
+- **Hallazgo (2026-09-06), corrige el alcance de este capítulo**: `POST /chat/setup` y
+  `POST /chat/messages` de V1 NO son "chat sobre un POI" — son el chat de recomendaciones
+  del mapa de la pantalla de inicio de Ionic, y dependen de `session_id`/ubicación/perfil
+  (el dominio de Sesiones, Capítulo 6), no de un `RoutingProfile` con contexto de POI como
+  hace hoy el slice interno de Chat. Portarlo de verdad con compatibilidad real exigía
+  primero el dominio de Sesiones — que ya está hecho (ver más abajo) — así que este
+  capítulo ya puede continuar: falta construir `/chat/setup`/`/chat/messages` de verdad
+  sobre `MapSessionService`, no sobre `ChatConfigurationResolver`.
+- [x] **Dominio de Sesiones portado (2026-09-06)**, `app/services/session_service.py` →
+      `sessions/application/service.py` (`MapSessionService`) + `sessions/models.py`
+      (`map_sessions`, tabla nueva vía migración `b72e9930c315`). DB-backed igual que V1
+      (nunca fue el problema de arquitectura — la parte pendiente real de Capítulo 6 sigue
+      siendo la sala de llamadas y el puente de protocolo, no tocados aquí).
+      `POST/GET/PUT /api/sessions[/{id}]`, `/reset`, `/presence` (touch y salida),
+      `/call-state`, `/call-log` — mismas rutas, formas y semántica que V1
+      (`app/routes/sessions.py` + `app/schemas/session.py`), incluida la poda de
+      participantes obsoletos por tiempo. Probado en caliente end-to-end por HTTP real
+      sobre una sesión desechable: crear, leer, 404 real, actualizar perfil/POI activo,
+      presencia con un usuario real, estado de llamada (host asignado correctamente),
+      log de llamada, abandonar presencia (cierra la llamada si el host se va), y
+      reiniciar conversación — limpiado al terminar. `set_nearby_pois`/`set_active_poi`/
+      `set_ephemeral_map_pois` portados como métodos de servicio (igual que V1: sin
+      búsqueda geográfica propia, los rellena quien construya Chat).
 
 ## Capítulo 4 — Billing (`/api/billing/*`, Google Play)
 
@@ -236,8 +257,10 @@ el evento contra la wallet real. La autenticación se hizo con la cookie de sesi
 admin (`voice/auth.py` ya soporta esto para depuración local); sigue sin probarse con un
 token móvil real de `/api/auth`. Es el capítulo de mayor riesgo técnico en lo que falta.
 
-- [ ] Adaptador de sesiones V1 (`/sessions`, presencia, estado).
-- [ ] Orquestación de salas V2 equivalente a `call_room_service.py` (917 líneas en V1).
+- [x] Adaptador de sesiones V1 (2026-09-06) — ver Capítulo 3 para el detalle completo
+      (`/api/sessions`, presencia, estado de llamada, log, probado en caliente).
+- [ ] Orquestación de salas V2 equivalente a `call_room_service.py` (917 líneas en V1). Sigue
+      siendo el bloque más grande y de mayor riesgo del capítulo: sesiones ya no lo era.
 - [ ] Puente de protocolo: traducir `/ws/calls/{callId}` (V1, lo que habla Ionic hoy) al
       protocolo neutral ya construido en `voice/gateway.py` (`/ws/v2/live`, ver
       `docs/websocket-protocol.md`). Son protocolos distintos, esto es trabajo nuevo.

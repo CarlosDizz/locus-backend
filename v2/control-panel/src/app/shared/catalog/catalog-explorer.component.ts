@@ -13,11 +13,12 @@ import {
 } from '../../core/admin-catalog.model';
 import { PoiMapPoint } from '../../core/admin-overview.model';
 import { PoiMapComponent } from '../maps/poi-map.component';
+import { PoiCallTestComponent } from './poi-call-test.component';
 
 @Component({
   selector: 'locus-catalog-explorer',
   standalone: true,
-  imports: [CommonModule, FormsModule, PoiMapComponent],
+  imports: [CommonModule, FormsModule, PoiCallTestComponent, PoiMapComponent],
   templateUrl: './catalog-explorer.component.html',
   styleUrl: './catalog-explorer.component.scss',
 })

@@ -117,5 +117,6 @@
     <section><p class="eyebrow">DESCRIPCIONES LOCALIZADAS</p>@for (description of poi.short_descriptions | keyvalue; track description.key) {<div class="translation"><b>{{ description.key }}</b><span>{{ description.value }}</span></div>}@empty{<p class="empty-line">Sin traducciones.</p>}</section>
     <dl><div><dt>Fuente</dt><dd>{{ poi.source_of_truth }}</dd></div><div><dt>Wikidata</dt><dd>{{ poi.wikidata_id || '—' }}</dd></div><div><dt>Wikipedia</dt><dd>{{ poi.wikipedia_title || '—' }}</dd></div><div><dt>Google Place</dt><dd>{{ poi.google_place_id || '—' }}</dd></div></dl>
     <details><summary>Metadatos técnicos</summary><pre>{{ formattedMetadata(poi) }}</pre></details>
+    <locus-poi-call-test [poi]="poi" />
   </aside>
 }

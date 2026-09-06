@@ -443,6 +443,36 @@ async def seed() -> None:
             )
             session.add(profile)
 
+        # Single-provider test profiles (no fallback), same prompt version as
+        # voice.poi.local: let the control panel's live call test harness pin
+        # one provider deliberately, instead of the automatic-fallback route
+        # silently masking which one actually answered.
+        for test_code, test_name, adapter in (
+            ("voice.poi.test.openai", "POI voz · prueba OpenAI Realtime", "openai_realtime"),
+            ("voice.poi.test.gemini", "POI voz · prueba Gemini Live", "gemini_live"),
+            ("voice.poi.test.mock", "POI voz · prueba Mock (sin coste)", "mock_live"),
+        ):
+            test_profile = await session.scalar(
+                select(RoutingProfile).where(RoutingProfile.code == test_code)
+            )
+            if test_profile is None:
+                session.add(
+                    RoutingProfile(
+                        code=test_code,
+                        name=test_name,
+                        experience_code="poi_guide",
+                        service_kind=ServiceKind.VOICE,
+                        environment=settings.env,
+                        status=PublicationStatus.PUBLISHED,
+                        voice_mode=VoiceMode.PUSH_TO_TALK,
+                        primary_model_id=models[adapter].id,
+                        fallback_model_id=None,
+                        prompt_version_id=prompt.id,
+                        config_json={"audio_persistence": False},
+                        published_at=utc_now(),
+                    )
+                )
+
         chat_definition = await session.scalar(
             select(PromptDefinition).where(PromptDefinition.code == "chat.poi.guide")
         )

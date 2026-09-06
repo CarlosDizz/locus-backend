@@ -1,0 +1,75 @@
+<section class="call-test">
+  <p class="eyebrow">PROBAR LLAMADA REAL</p>
+
+  @if (profilesLoading()) {
+    <p class="hint">Leyendo perfiles de voz publicados…</p>
+  } @else if (profilesError()) {
+    <p class="error">{{ profilesError() }}</p>
+  } @else if (!profiles().length) {
+    <p class="hint">No hay ningún perfil de voz publicado todavía.</p>
+  } @else {
+    <div class="controls">
+      <label>
+        <span>Perfil / proveedor</span>
+        <select [(ngModel)]="selectedProfileCode" [disabled]="isLive() || status() === 'connecting'">
+          @for (profile of profiles(); track profile.code) {
+            <option [value]="profile.code">{{ profile.name }}</option>
+          }
+        </select>
+      </label>
+      @if (canStart()) {
+        <button type="button" class="start" (click)="startCall()">Iniciar llamada</button>
+      } @else {
+        <button type="button" class="end" (click)="endCall()">Colgar</button>
+      }
+    </div>
+    @if (isRealProvider()) {
+      <p class="warn">Este perfil usa un proveedor real: la llamada tiene coste real.</p>
+    }
+
+    @if (status() !== 'idle') {
+      <div class="call-body">
+        <p class="status-line" [class]="status()">{{ statusText() }}<span class="provider">{{ providerLabel() }}</span></p>
+
+        <div class="transcript">
+          @for (line of transcript(); track $index) {
+            <p class="line" [class]="line.role"><b>{{ line.role }}</b>{{ line.text }}</p>
+          } @empty {
+            <p class="empty-line">Sin turnos todavía.</p>
+          }
+        </div>
+
+        <div class="talk-row">
+          <button
+            type="button"
+            class="talk"
+            [class.active]="talking()"
+            [disabled]="!isLive()"
+            (pointerdown)="startTalk()"
+            (pointerup)="stopTalk()"
+            (pointerleave)="stopTalk()"
+          >
+            {{ talking() ? 'Soltar para enviar' : 'Mantén pulsado para hablar' }}
+          </button>
+          <input
+            type="text"
+            placeholder="Escribe un mensaje de prueba…"
+            [(ngModel)]="textDraft"
+            [disabled]="!isLive()"
+            (keydown.enter)="sendText()"
+          >
+          <button type="button" class="send" [disabled]="!isLive() || !textDraft.trim()" (click)="sendText()">Enviar</button>
+        </div>
+
+        @if (usage(); as usage) {
+          <dl class="usage">
+            <div><dt>Texto in/out</dt><dd>{{ usage['text_input_tokens'] }} / {{ usage['text_output_tokens'] }}</dd></div>
+            <div><dt>Audio in/out</dt><dd>{{ usage['audio_input_tokens'] }} / {{ usage['audio_output_tokens'] }}</dd></div>
+            <div><dt>Herramientas</dt><dd>{{ usage['tool_calls'] }}</dd></div>
+          </dl>
+          <p class="hint">El coste real aparecerá en Consumos en cuanto el worker de facturación lo procese.</p>
+        }
+      </div>
+    }
+  }
+</section>

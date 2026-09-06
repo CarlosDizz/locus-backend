@@ -1,0 +1,56 @@
+:host { display: block; }
+
+.call-test { margin-top: 30px; padding-top: 26px; border-top: 1px solid var(--locus-line); }
+
+.hint { color: var(--locus-muted); font-size: 9px; line-height: 1.5; }
+.error { padding: 10px 13px; background: rgba(184, 106, 75, .1); color: var(--locus-terracotta); font-size: 9px; }
+.warn { margin: 10px 0 0; padding: 9px 12px; background: rgba(224, 155, 61, .15); color: #8a5c1a; font-size: 8px; font-weight: 700; }
+
+.controls { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+.controls label { display: grid; gap: 6px; font-size: 7px; text-transform: uppercase; letter-spacing: .08em; color: var(--locus-muted); }
+.controls select { height: 38px; padding: 0 10px; border: 1px solid var(--locus-line); background: var(--locus-paper); font: 500 9px "Manrope"; }
+
+button.start, button.end, button.send {
+  height: 38px; padding: 0 18px; border: 0; font: 800 9px "Manrope"; text-transform: uppercase;
+  letter-spacing: .08em; cursor: pointer; color: #fff;
+}
+button.start { background: var(--locus-green); }
+button.end { background: var(--locus-terracotta); }
+button.send { background: var(--locus-blue); }
+button.send:disabled { opacity: .4; cursor: default; }
+
+.call-body { margin-top: 18px; }
+.status-line { display: flex; justify-content: space-between; gap: 10px; margin: 0 0 12px; font-size: 9px; color: var(--locus-muted); }
+.status-line .provider { color: var(--locus-blue); font-weight: 700; }
+.status-line.error { color: var(--locus-terracotta); }
+
+.transcript {
+  max-height: 260px; overflow: auto; padding: 12px; border: 1px solid var(--locus-line);
+  background: rgba(255, 250, 242, .6); display: grid; gap: 8px;
+}
+.line { margin: 0; font: 500 10px/1.5 "Manrope"; }
+.line b { display: block; margin-bottom: 2px; font-size: 7px; text-transform: uppercase; letter-spacing: .08em; color: var(--locus-muted); }
+.line.user b { color: var(--locus-blue); }
+.line.assistant b { color: var(--locus-terracotta); }
+.line.tool { opacity: .75; font-style: italic; }
+.line.system { opacity: .6; }
+.line.error, .line.error b { color: var(--locus-terracotta); }
+.empty-line { margin: 0; color: var(--locus-muted); font-size: 8px; }
+
+.talk-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 12px; }
+.talk-row input { height: 38px; padding: 0 10px; border: 1px solid var(--locus-line); background: var(--locus-paper); font: 500 9px "Manrope"; }
+.talk {
+  height: 38px; border: 1px solid var(--locus-blue); background: transparent; color: var(--locus-blue);
+  font: 800 8px "Manrope"; text-transform: uppercase; letter-spacing: .06em; cursor: pointer; user-select: none;
+}
+.talk.active { background: var(--locus-blue); color: #fff; }
+.talk:disabled { opacity: .35; cursor: default; }
+
+.usage { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 16px 0 4px; }
+.usage div { padding: 8px 10px; border: 1px solid var(--locus-line); font-size: 8px; }
+.usage dt { color: var(--locus-muted); text-transform: uppercase; }
+.usage dd { margin: 3px 0 0; font-weight: 700; }
+
+@media (max-width: 700px) {
+  .talk-row { grid-template-columns: 1fr; }
+}

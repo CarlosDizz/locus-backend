@@ -238,12 +238,52 @@ real de compras de Google Play (sin credenciales de service account en este ento
 
 ## Capítulo 5 — Afiliación GetYourGuide
 
-Estado: **pendiente**. Hoy vive en `app/services/referral_service.py` (V1).
+Estado: **motor portado y probado en caliente** (2026-09-06), incluido en una llamada de
+voz real de principio a fin. Falta solo la ruta HTTP pública `/catalog/pois/{id}/access-links`
+(depende del API de Catálogo público, todavía sin escribir — ver Capítulo 2).
 
-- [ ] Puerto neutral para "buscar experiencias reservables" reutilizable desde Catálogo y Chat.
-- [ ] Migrar heurísticas de matching (`_search_getyourguide_product_links`, scoring por
-      solapamiento de tokens) o simplificarlas si ya no aportan.
-- [ ] Flag `getyourguide_referrals_enabled` en `Settings` V2.
+- [x] `affiliates/service.py::ReferralService` — puerto completo de
+      `app/services/referral_service.py`: `poi_access_links` (enlaces curados desde
+      metadatos del POI) y `activity_referrals` (búsqueda real vía `web_search` de OpenAI
+      restringida a `getyourguide.es`/`.com`, con verificación de coincidencia de lugar y
+      ciudad, y respaldo a un enlace de búsqueda genérico cuando no hay match fiable).
+      Heurísticas de matching migradas literalmente (términos de tickets/atracciones/
+      movilidad, alias de ciudades y lugares, solapamiento de tokens). Dos funciones de
+      V1 genuinamente muertas (`_looks_like_guided_visit`,
+      `_looks_like_non_substitutable_experience`, nunca llamadas en ningún sitio de V1)
+      se dejaron fuera a propósito.
+- [x] `getyourguide_referrals_enabled`, `getyourguide_partner_id` en `Settings` V2, mismos
+      valores por defecto que V1.
+- [x] Conectada como herramienta real: `affiliates.find_activities` en
+      `voice/tools.py::VoiceToolDispatcher`, y añadida al prompt de voz publicado
+      (`voice.poi.guide`) junto a `document_poi`/`plan_poi_visit`. Sin equivalente directo
+      en V1 (allí solo la usaba el chat) — aquí decidimos conectarla también a voz porque
+      ya se podía probar de verdad desde el nuevo panel de llamadas y encaja con el
+      producto (un guía de voz que también puede ofrecer entradas).
+- [x] **Bug real encontrado y corregido**: la llamada a `web_search` usaba
+      `max_output_tokens=220` (heredado de V1, donde el modelo no razonaba). El modelo de
+      V2 (`gpt-5-mini`) es un modelo de razonamiento que agota ese presupuesto pensando
+      antes de emitir la llamada a `web_search` — la búsqueda nunca llegaba a ejecutarse
+      (`status="incomplete"`, cero resultados, cero excepciones: fallaba en silencio hacia
+      el enlace de respaldo). Confirmado con un script aislado y subido a 1500. Nota:
+      `reasoning.effort="minimal"` (el arreglo usado en el bootstrap de catálogo) no es
+      compatible con la tool `web_search` — la única vía aquí es dar más presupuesto.
+- [x] **Bug de datos real encontrado y corregido**: el script de seed buscaba y parcheaba
+      siempre la `PromptVersion` con `version==1`, pero el prompt de voz ya tenía una
+      versión 2 publicada de una sesión anterior (vía el flujo normal de publicar desde el
+      panel), que dejó la versión 1 retirada. El parche de `find_activities` estaba
+      curando una fila que ya no usaba nadie. Corregido el script de seed para localizar
+      siempre la versión con `status=PUBLISHED` (no una versión fija), y realineados a
+      mano los perfiles de prueba que habían quedado apuntando a la versión retirada.
+- [x] Probado en caliente de principio a fin con Playwright sobre una llamada real de voz
+      (OpenAI Realtime, POI real "Coliseo" en Roma): el modelo decidió por sí mismo llamar
+      a `find_activities`, la búsqueda real devolvió URLs de producto reales de
+      GetYourGuide, y el modelo las presentó como enlaces Markdown, tal y como pide la
+      política del prompt.
+- [ ] Ruta HTTP pública `/catalog/pois/{id}/access-links` — pendiente del API de Catálogo
+      público (Capítulo 2); `poi_access_links` ya está listo para conectarse en cuanto
+      exista esa ruta.
+- [ ] Idempotencia/anti-duplicado de enlaces vistos entre turnos (V1 tampoco lo tenía).
 
 ## Capítulo 6 — Sesiones, llamadas y WebSocket (`/api/sessions`, `/api/calls`, `/ws/calls/{id}`)
 

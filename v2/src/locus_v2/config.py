@@ -54,6 +54,21 @@ class Settings(BaseSettings):
     overpass_api_url: str = "https://overpass-api.de/api/interpreter"
     overpass_timeout_seconds: int = 25
 
+    google_play_package_name: str = "com.carlos.locusia"
+    google_play_verify_purchases: bool = True
+    google_play_service_account_json: str = ""
+    google_play_service_account_file: str = ""
+
+    app_android_latest_version_code: int = 10
+    app_android_update_url: str = ""
+    app_ios_latest_build: int = 1
+    app_ios_update_url: str = ""
+
+    def android_update_url(self) -> str:
+        return self.app_android_update_url or (
+            f"https://play.google.com/store/apps/details?id={self.google_play_package_name}"
+        )
+
 
 @lru_cache
 def get_settings() -> Settings:

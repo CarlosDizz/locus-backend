@@ -57,10 +57,12 @@ Estado: **probado en caliente** (2026-09-06) contra MySQL real, salvo la app Ion
 Estado: **pendiente**. Contrato ya inventariado (schemas de `app/schemas/catalog.py` leídos y
 documentados en `roadmap.md` §11), falta escribir el router V2.
 
-- [ ] `GET /catalog/poi-types`, `GET /catalog/cities`, `GET /catalog/pois`,
-      `GET /catalog/pois/{id}` usando `legacy_v1_id` para IDs numéricos estables.
-- [ ] `GET /catalog/pois/{id}/documentation` y `/access-links` (este último depende del
-      Capítulo 5, afiliación GetYourGuide).
+- [x] `GET /catalog/poi-types`, `/cities`, `/pois`, `/pois/{id}`,
+      `/pois/{id}/documentation` y `/pois/{id}/access-links` — **escritos por Carlos**
+      (`api/catalog.py`), ya en el repo. Marcados aquí el 2026-09-07 porque el checklist
+      seguía dándolos por pendientes. **Construidos pero no verificados en caliente en
+      esta pasada**: la app real sí los está usando (el mapa y la lista de POIs de Roma
+      salen de ahí), así que funcionan, pero no hay una prueba dirigida contra cada uno.
 - [x] `POST /admin/v2/catalog/bootstrap-from-location` — **Fase 1 portada y probada
       (2026-09-05)**: geocodifica el punto (Nominatim), crea o reutiliza la ciudad, resuelve
       su entidad Wikidata, importa POIs cercanos vía SPARQL (consulta por entidad de ciudad,
@@ -372,15 +374,20 @@ voz real de principio a fin. Falta solo la ruta HTTP pública `/catalog/pois/{id
       a `find_activities`, la búsqueda real devolvió URLs de producto reales de
       GetYourGuide, y el modelo las presentó como enlaces Markdown, tal y como pide la
       política del prompt.
-- [ ] Ruta HTTP pública `/catalog/pois/{id}/access-links` — pendiente del API de Catálogo
-      público (Capítulo 2); `poi_access_links` ya está listo para conectarse en cuanto
-      exista esa ruta.
+- [x] Ruta HTTP pública `/catalog/pois/{id}/access-links` — ya existe en `api/catalog.py`
+      (ver Capítulo 2). Sin prueba dirigida todavía.
 - [ ] Idempotencia/anti-duplicado de enlaces vistos entre turnos (V1 tampoco lo tenía).
 
 ## Capítulo 6 — Sesiones, llamadas y WebSocket (`/api/sessions`, `/api/calls`, `/ws/calls/{id}`)
 
-Estado: **pendiente** el puente hacia el protocolo V1. El protocolo V2 nativo
-(`/ws/v2/live`) sí quedó verificado en caliente el 2026-09-05: sesión real vía
+Estado (revisado 2026-09-07): **el puente hacia el protocolo V1 está hecho y probado con
+la app real** — llamadas de grupo con voz, texto, fotos, interrupción y tools, todo contra
+Gemini Live real. Lo que queda del capítulo es **la reconexión transparente** cuando la
+sesión con el proveedor se cae (ver "Sesiones largas" al final), y el fallback de
+proveedor. La cabecera de abajo era de la pasada del 2026-09-05 y se conserva porque el
+detalle del protocolo V2 nativo sigue siendo válido.
+
+El protocolo V2 nativo (`/ws/v2/live`) quedó verificado en caliente el 2026-09-05: sesión real vía
 `voice.poi.local` con Gemini Live (proveedor primario) y, con un routing profile
 temporal solo para la prueba (creado y borrado en el mismo test), con OpenAI Realtime.
 Ambos casos: `session.ready` correcto, respuesta de texto real, `usage.recorded` con
@@ -391,14 +398,21 @@ token móvil real de `/api/auth`. Es el capítulo de mayor riesgo técnico en lo
 
 - [x] Adaptador de sesiones V1 (2026-09-06) — ver Capítulo 3 para el detalle completo
       (`/api/sessions`, presencia, estado de llamada, log, probado en caliente).
-- [ ] Orquestación de salas V2 equivalente a `call_room_service.py` (917 líneas en V1). Sigue
-      siendo el bloque más grande y de mayor riesgo del capítulo: sesiones ya no lo era.
-- [ ] Puente de protocolo: traducir `/ws/calls/{callId}` (V1, lo que habla Ionic hoy) al
-      protocolo neutral ya construido en `voice/gateway.py` (`/ws/v2/live`, ver
-      `docs/websocket-protocol.md`). Son protocolos distintos, esto es trabajo nuevo.
-- [ ] `client-secret`, tools de realtime, análisis de fotos (`/realtime/*`).
-- [ ] Pruebas de reconexión, interrupción, tools y fallback con la app real (criterio explícito
-      del roadmap: el WebSocket no se considera compatible sin esto).
+- [x] Orquestación de salas V2 equivalente a `call_room_service.py` — hecha el 2026-09-06
+      (`calls/store.py`, `calls/service.py`, `calls/models.py`, `calls/policy.py`): estado
+      en Redis con transacciones CAS, turnos, presencia y expiración.
+- [x] Puente de protocolo `/ws/calls/{callId}` — hecho el 2026-09-06 (`api/calls.py` +
+      `calls/bridge.py`, una tarea de puente por llamada contra un `LiveProvider` real).
+      La app Ionic habla con él sin cambios.
+- [x] Interrupción, tools y análisis de fotos, probados en caliente con la app real
+      (2026-09-06 y 2026-09-07, ver más abajo). `document_poi`/`find_activities`/
+      `plan_poi_visit` llamadas por el modelo y facturadas.
+- [ ] `/realtime/*` (client-secret, tools de realtime, photo-insight) — **confirmado código
+      muerto en V1**: `realtime.service.ts` no lo importa ninguna página de la app. No se
+      porta a propósito; se deja aquí solo para que conste la decisión.
+- [ ] **Reconexión transparente cuando la sesión con el proveedor se rompe** — es el hueco
+      grande que queda del capítulo. Ver "Sesiones largas" más abajo.
+- [ ] Fallback a otro proveedor si el primario falla al conectar.
 
 ### Fotos compartidas en llamada: causa raíz y arreglo (2026-09-07)
 

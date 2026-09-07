@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     overpass_api_url: str = "https://overpass-api.de/api/interpreter"
     overpass_timeout_seconds: int = 25
 
+    # Google Places Text Search, used by the map chat's live place lookup
+    # (places/client.py). Optional: with no key the search falls back to the
+    # catalog alone, which covers landmarks but not restaurants/pharmacies.
+    maps_api_key: SecretStr | None = None
+    maps_timeout_seconds: float = Field(default=10.0, gt=0)
+
     google_play_package_name: str = "com.carlos.locusia"
     google_play_verify_purchases: bool = True
     google_play_service_account_json: str = ""

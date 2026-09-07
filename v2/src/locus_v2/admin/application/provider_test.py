@@ -165,7 +165,9 @@ class ProviderModelTestService:
             result = await adapter.respond(
                 model=model.external_id,
                 instructions=TEST_PROMPT,
-                message=message,
+                input_items=[
+                    {"role": "user", "content": [{"type": "input_text", "text": message}]}
+                ],
                 options=model.runtime_defaults_json,
             )
         finally:

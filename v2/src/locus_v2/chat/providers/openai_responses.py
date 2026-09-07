@@ -1,13 +1,14 @@
-"""Real, single-turn call to the OpenAI Responses API.
+"""Real call to the OpenAI Responses API, with function calling.
 
-Minimal counterpart to `voice.providers.openai_realtime` for text chat: no
-streaming, no tool-calling loop yet (tools stay attached to the prompt
-configuration but are not sent to the model in this first cut — see
-docs/testing-checklist.md Capítulo 3). It exists to exercise a real
-provider call and prove the usage/billing pipeline end to end.
+One round per call: the caller (chat/service.py) owns the loop, executes any
+returned function calls, and calls back in with their outputs. Streaming is
+still not implemented - the Ionic app posts a message and renders one reply,
+so there is nothing to stream to.
 """
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
+from typing import Any
 
 from openai import AsyncOpenAI
 
@@ -15,10 +16,19 @@ from locus_v2.billing.pricing import NormalizedUsage
 
 
 @dataclass(frozen=True)
+class ChatFunctionCall:
+    call_id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class ChatProviderResult:
     text: str
     usage: NormalizedUsage
     raw_response_id: str | None
+    function_calls: list[ChatFunctionCall] = field(default_factory=list)
+    web_search_calls: int = 0
 
 
 class OpenAIResponsesAdapter:
@@ -32,14 +42,20 @@ class OpenAIResponsesAdapter:
         *,
         model: str,
         instructions: str,
-        message: str,
+        input_items: list[dict[str, Any]],
         options: dict[str, object],
+        tools: list[dict[str, Any]] | None = None,
+        previous_response_id: str | None = None,
     ) -> ChatProviderResult:
         kwargs: dict[str, object] = {
             "model": model,
             "instructions": instructions,
-            "input": message,
+            "input": input_items,
         }
+        if tools:
+            kwargs["tools"] = tools
+        if previous_response_id:
+            kwargs["previous_response_id"] = previous_response_id
         if "max_output_tokens" in options:
             kwargs["max_output_tokens"] = options["max_output_tokens"]
         if "reasoning_effort" in options:
@@ -48,17 +64,51 @@ class OpenAIResponsesAdapter:
             kwargs["text"] = {"verbosity": options["verbosity"]}
 
         response = await self._client.responses.create(**kwargs)  # type: ignore[call-overload]
+        output = [_as_dict(item) for item in (getattr(response, "output", None) or [])]
         return ChatProviderResult(
-            text=response.output_text or "",
+            text=response.output_text or _text_from_output(output),
             usage=_openai_responses_usage(response.usage),
             raw_response_id=getattr(response, "id", None),
+            function_calls=_function_calls(output),
+            web_search_calls=sum(1 for item in output if item.get("type") == "web_search_call"),
         )
 
     async def close(self) -> None:
         await self._client.close()
 
 
-def _as_dict(value: object) -> dict[str, object]:
+def _function_calls(output: list[dict[str, Any]]) -> list[ChatFunctionCall]:
+    calls: list[ChatFunctionCall] = []
+    for item in output:
+        if item.get("type") != "function_call":
+            continue
+        try:
+            arguments = json.loads(str(item.get("arguments") or "{}") or "{}")
+        except json.JSONDecodeError:
+            arguments = {}
+        calls.append(
+            ChatFunctionCall(
+                call_id=str(item.get("call_id") or ""),
+                name=str(item.get("name") or ""),
+                arguments=arguments if isinstance(arguments, dict) else {},
+            )
+        )
+    return calls
+
+
+def _text_from_output(output: list[dict[str, Any]]) -> str:
+    texts: list[str] = []
+    for item in output:
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content") or []:
+            block = _as_dict(content)
+            if block.get("type") in {"output_text", "text"} and block.get("text"):
+                texts.append(str(block["text"]))
+    return " ".join(texts).strip()
+
+
+def _as_dict(value: object) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     if hasattr(value, "model_dump"):

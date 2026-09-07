@@ -14,6 +14,26 @@ from redis.exceptions import WatchError
 from locus_v2.calls.models import CallError, Room, now
 
 
+def _observable(room: Room) -> str:
+    """Everything a connected client can see, as one comparable value.
+
+    Deliberately built from exactly what api/calls.py sends on a "state" event
+    (`room.snapshot()` plus that member's `room.ui()`), so if this is unchanged
+    the message a client would receive is byte-identical to the one it already
+    has. Comparing the pair rather than just the snapshot matters: `ready` gates
+    every control in `ui()` but is not part of the snapshot, and skipping its
+    flip would leave the room's buttons disabled forever.
+    """
+    return json.dumps(
+        [
+            room.snapshot(),
+            {member.native_id: room.ui(member.native_id) for member in room.members.values()},
+        ],
+        sort_keys=True,
+        default=str,
+    )
+
+
 class RoomStore:
     def __init__(self, redis: Redis, namespace: str = "locus:v2:calls") -> None:
         self.redis = redis
@@ -35,6 +55,29 @@ class RoomStore:
             )
         )
 
+    async def put_image(self, call_id: str, image_id: str, data_url: str, ttl: int) -> None:
+        """Park a shared photo outside the room state.
+
+        The payload must never live in the Room: `change()` rewrites and
+        re-publishes the whole room on every event (heartbeats included), and
+        api/calls.py answers each of those by pushing a full snapshot to every
+        member. Measured 2026-09-07 — one 468 KB photo took the room from 5.4 KB
+        to 629 KB, so a 3-person call moved ~1.9 MB per heartbeat round and the
+        websocket sends stalled with no error. Here the bytes are fetched once,
+        by URL, on demand.
+        """
+        await self.redis.set(self.key(call_id, f"image:{image_id}"), data_url, ex=ttl)
+
+    async def drop_image(self, call_id: str, image_id: str) -> None:
+        if re.fullmatch(r"[a-f0-9]{32}", image_id):
+            await self.redis.delete(self.key(call_id, f"image:{image_id}"))
+
+    async def get_image(self, call_id: str, image_id: str) -> str | None:
+        if not re.fullmatch(r"[a-f0-9]{32}", image_id):
+            raise CallError("Image not found", 404)
+        raw = await self.redis.get(self.key(call_id, f"image:{image_id}"))
+        return str(raw) if raw is not None else None
+
     async def get(self, call_id: str) -> Room:
         raw = await self.redis.get(self.key(call_id))
         if raw is None:
@@ -55,6 +98,7 @@ class RoomStore:
                     if raw is None:
                         raise CallError("Call not found or expired", 404)
                     room = Room.model_validate_json(raw)
+                    observable_before = _observable(room)
                     commands = room.expire()
                     events: list[dict] = []
                     mutate(room, commands, events)
@@ -69,8 +113,16 @@ class RoomStore:
                         pipe.expire(self.key(call_id, "commands"), ttl)
                     if room.status == "ended":
                         events.append({"type": "call.ended"})
-                    # A state hint makes reconnecting subscribers read the latest committed room.
-                    events.append({"type": "state"})
+                    # A state hint makes subscribers re-read and re-render the room,
+                    # so it is only worth sending when what they can actually see
+                    # changed. Most accepted events change nothing visible: an
+                    # audio chunk only bumps `audio_bytes`, a heartbeat only bumps
+                    # `seen_at`, and neither appears in snapshot() or ui(). Measured
+                    # 2026-09-07 on a real 3-member call: 35 audio chunks produced 39
+                    # full snapshots *per member*, 341 KB/s of pure re-broadcast, and
+                    # it grows with members x event rate x log length.
+                    if _observable(room) != observable_before:
+                        events.append({"type": "state"})
                     for event in events:
                         pipe.publish(self.key(call_id, "events"), json.dumps(event))
                     await pipe.execute()

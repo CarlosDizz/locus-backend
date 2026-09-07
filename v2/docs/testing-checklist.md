@@ -159,8 +159,9 @@ documentados en `roadmap.md` §11), falta escribir el router V2.
 
 ## Capítulo 3 — Chat (`/api/chat/*`)
 
-Estado: **pendiente** el dominio V1-compatible; **probado** un slice mínimo interno
-(2026-09-05) contra un proveedor real, solo para verificar el pipeline de uso/coste.
+Estado: **probado en caliente** (2026-09-07) contra la app Ionic real, con proveedor,
+Google Places, catálogo y billing reales. El chat del mapa de V1 está portado con su
+bucle de tool-calling; ver "Bucle de tools y dominio del mapa" al final del capítulo.
 
 - [x] `ChatConfigurationResolver` mínimo (`chat/configuration.py`): resuelve
       `RoutingProfile` publicado por `service_kind=chat`, renderiza el prompt con el
@@ -176,12 +177,13 @@ Estado: **pendiente** el dominio V1-compatible; **probado** un slice mínimo int
 - [x] Verificado en caliente contra `gpt-5.4-mini` real (routing profile `chat.poi.local`):
       respuesta correcta, `UsageEvent` creado (`interaction_type=chat_call`), recogido por
       el worker de billing y cobrado a la wallet real del usuario de prueba.
-- [ ] Modelos y repositorio persistentes del dominio Chat (sesión/mensajes, hoy no hay
-      historial, cada llamada es de un solo turno).
-- [ ] Tools reenchufadas al chat (se resuelven en la config pero no se envían al modelo
-      todavía; falta el bucle de tool-calling que sí tiene Voice).
-- [ ] Fallback provider como en Voice.
-- [ ] Tool `activity_referrals` (afiliación) enchufada al chat, no solo a voz.
+- [x] Tools reenchufadas al chat, con bucle de tool-calling real (2026-09-07, ver abajo).
+- [x] Tool de afiliación (`find_activities`) enchufada al chat, no solo a voz.
+- [ ] Modelos y repositorio persistentes del dominio Chat (mensajes). Hoy el historial
+      vive en `map_sessions.memory_json` (igual que V1) y se inyecta en el prompt; no hay
+      tabla de mensajes propia.
+- [ ] Fallback provider como en Voice (`configuration.fallback` se resuelve pero
+      `ChatService` solo usa `primary`).
 - **Hallazgo (2026-09-06), corrige el alcance de este capítulo**: `POST /chat/setup` y
   `POST /chat/messages` de V1 NO son "chat sobre un POI" — son el chat de recomendaciones
   del mapa de la pantalla de inicio de Ionic, y dependen de `session_id`/ubicación/perfil
@@ -205,6 +207,81 @@ Estado: **pendiente** el dominio V1-compatible; **probado** un slice mínimo int
       reiniciar conversación — limpiado al terminar. `set_nearby_pois`/`set_active_poi`/
       `set_ephemeral_map_pois` portados como métodos de servicio (igual que V1: sin
       búsqueda geográfica propia, los rellena quien construya Chat).
+
+### Bucle de tools y dominio del mapa (2026-09-07)
+
+Cierra el hueco más grande que quedaba para la V2.0. V1 repartía esto entre
+`chat_service.py` (719 líneas), `tool_runtime_service.py` (871) y `poi_service.py` (352).
+
+- [x] **Capa geo nueva** (`places/`): `client.py` (Google Places Text Search, puerto async
+      de `app/clients/maps_client.py`) y `service.py` (búsqueda en catálogo por bounding
+      box + orden por distancia real, fusión con Places, filtro monumentos vs. servicios).
+      Requiere `LOCUS_MAPS_API_KEY`; sin ella el chat sigue funcionando solo con catálogo.
+      Mejora sobre V1: los resultados del catálogo salen **localizados**
+      (`localized_field`), V1 devolvía siempre la columna `name` en español.
+- [x] **Bucle de tool-calling** (`chat/service.py`): rondas hasta `MAX_TOOL_ROUNDS=6`, con
+      una última ronda sin tools si se agota, para no devolver respuesta vacía tras una
+      ronda ya facturada. El adaptador (`chat/providers/openai_responses.py`) ahora acepta
+      `tools`/`input_items`/`previous_response_id` y extrae `function_call`s.
+- [x] **7 tools** (`chat/tools.py`), sembradas en `ai_tools` y editables desde el taller de
+      prompts del panel: `search_map_places`, `search_nearby_services`, `mark_pois_on_map`,
+      `set_active_poi`, `promote_poi_to_catalog`, más `document_poi` y `find_activities`
+      delegadas a `VoiceToolDispatcher` (mismo handler, misma facturación, ya existían).
+- [x] **Prompt del mapa** (`chat.map.guide` v1) reescrito desde `app/prompts/chat_agent.json`
+      con los placeholders reales de sesión (perfil, POI activo, ubicación, POIs visibles,
+      marcas temporales, memoria).
+- **Dos divergencias deliberadas respecto a V1**, ambas por la misma razón (que el
+  comportamiento viva en el prompt, no en Python):
+  - **Sin heurísticas de intención.** V1 elegía qué tools exponer con 7 listas de palabras
+    clave en español (`_message_suggests_*`). Además de meter producto en el código, era un
+    bug real: al ser solo español, un usuario en cualquiera de los otros 8 idiomas del
+    catálogo se quedaba casi sin tools. Ahora el manifiesto sale de
+    `PromptVersion.tools_json` y se manda siempre.
+  - **Sin auto-promoción por heurística.** `_maybe_promote_candidate_to_catalog` puntuaba
+    candidatos por solapamiento de tokens y otra lista de palabras "culturales". La llama
+    el modelo vía tool. Del guardarraíl de V1 solo sobrevive lo que protege el dato
+    (coordenadas presentes, no es hostelería/servicio), porque eso escribe en el catálogo
+    compartido; la lista de ~35 palabras clave españolas se cayó (rechazaba monumentos
+    legítimos con nombre no español).
+- [x] **Fuga de facturación de V1 corregida**: V1 registraba el usage de la respuesta
+      *final* solamente, así que cada ronda intermedia de tools era gasto real que no
+      llegaba a ningún ledger. V2 acumula todas las rondas en el `UsageEvent` del turno, y
+      lo que gastan los handlers por su cuenta (gpt-5-mini en `document_poi`/
+      `find_activities`) va en un `UsageEvent` aparte de tipo `tool_call` contra el modelo
+      de tools — mismo patrón que `voice/gateway.py::_persist_tool_usage()`, porque
+      cobrarlo al precio del modelo de chat sería incorrecto en ambos sentidos.
+- **Probado en caliente end-to-end** (2026-09-07), todo con datos y proveedores reales:
+  - `POST /chat/setup` siembra el mapa base con POIs reales del catálogo ordenados por
+    distancia (V1 lo hacía y el slice anterior de V2 no: el primer mensaje llegaba al
+    modelo con `nearby_pois` vacío).
+  - Búsqueda de servicios + marcado: "quiero cenar pasta cerca, márcamelos" → Google Places
+    devolvió trattorias reales de Roma, el modelo llamó a `mark_pois_on_map`, volvieron
+    como `ephemeral_pois`. 3 rondas, 2 tool calls, ~14 s.
+  - Promoción al catálogo: "no me aparece el Arco de Constantino y quiero visitarlo" → lo
+    buscó, lo promocionó y quedó como fila real (`pois` id 2621, `source_of_truth=
+    chat_promoted`, coordenadas correctas, ciudad Roma resuelta por proximidad, tipo
+    `monument`, `names_json` poblado) y como pin fijo del mapa.
+  - Guardarraíl: pidiéndole explícitamente ("insisto") meter una trattoria en el catálogo,
+    **no** la metió — la dejó como marca temporal y explicó por qué.
+  - Afiliación: `find_activities` devolvió productos concretos de GetYourGuide y quedó
+    facturado en su `UsageEvent` de tipo `tool_call` (10.331 tokens de entrada).
+  - **En la app Ionic real** (Playwright, `localhost:8100` → V2 en `:8200`): "me apetece
+    un café cerca, márcame opciones" pintó "Danesi Caffè" y "BAR AL CAFFE ROMANO" como
+    pines nuevos en el mapa de Google real. 3 rondas, 2 tool calls, 7,7 s.
+- **Bug encontrado y arreglado durante la prueba**: Google Places respondía en el idioma
+  del sitio, así que el Arco de Constantino se promocionó al catálogo como "Arch of
+  Constantine" — para todos los usuarios, no solo para quien preguntó. Ahora se le pasa
+  `language`, y la promoción rellena `names_json`/`short_descriptions_json`.
+- **Bug de datos preexistente, encontrado pero NO arreglado aquí** (no lo causa este
+  trabajo, es del pipeline de enriquecimiento del catálogo): 566 de 893 POIs activos
+  tienen `names_json.es` con un valor distinto de `name`, y en varios casos directamente
+  el nombre inglés o italiano ("Columna de Trajano" → `es: "Trajan's Column"`, "Museos
+  Capitolinos" → `es: "Musei Capitolini"`). Es visible hoy en la app real: el mapa muestra
+  "Trajan's Column", "Mouth of Truth", "People's Square" a un usuario español, y viene de
+  `catalog/mobile.py`, no del chat. Merece su propia pasada.
+- **Pendiente menor**: el chat de POI del panel (`chat.poi.local`, `context_type="poi"`)
+  sigue sin bucle de tools — no es una regresión (nunca lo tuvo), pero ahora que existe el
+  bucle podría enchufarse ahí también.
 
 ## Capítulo 4 — Billing (`/api/billing/*`, Google Play)
 
@@ -254,6 +331,21 @@ voz real de principio a fin. Falta solo la ruta HTTP pública `/catalog/pois/{id
       se dejaron fuera a propósito.
 - [x] `getyourguide_referrals_enabled`, `getyourguide_partner_id` en `Settings` V2, mismos
       valores por defecto que V1.
+- [x] **Fuga de ingresos real encontrada y corregida (2026-09-07)**: el *default* de
+      `getyourguide_partner_id` es `""` tanto en V1 como en V2 — pero V1 lo tiene puesto de
+      verdad en su entorno (`GETYOURGUIDE_PARTNER_ID=CDLANTY`) y **el entorno de V2 nunca lo
+      recibió**. Con el valor vacío, `_decorate_url()` no añade nada y todos los enlaces
+      salían con `tracking_status="untracked"`: funcionaban para el usuario, pero no
+      generaban ni un céntimo de comisión. Afectaba a las dos superficies que usan
+      `ReferralService` (el chat del mapa y la tool de voz de las llamadas de grupo), o sea
+      que la prueba en caliente del 2026-09-06 también produjo enlaces sin comisión sin que
+      se notara — el `tracking_status` estaba en la respuesta de la tool, pero nadie lo miró.
+      Añadido `LOCUS_GETYOURGUIDE_PARTNER_ID` a `.env.local` y a `.env.example`. Verificado
+      después: `tracking_status="tracked"` y URLs reales con
+      `?partner_id=CDLANTY&utm_medium=travel_agent`, comprobado tanto llamando al
+      `VoiceToolDispatcher` directamente como por el chat completo end-to-end.
+      **Crítico para el cutover (Capítulo 9): esta variable debe existir en el entorno de
+      producción de V2 o se pierde toda la afiliación en silencio.**
 - [x] Conectada como herramienta real: `affiliates.find_activities` en
       `voice/tools.py::VoiceToolDispatcher`, y añadida al prompt de voz publicado
       (`voice.poi.guide`) junto a `document_poi`/`plan_poi_visit`. Sin equivalente directo
@@ -307,6 +399,127 @@ token móvil real de `/api/auth`. Es el capítulo de mayor riesgo técnico en lo
 - [ ] `client-secret`, tools de realtime, análisis de fotos (`/realtime/*`).
 - [ ] Pruebas de reconexión, interrupción, tools y fallback con la app real (criterio explícito
       del roadmap: el WebSocket no se considera compatible sin esto).
+
+### Fotos compartidas en llamada: causa raíz y arreglo (2026-09-07)
+
+Cierra el bug conocido de "una imagen grande tumba la llamada" (detectado el 2026-09-06,
+sin causa raíz entonces: la llamada se quedaba muda ~2 minutos, sin error ni timeout).
+
+- **No era Gemini.** Probado directamente contra el proveedor con JPEGs generados de
+  tamaño y dimensiones controladas: 640x480 (74 KB), 1600x1200 (475 KB), 3200x2400
+  (1,3 MB) y hasta 6000x4500 (2,9 MB) — todos respondieron en 1,2–1,8 s. El proveedor
+  nunca fue el problema, y descartarlo primero fue lo que orientó la búsqueda.
+- **La causa real era nuestra**: `image.submit` guardaba el data URL **completo dentro
+  del estado de la sala** (`room.append_log("user-photo", ..., data_url)`). Y
+  `RoomStore.change()` reescribe y republica la sala entera en **cada** evento, mientras
+  `api/calls.py` responde a cada `state` empujando un snapshot completo a **cada**
+  miembro. Medido: una sala pasa de 5,4 KB a 100,9 KB con una foto pequeña (71 KB) y a
+  **629 KB con una foto normal de móvil** (468 KB). Con 3 personas eso son ~1,9 MB por
+  ronda de heartbeat (cada 8 s), más un GET+SET de 629 KB en Redis dentro de un bucle CAS
+  de hasta 30 reintentos. Los envíos por websocket se atascaban sin lanzar nada.
+- **Arreglo**: el payload sale del estado de la sala. `RoomStore.put_image/get_image` lo
+  guarda bajo su propia clave con el TTL de la sala; el log lleva solo una URL firmada,
+  servida por un `GET /api/calls/{id}/images/{imageId}` nuevo en `api/calls.py`. El token
+  va en la URL porque un `<img src>` no puede mandar cabecera Authorization, y esa URL
+  solo llega a quien ya puede leer la transcripción. El bridge también recibe solo el
+  `image_id` y busca los bytes, así que el stream de comandos tampoco carga 250 KB.
+- **La URL es absoluta, y eso es deliberado: la app NO se toca.** El primer intento usó
+  una ruta relativa y obligaba a un cambio en `call.page.ts` para componerla contra
+  `apiBaseUrl` — descartado. V1 pone un `data:` URL en ese mismo campo y la app lo mete
+  directo en `<img src>`; una URL `http(s)` absoluta funciona exactamente en el mismo
+  sitio, así que V2 arregla el problema sin que la app cambie **ni una línea**. Eso es
+  justo lo que sostiene el plan de corte ("cambio `apiBaseUrl`, la app sigue igual, y
+  vuelvo atrás cambiándola otra vez"), y una ruta relativa lo habría roto. El precio es
+  una variable nueva, `LOCUS_PUBLIC_API_BASE_URL`, que debe coincidir con el `apiBaseUrl`
+  de la app (explícita a propósito: detrás de un proxy el host de la request es el del
+  proxy, no el nuestro).
+- **Verificado en caliente**, dos veces y con proveedores reales:
+  - Por script contra la API real (llamada, WebSocket y Gemini): con una foto de 468 KB el
+    frame más grande del socket se queda en 42,5 KB, **el mismo que antes de la foto**
+    (antes habría sido ~629 KB); Redis queda en 0,9–2 KB para la sala y 638 KB aislados en
+    la clave de imagen. La foto se recupera (`200`, `image/jpeg`, byte a byte idéntica) y
+    un token falsificado da `403`.
+  - **En la app Ionic real, sin modificarla** (Playwright: ficha del Coliseo → "Abrir guía
+    en vivo" → botón Foto). La foto se ve en la bitácora — comprobado que carga de verdad,
+    no un icono roto: `naturalWidth=1400`, `naturalHeight=800`, `complete=true`, cargada
+    desde `http://localhost:8200/api/calls/.../images/...`. La sala en Redis se quedó en
+    2,4 KB (habría sido ~97 KB). Y la IA la leyó: respondió identificando a Vespasiano y
+    el *amphitheatrum novum* financiado con el botín de la guerra de Judea.
+- **Bug adicional encontrado de paso**: `decode_image()` devuelve el media type completo
+  (`"image/jpeg"`), pero el bridge lo trataba como subtipo y le mandaba a Gemini
+  `mime_type="image/image/jpeg"`. Funcionaba porque el proveedor es tolerante, pero estaba
+  mal desde el principio; corregido en los dos sitios y anotado en la propia función.
+### Salas largas: el snapshot se reenviaba en cada evento (2026-09-07)
+
+Surgió de una pregunta de Carlos — "¿cómo se comportará una sala con 40 minutos de
+conversación, varias imágenes y cinco miembros?" — y resultó ser un problema real,
+independiente del de las fotos.
+
+- **Lo que estaba acotado**: `Room.append_log()` corta el log a 80 entradas, así que la
+  sala **no crece sin límite**. Medido con narraciones de longitud realista: 1,8 KB recién
+  abierta, 11,7 KB a los ~10 min, y se estabiliza en **~40 KB** con el log lleno y 4 fotos.
+- **Lo que no estaba acotado era el reenvío.** `RoomStore.change()` publicaba
+  `{"type": "state"}` en **todos** los eventos aceptados, y `api/calls.py` responde a cada
+  `state` mandando un snapshot completo a **cada** miembro. Pero casi ningún evento cambia
+  algo visible: un `audio.chunk` solo suma `audio_bytes` y un heartbeat solo toca
+  `seen_at`, y ninguno de los dos aparece en `snapshot()` ni en `ui()`. Como los chunks
+  llegan a ~5,9/s (`ScriptProcessor(4096)` a 24 kHz en `call.page.ts`), el coste es
+  miembros × tasa de eventos × tamaño del log.
+- **Medido en caliente** con 3 miembros reales sobre WebSockets reales, con el log a medio
+  llenar: 35 chunks de audio en 6,1 s produjeron **39 snapshots completos por miembro**,
+  2.074 KB de salida, **341 KB/s**. Extrapolado a 5 miembros y log lleno pasa de 1 MB/s.
+- **Arreglo**: publicar `state` solo cuando cambie lo que el cliente puede ver.
+  `_observable(room)` se construye con exactamente lo que `api/calls.py` envía en un
+  `state` (`snapshot()` + el `ui()` de cada miembro), así que si no cambia, el mensaje que
+  recibiría el cliente sería idéntico al que ya tiene. Se comparan **los dos**, no solo el
+  snapshot: `ready` gobierna todos los controles vía `ui()` pero no está en el snapshot, y
+  saltarse su flip dejaría los botones muertos para siempre (que es exactamente el bug que
+  se arregló el 2026-09-06).
+- **Verificado**: misma prueba, mismo escenario → **2 snapshots por miembro en vez de 39**,
+  98 KB en vez de 2.074 KB, **16 KB/s en vez de 341 KB/s (21× menos)**. Lo que queda es la
+  retransmisión de audio real a los otros miembros, que sí hace falta (el host, que no
+  recibe su propio audio, bajó a 5 KB). Y sin regresión en la app real: llamada abierta
+  desde la ficha del Coliseo, controles habilitados (`Foto` y `Mantén para hablar` con
+  `disabled: false`, o sea que el flip de `ready` sigue llegando), foto compartida cargando
+  a 1400x800 y la IA leyendo la inscripción.
+
+### Sesiones largas: la llamada se cae sola a los ~10-15 min (pendiente, plan acordado)
+
+Encontrado el 2026-09-07 tirando del hilo de "¿aguantamos 40 minutos?". **No está
+reproducido con cronómetro**: es lectura de la documentación de Google más inspección del
+código, pero las dos cosas apuntan a lo mismo.
+
+- Según la documentación de Google, una sesión Live **solo de audio está limitada a 15
+  minutos sin compresión de contexto**, y la vida de una conexión ronda los 10 minutos,
+  tras los cuales el servidor manda `go_away`.
+- `_gemini_config()` **no configura** `context_window_compression` ni `session_resumption`.
+  Peor: `ProviderCapabilities` de `gemini_live` (y de `openai_realtime` y `mock`) declara
+  `session_resumption=True` / `context_compression=True`, pero **nadie lee esas banderas y
+  nada las implementa** — son una etiqueta que el código no respalda. Si se deja así, hay
+  que quitarlas o cumplirlas.
+- `go_away` llega como `ProviderEvent(ERROR, retryable=True)`; `calls/bridge.py` publica un
+  `call.error` en la sala y deja morir el stream. **No hay reconexión.**
+
+**Plan acordado con Carlos (2026-09-07, para la siguiente sesión)** — deliberadamente no es
+"configurar resumption de Gemini", sino algo que sirve para *cualquier* motivo de caída:
+
+- Cuando la sesión con el proveedor se rompa (por tiempo, por `go_away`, o por cualquier
+  error), **abrir una sesión nueva y sembrarla con el contexto de la conversación sin que
+  el modelo lo interprete como turno**: que sepa lo que ya se ha contado, pero no vuelva a
+  hablar ni retome por su cuenta. Así el grupo no percibe el corte y la caída deja de ser
+  un caso especial de Gemini.
+- La sala, el log y el turno son nuestros y viven en Redis, así que el contexto para
+  re-sembrar ya lo tenemos (`room.log`, acotado a 80 entradas).
+- En la app, como mucho una etiqueta de "reconectando" **reutilizando los estados de
+  llamada que ya existen** — sin inventar protocolo nuevo y sin tocar la app si se puede
+  mapear a un estado actual.
+- Punto a decidir al implementarlo: qué hacer con una foto compartida justo antes del
+  corte, y si la re-siembra debe incluir las imágenes o solo su descripción ya narrada.
+
+- **Regla que casi me salto y conviene dejar escrita**: el contrato de esta migración es
+  que la app Ionic no se toca — es lo que hace posible el rollback. Si un arreglo de V2
+  parece exigir un cambio en la app, casi siempre significa que se está divergiendo del
+  contrato de V1 y hay que buscar la forma que no diverja, no cambiar la app.
 
 ## Capítulo 7 — Legal y metadatos de app
 
@@ -372,6 +585,14 @@ Estado: parcialmente **probado** (conectado a datos reales), resto **construido*
 Estado: **pendiente**, es el último capítulo por diseño.
 
 - [ ] Backup completo de la base de producción antes de nada.
+- [ ] **Paridad de variables de entorno V1 → V2, comprobada una por una.** No basta con que
+      el código esté portado: una variable ausente no rompe nada visible, simplemente apaga
+      una función en silencio. Ya ha pasado dos veces en local (2026-09-07):
+      `LOCUS_GETYOURGUIDE_PARTNER_ID` faltaba y toda la afiliación salía sin comisión
+      (Capítulo 5), y `LOCUS_MAPS_API_KEY` faltaba y el chat del mapa no podía buscar
+      restaurantes ni servicios (Capítulo 3). Las dos se descubrieron por casualidad, no
+      por una comprobación. Repasar `.env.example` contra el entorno real de V1 antes del
+      corte, y confirmar que cada clave con valor en V1 tiene su equivalente `LOCUS_*`.
 - [ ] `./bin/locus up` en local con datos importados, capítulos 1–7 en verde.
 - [ ] Desplegar V2 en paralelo en ECS sin tráfico real.
 - [ ] Cambiar `apiBaseUrl` de Ionic de `https://api.locusguide.es/api` al host V2.

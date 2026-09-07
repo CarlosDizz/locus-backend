@@ -14,6 +14,10 @@ from locus_v2.shared.mobile_ids import mobile_id
 
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
 MAX_AUDIO_BYTES = 24000 * 2 * 120
+# How many shared photos stay viewable (and stored) in one call. Room.log already
+# self-trims to 80 entries, but photo payloads live in their own Redis keys and
+# would outlive that window, orphaned, until the room expires.
+MAX_RETAINED_PHOTOS = 20
 
 
 def decode_audio(value: object) -> bytes:
@@ -47,6 +51,7 @@ def decode_image(value: object) -> tuple[str, bytes]:
         raise CallError("invalid_image")
     if header == "data:image/webp;base64" and decoded[8:12] != b"WEBP":
         raise CallError("invalid_image")
+    # Full media type ("image/jpeg"), not the subtype - callers must not re-prefix.
     return header[5:-7], decoded
 
 
@@ -91,6 +96,41 @@ class CallService:
         if claims["call_id"] != call_id.upper() or claims["sub"] != str(user_id):
             raise CallError("Join token does not match this user and room", 403)
         return claims
+
+    def image_token(self, call_id: str, image_id: str, expires_at: float) -> str:
+        return jwt.encode(
+            {
+                "iss": self.settings.jwt_issuer,
+                "aud": "locus-call-image",
+                "call_id": call_id.upper(),
+                "image_id": image_id,
+                "iat": int(now()),
+                "exp": int(expires_at),
+            },
+            self.settings.jwt_secret.get_secret_value(),
+            algorithm="HS256",
+        )
+
+    def verify_image_token(self, token: str, call_id: str, image_id: str) -> None:
+        """Authorize a photo fetch by capability rather than by session.
+
+        The URL is embedded in the room log, so it reaches exactly the people
+        who can already see the call transcript — and an <img src> cannot carry
+        a bearer header, so the token has to travel in the URL itself.
+        """
+        try:
+            claims = jwt.decode(
+                token,
+                self.settings.jwt_secret.get_secret_value(),
+                algorithms=["HS256"],
+                audience="locus-call-image",
+                issuer=self.settings.jwt_issuer,
+                options={"require": ["exp", "iat", "iss", "aud", "call_id", "image_id"]},
+            )
+        except jwt.PyJWTError as error:
+            raise CallError("Invalid or expired image token", 403) from error
+        if claims["call_id"] != call_id.upper() or claims["image_id"] != image_id:
+            raise CallError("Image token does not match this room", 403)
 
     @staticmethod
     def active(room: Room) -> None:
@@ -249,8 +289,49 @@ class CallService:
         if kind in {"floor.request", "audio.commit", "text.submit", "image.submit"}:
             await self.consume(initial.host_id)
         audio = decode_audio(event.get("audio")) if kind == "audio.chunk" else b""
+        image_id = ""
+        image_url = ""
         if kind == "image.submit":
             decode_image(event.get("image_data_url"))
+            # Park the payload before the CAS transaction, so what lands in the
+            # room (and therefore in every snapshot afterwards) is just a URL.
+            image_id = uuid4().hex
+            ttl = max(60, int(initial.expires_at - now()) + 300)
+            await self.store.put_image(
+                call_id, image_id, str(event["image_data_url"]), ttl
+            )
+            # Absolute on purpose. V1 puts a data: URL here and the Ionic app
+            # feeds it straight to <img src> — an absolute http(s) URL works in
+            # exactly the same place, so V2 fixes the room-state bloat without
+            # the app having to change. That matters: the whole cutover plan is
+            # "flip apiBaseUrl, keep the app identical, roll back by flipping
+            # it again", and a relative path would have broken that.
+            image_url = (
+                f"{self.settings.public_api_base_url.rstrip('/')}"
+                f"/calls/{call_id.upper()}/images/{image_id}"
+                f"?t={self.image_token(call_id, image_id, initial.expires_at)}"
+            )
+        # Photo payloads are the only unbounded thing a call can accumulate: the
+        # log self-trims to 80 entries but their Redis keys would outlive it,
+        # orphaned and unreachable, until the room's TTL. Measured 2026-09-07:
+        # 20 typical photos already cost 13.2 MB of Redis per call, and at the
+        # 2 MB per-image ceiling nothing stopped a single call reaching hundreds
+        # of MB. Keeping the last MAX_RETAINED_PHOTOS caps a call at ~12 MB of
+        # typical photos (40 MB of worst-case ones) while still being far more
+        # than a guided visit needs.
+        evicted: list[str] = []
+        accepted = False
+
+        def evict_old_photos(room: Room) -> None:
+            nonlocal accepted
+            # The CAS block can re-run, so recompute both from scratch.
+            evicted.clear()
+            accepted = True
+            photos = [entry for entry in room.log if entry.get("image_url")]
+            for entry in photos[: max(0, len(photos) - MAX_RETAINED_PHOTOS)]:
+                evicted.append(str(entry["image_url"]).rsplit("/", 1)[-1].split("?", 1)[0])
+                entry["image_url"] = None
+
         text = event.get("text", "")
         if kind == "text.submit" and (
             not isinstance(text, str) or not text.strip() or len(text) > 8000
@@ -322,12 +403,25 @@ class CallService:
                     command["text"] = text.strip()
                     room.append_log("user-text", text.strip(), user_id)
                 else:
-                    command["image_data_url"] = event["image_data_url"]
-                    # Bound Redis history: retain only the most recent photo payload.
-                    for entry in room.log:
-                        entry["image_url"] = None
-                    room.append_log("user-photo", "Photo", user_id, event["image_data_url"])
+                    # The bridge fetches the bytes by id; keeping them out of the
+                    # command stream too means one 250 KB xadd less per photo.
+                    command["image_id"] = image_id
+                    room.append_log("user-photo", "Photo", user_id, image_url)
+                    evict_old_photos(room)
                 commands.append(command)
                 events.append({"type": "assistant.started"})
 
-        return await self.store.change(call_id, change)
+        room = await self.store.change(call_id, change)
+        # All of this only after the room commit succeeded: acting on a
+        # rolled-back CAS attempt would blank out photos that are still live.
+        if kind == "image.submit" and not accepted:
+            # The room refused this photo (someone else holds the turn). Its
+            # payload was written before the transaction so the bridge could
+            # never read a command whose bytes had not landed yet - so a
+            # refusal has to take the bytes back out, or a member who keeps
+            # tapping the camera while the guide talks fills Redis with
+            # payloads nothing will ever reference.
+            await self.store.drop_image(call_id, image_id)
+        for orphan in evicted:
+            await self.store.drop_image(call_id, orphan)
+        return room

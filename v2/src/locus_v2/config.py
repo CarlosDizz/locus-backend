@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8100
     realtime_port: int = 8101
+    # Public origin + path prefix this API is reached at, e.g.
+    # "https://api.locusguide.es/api". Only used to build absolute URLs that
+    # must work from inside the Ionic app (call photos), which is served from a
+    # different origin. Deliberately explicit rather than derived from the
+    # request: behind a proxy the request host is the proxy's, not ours.
+    public_api_base_url: str = "http://localhost:8200/api"
 
     database_url: str = "mysql+asyncmy://locus_v2:locus_v2@localhost:3307/locus_v2"
     legacy_database_url: str | None = None

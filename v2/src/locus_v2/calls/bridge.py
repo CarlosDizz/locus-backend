@@ -375,11 +375,18 @@ class _CallVoiceBridge:
                     )
                 elif kind == "image.submit":
                     if self.provider.capabilities.image_input:
-                        mime_subtype, image_bytes = decode_image(command["image_data_url"])
+                        # The payload lives under its own Redis key (see
+                        # RoomStore.put_image) and never travels in the room state.
+                        data_url = await self.store.get_image(
+                            self.call_id, command["image_id"]
+                        )
+                        if data_url is None:
+                            raise CallError("Shared photo expired before it was read")
+                        mime_type, image_bytes = decode_image(data_url)
                         author = command.get("author", "")
                         caption = f"{author} ha enviado esta foto:" if author else None
                         await self.provider.send_image(
-                            image_bytes, f"image/{mime_subtype}", caption=caption
+                            image_bytes, mime_type, caption=caption
                         )
                     else:
                         await self.provider.send_text(

@@ -24,13 +24,14 @@ from fastapi import (
     status,
 )
 from fastapi.exceptions import HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from locus_v2.api.auth import CurrentUserDep, SessionDep, SettingsDep
 from locus_v2.calls.bridge import ensure_bridge
 from locus_v2.calls.models import CallError, CreateCall
 from locus_v2.calls.policy import ensure_host_can_consume, resolve_context
-from locus_v2.calls.service import CallService
+from locus_v2.calls.service import CallService, decode_image
 from locus_v2.calls.store import RoomStore
 from locus_v2.config import Settings, get_settings
 from locus_v2.identity.application.mobile_auth import MobileAuthService
@@ -108,6 +109,35 @@ async def end_call(
     except CallError as error:
         raise HTTPException(error.status, str(error)) from error
     return CallActionResponse(call=room.snapshot())
+
+
+@router.get("/{call_id}/images/{image_id}")
+async def get_call_image(
+    call_id: str, image_id: str, settings: SettingsDep, t: str = Query(default="")
+) -> Response:
+    """Serve a photo shared in a call, addressed by the URL kept in the room log.
+
+    Authorized by the signed `t` token rather than the session bearer: an
+    <img src> cannot send an Authorization header, and this URL only ever
+    reaches people who can already read the call's transcript.
+    """
+    service = _service(settings)
+    try:
+        service.verify_image_token(t, call_id, image_id)
+        data_url = await service.store.get_image(call_id, image_id)
+    except CallError as error:
+        raise HTTPException(error.status, str(error)) from error
+    if data_url is None:
+        raise HTTPException(404, "Image not found or expired")
+    try:
+        mime_type, image_bytes = decode_image(data_url)
+    except CallError as error:
+        raise HTTPException(500, "Stored image is unreadable") from error
+    return Response(
+        content=image_bytes,
+        media_type=mime_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 def _extract_ws_bearer_token(websocket: WebSocket) -> str:

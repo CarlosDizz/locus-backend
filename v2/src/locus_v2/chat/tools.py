@@ -61,11 +61,10 @@ class ChatToolDispatcher:
         self.locale = locale
         self.sessions = MapSessionService(session)
         self.places = PlaceSearchService(session, settings)
-        # Real spend made by delegated handlers, outside this turn's own
-        # provider call. chat/service.py reads it after every execute() and
-        # folds it into the turn's UsageEvent, or the tool call is free money
-        # out the door (the same leak fixed in calls/bridge.py on 2026-09-06).
+        # Keep every paid delegated call until the chat service persists them.
+        # A model may request several tools in one round.
         self.last_usage: ToolUsage | None = None
+        self.pending_usages: list[ToolUsage] = []
 
     async def execute(self, handler_code: str, arguments: dict[str, Any]) -> dict[str, Any]:
         self.last_usage = None
@@ -98,7 +97,14 @@ class ChatToolDispatcher:
         dispatcher = VoiceToolDispatcher(self.settings)
         result = await dispatcher.execute(handler_code, arguments, context, self.locale)
         self.last_usage = dispatcher.last_usage
+        if self.last_usage is not None and self.last_usage.billable:
+            self.pending_usages.append(self.last_usage)
         return {"ok": True, **result}
+
+    def take_pending_usages(self) -> list[ToolUsage]:
+        usages = self.pending_usages
+        self.pending_usages = []
+        return usages
 
     # ---- map search -----------------------------------------------------
 

@@ -338,8 +338,8 @@ class ChatService:
         voice/gateway.py::_persist_tool_usage(); billing it at the chat
         model's rate would be quietly wrong in both directions.
         """
-        usage = dispatcher.last_usage
-        if usage is None or not usage.billable:
+        usages = dispatcher.take_pending_usages()
+        if not usages:
             return
         model = await self.session.scalar(
             select(AIModel)
@@ -355,21 +355,23 @@ class ChatService:
                 trace_id=trace_id, tool_model=self.settings.tool_model,
             )
             return
-        self.session.add(
-            UsageEvent(
-                user_id=user_id,
-                provider_id=model.provider_id,
-                model_id=model.id,
-                dedupe_key=f"{trace_id}:tool:{uuid4().hex}",
-                interaction_type="tool_call",
-                text_input_tokens=usage.text_input_tokens,
-                cached_text_input_tokens=usage.cached_text_input_tokens,
-                text_output_tokens=usage.text_output_tokens,
-                raw_usage_json={"source": "map_chat", **usage.raw},
-                status=UsageStatus.PENDING,
-                trace_id=trace_id,
+        for usage in usages:
+            self.session.add(
+                UsageEvent(
+                    user_id=user_id,
+                    provider_id=model.provider_id,
+                    model_id=model.id,
+                    dedupe_key=f"{trace_id}:tool:{uuid4().hex}",
+                    interaction_type="tool_call",
+                    text_input_tokens=usage.text_input_tokens,
+                    cached_text_input_tokens=usage.cached_text_input_tokens,
+                    text_output_tokens=usage.text_output_tokens,
+                    tool_calls=usage.tool_calls,
+                    raw_usage_json={"source": "map_chat", **usage.raw},
+                    status=UsageStatus.PENDING,
+                    trace_id=trace_id,
+                )
             )
-        )
         await self.session.commit()
 
 
@@ -423,5 +425,3 @@ def _accumulate(total: NormalizedUsage, addition: NormalizedUsage) -> Normalized
         tool_calls=total.tool_calls + addition.tool_calls,
         raw={"rounds": [*rounds, addition.raw]},
     )
-
-

@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 
 from locus_v2.ai.enums import Lifecycle, PublicationStatus, ServiceKind, VoiceMode
@@ -37,8 +37,8 @@ MODELS = (
     ),
     (
         "openai",
-        "gpt-realtime-mini",
-        "GPT Realtime mini",
+        "gpt-realtime-2.1-mini",
+        "GPT Realtime 2.1 mini",
         ServiceKind.VOICE,
         "openai_realtime",
         Lifecycle.STABLE,
@@ -73,6 +73,10 @@ MODELS = (
     ),
 )
 
+RETIRED_MODEL_REPLACEMENTS = (
+    ("openai", "gpt-realtime-mini", "gpt-realtime-2.1-mini"),
+)
+
 PRICE_CARDS = (
     (
         "google",
@@ -96,6 +100,18 @@ PRICE_CARDS = (
             "text_input_per_million_usd": "0.25",
             "cached_text_input_per_million_usd": "0.025",
             "text_output_per_million_usd": "2.00",
+        },
+    ),
+    (
+        "openai",
+        "gpt-5-mini",
+        datetime(2026, 9, 8),
+        "https://developers.openai.com/api/docs/pricing",
+        {
+            "text_input_per_million_usd": "0.25",
+            "cached_text_input_per_million_usd": "0.025",
+            "text_output_per_million_usd": "2.00",
+            "tool_call_usd": "0.01",
         },
     ),
     (
@@ -538,11 +554,47 @@ async def seed() -> None:
                 session.add(model)
                 await session.flush()
             else:
+                model.display_name = name
                 model.service_kind = kind
                 model.adapter_code = adapter
+                model.lifecycle = lifecycle
                 if not model.runtime_defaults_json and MODEL_RUNTIME_DEFAULTS.get(adapter):
                     model.runtime_defaults_json = MODEL_RUNTIME_DEFAULTS[adapter]
             models[adapter] = model
+
+        # Provider catalogues evolve independently from deployments. Move routes away
+        # from models we deliberately retired, but leave every other panel choice intact.
+        for provider_code, retired_external_id, replacement_external_id in (
+            RETIRED_MODEL_REPLACEMENTS
+        ):
+            provider = providers[provider_code]
+            retired_model = await session.scalar(
+                select(AIModel).where(
+                    AIModel.provider_id == provider.id,
+                    AIModel.external_id == retired_external_id,
+                )
+            )
+            replacement_model = await session.scalar(
+                select(AIModel).where(
+                    AIModel.provider_id == provider.id,
+                    AIModel.external_id == replacement_external_id,
+                )
+            )
+            if retired_model is None or replacement_model is None:
+                continue
+            retired_model.lifecycle = Lifecycle.RETIRED
+            retired_model.enabled = False
+            retired_model.selectable = False
+            await session.execute(
+                update(RoutingProfile)
+                .where(RoutingProfile.primary_model_id == retired_model.id)
+                .values(primary_model_id=replacement_model.id)
+            )
+            await session.execute(
+                update(RoutingProfile)
+                .where(RoutingProfile.fallback_model_id == retired_model.id)
+                .values(fallback_model_id=replacement_model.id)
+            )
 
         imported_models = (
             await session.scalars(

@@ -13,9 +13,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from locus_v2.api.auth import CurrentUserDep, OptionalUserDep
-from locus_v2.infrastructure.database.session import get_session
 from locus_v2.identity.models import User
-from locus_v2.sessions.application.service import MapSessionService, SessionNotFoundError
+from locus_v2.infrastructure.database.session import get_session
+from locus_v2.sessions.application.service import (
+    MapSessionService,
+    SessionNotFoundError,
+)
 from locus_v2.sessions.models import SessionStateView
 from locus_v2.shared.mobile_ids import mobile_id
 

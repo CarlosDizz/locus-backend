@@ -3,7 +3,7 @@
 ## 0. Contexto de negocio y estrategia de corte
 
 Locus V1 fue una prueba de viabilidad: demostrar que el producto funcionaba, no un backend
-pensado para operarse. Está en la rama `main`, desplegado en ECS y es lo que usa la app Ionic
+pensado para operarse. Está en la rama `main`, desplegado con Docker Compose en EC2 y es lo que usa la app Ionic
 distribuida hoy. No se toca su contrato de cara a la app.
 
 El objetivo de V2 no es solo paridad tecnica: es que prompts, tools, modelos, parametros de
@@ -14,7 +14,7 @@ Estrategia de corte: V2 se construye y se prueba a fondo en local hablando el mi
 HTTP/WebSocket que V1. El cambio a produccion no es una reescritura de la app ni un despliegue
 paralelo con riesgo: es cambiar unicamente la URL base del backend que usa Ionic (ver seccion 5),
 una vez V2 haya demostrado en local paridad de datos, facturacion y comportamiento. V1 se
-mantiene disponible en ECS durante la ventana de observacion por si hay que revertir el cambio
+mantiene disponible en EC2 durante la ventana de observacion por si hay que revertir el cambio
 de URL sin tocar la app.
 
 ### 0.1 Flujo de usuario objetivo en la app Ionic (2026-09-05)
@@ -102,7 +102,7 @@ Cada adaptador de proveedor sera responsable de:
 - Correccion del encuadre del mapa al cambiar de ciudad.
 - Apertura de la ficha desde los marcadores.
 - Importacion de datos aprovechables de V1.
-- Datos importados: 19 usuarios, 19 wallets, 8 tarifas, 575 eventos de uso, 259 movimientos, 24 recargas, 17 ciudades, 6 tipos de POI, 858 POIs y 58 sesiones.
+- Datos importados y ampliados: 19 usuarios, 19 wallets, 19 ciudades, 6 tipos de POI y 898 POIs, ademas del historial de consumos, movimientos, recargas y sesiones de V1.
 - Build Angular, Ruff, pruebas principales y comprobaciones focalizadas de Mypy superadas.
 - Correccion de fecha/hora en toda la aplicacion (2026-09-05): todo timestamp se guardaba
   naive-pero-UTC y se servia sin marca de zona, asi que el navegador lo interpretaba como
@@ -113,14 +113,17 @@ Cada adaptador de proveedor sera responsable de:
   cambio de modelo/prompt/ruta; ahora tiene vista con antes/despues.
 - Boton "Probar proveedor" en Proveedores (2026-09-05): llamada real a cualquier modelo
   catalogado (chat o voz), con coste real facturado y mostrado al momento.
-- Slice minimo de Chat probado end to end (2026-09-05) contra OpenAI real, solo para
-  verificar el pipeline de uso/coste; el dominio Chat completo sigue pendiente (Fase C,
-  Capitulo 3 del checklist).
+- Chat de mapa y POI probado end to end contra OpenAI real, incluida documentacion mediante
+  tools, resultados en el mapa, uso, coste y ledger.
+- App Ionic real probada en local exclusivamente contra V2: login Google, mapa, ficha de POI,
+  chat documentado y llamada Gemini Live con WebSocket, audio, transcripcion y facturacion.
+- Panel operativo revisado en navegador: Pulso, Conversaciones, Prompts, Proveedores, catalogo,
+  Usuarios, Consumos, Registros y Auditoria.
 
 ### En curso
 
-- Inventario y formalizacion del contrato exacto que consume la app Ionic V1.
-- Diseno de la fachada compatible `/api` sobre los servicios V2.
+- Endurecimiento final de facturacion, audio y catalogo de modelos.
+- Preparacion del backup, despliegue paralelo en EC2, smoke test y rollback del corte.
 
 ### Deuda conocida
 
@@ -250,7 +253,7 @@ V2 estara lista para sustituir V1 cuando se cumpla todo lo siguiente:
 - Todos los endpoints V1 usados tienen pruebas de contrato.
 - Login de Google, catalogo, chat, llamadas y pagos funcionan en iOS y Android.
 - No existen cargos duplicados en reintentos, reconexiones o fallback.
-- Los 858 POIs y el resto de datos migrados son accesibles y consistentes.
+- Los 898 POIs y el resto de datos migrados son accesibles y consistentes.
 - La seleccion de proveedor, modelo, prompt, tools y fallback funciona desde el panel.
 - Logs, errores, latencia, uso y coste pueden investigarse desde el panel.
 - Existe copia de seguridad, procedimiento de despliegue y rollback probado.
@@ -271,14 +274,12 @@ V2 estara lista para sustituir V1 cuando se cumpla todo lo siguiente:
 
 ## 9. Siguientes pasos inmediatos
 
-1. Terminar el inventario del contrato Ionic y guardar ejemplos reales.
-2. Implementar primero autenticacion, catalogo y facturacion compatibles.
-3. Implementar chat compatible y verificar costes e idempotencia.
-4. Construir el puente de sesiones, llamadas y WebSocket.
-5. Ejecutar la app Ionic completa contra V2 en local.
-6. Completar pruebas contractuales y E2E en Docker.
-7. Cerrar las pantallas operativas pendientes del panel.
-8. Preparar el despliegue paralelo y el plan de rollback en AWS.
+1. Congelar V1 con una etiqueta Git y un backup verificable de la base de produccion.
+2. Promover el contenido de `v2/` a la raiz del repositorio en una rama reversible.
+3. Completar CI y el Compose de produccion para API, realtime, worker, panel, MySQL y Valkey.
+4. Desplegar V2 en paralelo en EC2 sin cambiar aun el trafico publico.
+5. Ejecutar smoke tests contra el host de preproduccion y verificar datos, costes y logs.
+6. Cambiar el trafico de forma reversible y observar antes de retirar V1.
 
 ## 10. Orden de despliegue recomendado
 
@@ -293,7 +294,11 @@ V2 estara lista para sustituir V1 cuando se cumpla todo lo siguiente:
 9. Periodo de observacion con V1 disponible.
 10. Retirada de V1 cuando no haya regresiones ni diferencias de facturacion.
 
-## 11. Diagnostico cruzado V1 / V2 / panel (2026-09-05)
+## 11. Diagnostico historico V1 / V2 / panel (2026-09-05, superado)
+
+> Esta seccion conserva la fotografia que guio la construccion inicial. Sus carencias ya no
+> describen el estado actual: Chat, Google Play, afiliacion, legal, sesiones y el puente
+> WebSocket estan implementados. La evidencia vigente esta en `testing-checklist.md`.
 
 Verificacion linea a linea sobre el codigo real de ambos repos, complementaria a las secciones anteriores.
 
@@ -362,3 +367,16 @@ Usuarios, Consumos, Registros.
 5. Billing (incluido Google Play) y puente WebSocket de llamadas al final, con foco en
    idempotencia.
 6. En paralelo, cerrar Fase E del panel segun lo que se confirme al abrir cada componente.
+
+## 12. Ultima verificacion cruzada (2026-09-08)
+
+- El comparador contractual publico y autenticado da 11 de 11 comprobaciones en verde.
+- Ionic se ejecuto en `localhost:8100` con `apiBaseUrl` apuntando exclusivamente a V2 en
+  `localhost:8200`; se verificaron login Google, mapa de Roma, ficha de POI, chat y llamada.
+- La llamada uso Gemini Live como primario y OpenAI Realtime 2.1 mini como fallback. Se verifico
+  el uso de tools, transcripcion, audio y cargos agregados.
+- Se corrigio una carrera del frontend que seguia enviando audio despues de perder el turno.
+- Se corrigio la facturacion de tools para no contar dos veces tokens cacheados, registrar el
+  precio de busqueda web y conservar todas las tools pagadas de una misma ronda.
+- Quedan fuera de esta evidencia una compra nueva real de Google Play, un ensayo de fallback con
+  caida provocada y el despliegue/rollback de produccion.

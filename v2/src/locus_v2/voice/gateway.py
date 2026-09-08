@@ -617,6 +617,7 @@ class VoiceGateway:
                     text_input_tokens=usage.text_input_tokens,
                     cached_text_input_tokens=usage.cached_text_input_tokens,
                     text_output_tokens=usage.text_output_tokens,
+                    tool_calls=usage.tool_calls,
                     raw_usage_json={"tool": tool_name, "handler": handler_code, **usage.raw},
                     status=UsageStatus.PENDING,
                     trace_id=self.trace_id,

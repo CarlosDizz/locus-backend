@@ -9,8 +9,7 @@ stack real) · `pendiente` (no empezado).
 
 ## Capítulo 1 — Auth (`/api/auth/*`)
 
-Estado: **probado en caliente** (2026-09-06) contra MySQL real, salvo la app Ionic real
-(pendiente por depender de un login Google interactivo real, ver más abajo).
+Estado: **probado en caliente**, incluida la app Ionic real con Google (2026-09-08).
 
 - [x] Modelos: `UserSession` (tabla `user_sessions`, distinta de `AdminSession`).
 - [x] Migración `f3a6c9d21b74_add_user_sessions`.
@@ -46,7 +45,8 @@ Estado: **probado en caliente** (2026-09-06) contra MySQL real, salvo la app Ion
       paridad exacta con V1, no una regresión: el método de servicio existe pero no está
       expuesto por ninguna ruta en ninguna de las dos versiones.
 - [ ] Login Google real desde Postman/curl con un token válido de verdad.
-- [ ] Apuntar la app Ionic real (`environment.local.ts`, `apiBaseUrl`) a V2 y loguear de verdad.
+- [x] App Ionic real en `localhost:8100`, apuntando exclusivamente a V2 en `localhost:8200`,
+      con login Google valido y navegacion autenticada (2026-09-08).
 - [x] **Bono de bienvenida — ya estaba conectado (verificado 2026-09-08).** El ítem estaba
       obsoleto y el TODO que citaba ya no existe: `mobile_auth._find_or_create()` llama a
       `billing/application/onboarding.py::create_signup_wallet()` en la misma transacción
@@ -61,8 +61,7 @@ Estado: **probado en caliente** (2026-09-06) contra MySQL real, salvo la app Ion
 
 ## Capítulo 2 — Catálogo (`/api/catalog/*`)
 
-Estado: **pendiente**. Contrato ya inventariado (schemas de `app/schemas/catalog.py` leídos y
-documentados en `roadmap.md` §11), falta escribir el router V2.
+Estado: **probado en caliente** contra la app Ionic real (2026-09-08).
 
 - [x] `GET /catalog/poi-types`, `/cities`, `/pois`, `/pois/{id}`,
       `/pois/{id}/documentation` y `/pois/{id}/access-links` — **escritos por Carlos**
@@ -757,8 +756,8 @@ Estado: **probado en caliente** (2026-09-06) contra la API real.
 
 ## Capítulo 8 — Panel de control (control-panel Angular)
 
-Estado: parcialmente **probado** (conectado a datos reales), resto **construido** o
-**pendiente**. Ver `roadmap.md` §11 para el detalle sección por sección.
+Estado: **probado en navegador** (2026-09-08): todas las secciones cargan datos reales y las
+pantallas de configuracion, catalogo, usuarios, consumos, logs y auditoria son operables.
 
 - [x] Login admin, Pulso, Prompts/Proveedores, Ciudades y POIs, Consumos, Registros — conectados
       a datos reales.
@@ -916,8 +915,8 @@ desarrollo, todo igual que antes.
       - **Pendiente de ampliar**: faltan `/chat/*`, `/sessions/*` y el WebSocket de llamadas.
         Los dos primeros son directos; el WebSocket necesita otro enfoque porque V1 y V2
         hablan protocolos distintos por diseño.
-- [ ] `./bin/locus up` en local con datos importados, capítulos 1–7 en verde.
-- [ ] Desplegar V2 en paralelo en ECS sin tráfico real.
+- [x] Stack Docker local con datos importados y app Ionic real sobre V2 (2026-09-08).
+- [ ] Desplegar V2 en paralelo en EC2 sin tráfico real.
 - [ ] Cambiar `apiBaseUrl` de Ionic de `https://api.locusguide.es/api` al host V2.
 - [ ] Ventana de observación con V1 disponible para rollback inmediato (revertir la URL).
 - [ ] Retirar V1 solo cuando no haya regresiones ni diferencias de facturación.

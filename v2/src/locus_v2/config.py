@@ -93,7 +93,10 @@ class Settings(BaseSettings):
     google_play_service_account_file: str = ""
 
     billing_min_reserve_cents: int = 25
-    billing_signup_bonus_cents: int = Field(default=100, ge=0)
+    # 200, matching V1's own default and the value in its live environment. V2 had
+    # 100, so a new account would have silently received half the welcome credit
+    # after the cutover (found 2026-09-08 comparing defaults, not just names).
+    billing_signup_bonus_cents: int = Field(default=200, ge=0)
     billing_manual_topups_enabled: bool = False
 
     getyourguide_referrals_enabled: bool = True

@@ -47,8 +47,15 @@ Estado: **probado en caliente** (2026-09-06) contra MySQL real, salvo la app Ion
       expuesto por ninguna ruta en ninguna de las dos versiones.
 - [ ] Login Google real desde Postman/curl con un token válido de verdad.
 - [ ] Apuntar la app Ionic real (`environment.local.ts`, `apiBaseUrl`) a V2 y loguear de verdad.
-- [ ] Bono de bienvenida al crear usuario nuevo — pendiente conectar con Billing (ver TODO en
-      `mobile_auth.py`).
+- [x] **Bono de bienvenida — ya estaba conectado (verificado 2026-09-08).** El ítem estaba
+      obsoleto y el TODO que citaba ya no existe: `mobile_auth._find_or_create()` llama a
+      `billing/application/onboarding.py::create_signup_wallet()` en la misma transacción
+      que crea la identidad. Probado creando un usuario nuevo por el camino real de
+      `login_google` (solo se sustituye la llamada de red a Google): wallet creada con el
+      saldo del bono y entrada de ledger "Bono de bienvenida" con
+      `reference_type=signup_bonus`. Usuario de prueba borrado al terminar.
+      **Divergencia real encontrada y corregida**: V1 da 200 céntimos y V2 daba 100, así que
+      un usuario nuevo habría recibido la mitad tras el corte. Alineado a 200.
 - [ ] Decidir si merece la pena implementar password auth real o dejarlo en "desactivado" para
       siempre (hoy nadie lo usa en V1).
 
@@ -338,7 +345,7 @@ real de compras de Google Play (sin credenciales de service account en este ento
         entregar el mismo evento varias veces a la vez, conviene rematarlo: la vía limpia
         es hacer la lectura de recuperación en una sesión nueva en vez de reutilizar la
         que acaba de morir.
-- [ ] Bono de bienvenida al registrar usuario (enlazar con Capítulo 1).
+- [x] Bono de bienvenida al registrar usuario — ver Capítulo 1 (verificado 2026-09-08).
 
 ## Capítulo 5 — Afiliación GetYourGuide
 
@@ -808,6 +815,30 @@ Estado: **pendiente**, es el último capítulo por diseño.
       corte, y confirmar que cada clave con valor en V1 tiene su equivalente `LOCUS_*`.
       **Auditoría hecha el 2026-09-08** (ver abajo); lo que queda es aplicar la lista al
       entorno real de producción cuando exista.
+
+#### Precios: V2 cobra un 6,3% más que V1, y es deliberado (2026-09-08)
+
+Salió al comparar **valores por defecto**, no solo nombres — un fallo de la primera pasada
+de la auditoría, que solo miró si cada variable existía. La paridad de nombres no es
+paridad de comportamiento.
+
+Las dos versiones aplican la misma fórmula (`coste_usd × tipo_cambio × margen`), así que
+los números son directamente comparables:
+
+| | V1 (producción) | V2 |
+|---|---|---|
+| `usd_to_eur` | 1,00 | 0,87 |
+| `margin_multiplier` | 1,80 | 2,20 |
+| **efectivo** | **1,80** | **1,914** |
+
+El `1,00` de V1 significa que trata los dólares como euros, es decir que no convierte
+divisa: lleva tiempo cobrando por debajo de su coste real, y su margen efectivo es menor
+del que aparenta. **Carlos decidió mantener los valores de V2** ("hay que ganar"), así que
+esto es un cambio de precio consciente, no una divergencia a corregir.
+
+Consecuencia para el Capítulo 9: la ventana de observación del corte no debe interpretar
+esa diferencia como una regresión. El criterio "sin diferencias de facturación" se
+sustituye por "sin diferencias distintas de este +6,3% esperado".
 
 #### Auditoría de paridad V1 → V2 (2026-09-08)
 

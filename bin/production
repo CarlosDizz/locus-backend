@@ -20,18 +20,30 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 
 command="${1:-status}"
+
+backup_database() {
+  local database="$1"
+  local label="$2"
+  mkdir -p backups
+  local stamp
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  local output="backups/${label}-${stamp}.sql.gz"
+  "${COMPOSE[@]}" exec -T mysql sh -c \
+    "exec mysqldump -uroot -p\"\$MYSQL_ROOT_PASSWORD\" --single-transaction --routines --triggers \"${database}\"" \
+    | gzip > "$output"
+  gzip -t "$output"
+  echo "Verified backup: $output"
+}
+
 case "$command" in
   build)
     "${COMPOSE[@]}" build api realtime worker control-panel
     ;;
   backup)
-    mkdir -p backups
-    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-    "${COMPOSE[@]}" exec -T mysql sh -c \
-      'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers locus' \
-      | gzip > "backups/locus-v1-$stamp.sql.gz"
-    gzip -t "backups/locus-v1-$stamp.sql.gz"
-    echo "Verified backup: backups/locus-v1-$stamp.sql.gz"
+    backup_database "${DB_NAME:-locus}" "locus-v1"
+    ;;
+  backup-v2)
+    backup_database "locus_v2" "locus-v2"
     ;;
   prepare-db)
     "${COMPOSE[@]}" up -d mysql valkey
@@ -59,7 +71,7 @@ case "$command" in
     "${COMPOSE[@]}" ps
     ;;
   *)
-    echo "Usage: ./bin/production {build|backup|prepare-db|import-v1|up|smoke|logs [service]|status}" >&2
+    echo "Usage: ./bin/production {build|backup|backup-v2|prepare-db|import-v1|up|smoke|logs [service]|status}" >&2
     exit 2
     ;;
 esac

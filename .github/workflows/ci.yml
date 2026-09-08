@@ -37,3 +37,62 @@ jobs:
           cache-dependency-path: control-panel/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  deploy-production:
+    name: Deploy V2 to EC2
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend, control-panel]
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: locus-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_SSH_KEY"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/locus-production
+          chmod 600 ~/.ssh/locus-production
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Synchronize release
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          rsync -az --delete-delay \
+            --exclude '.git/' \
+            --exclude '.env' \
+            --exclude '.env.local' \
+            --exclude '.env.local.seed' \
+            --exclude '.env.production' \
+            --exclude 'backups/' \
+            --exclude 'control-panel/node_modules/' \
+            --exclude 'control-panel/dist/' \
+            -e 'ssh -i ~/.ssh/locus-production -o StrictHostKeyChecking=yes' \
+            ./ "$DEPLOY_USER@$DEPLOY_HOST:/home/ec2-user/locus-backend-v2/"
+
+      - name: Back up, build and deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh -i ~/.ssh/locus-production -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" '
+            set -euo pipefail
+            cd /home/ec2-user/locus-backend-v2
+            ./bin/production backup-v2
+            ./bin/production build
+            ./bin/production up
+            ./bin/production smoke
+          '

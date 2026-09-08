@@ -37,3 +37,11 @@ La base `locus` y el directorio `/home/ec2-user/locus-backend` permanecen intact
 
 No se elimina `locus_v2`, `locus`, ningún dump ni ningún volumen hasta terminar la ventana de
 observacion. Está prohibido usar `docker compose down -v` durante el corte o el rollback.
+
+## Despliegues posteriores
+
+Cada `push` a `main` ejecuta el trabajo `deploy-production` de `.github/workflows/ci.yml`. El workflow necesita
+estos secrets del repositorio: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` y
+`DEPLOY_KNOWN_HOSTS`. Sin ellos falla antes de transferir nada. Sincroniza solo el código,
+mantiene el dotenv y los backups de EC2, genera un dump verificado de `locus_v2`, construye las
+imágenes, recrea los servicios y ejecuta el smoke test público.

@@ -2,32 +2,57 @@ services:
   api:
     build: .
     restart: unless-stopped
+    env_file: ${LOCUS_ENV_FILE:-.env.production}
+    command: >
+      sh -c "alembic upgrade head &&
+      python -m locus_v2.entrypoints.seed &&
+      uvicorn locus_v2.entrypoints.api:app --host 0.0.0.0 --port 8100"
     expose:
-      - "8000"
-    env_file:
-      - ${LOCUS_ENV_FILE:-.env.prod}
-    environment:
-      DB_DRIVER: ${DB_DRIVER:-mysql+pymysql}
-      DB_HOST: mysql
-      DB_PORT: 3306
-      DB_NAME: ${DB_NAME:-locus}
-      DB_USER: ${DB_USER:-locus}
-      DB_PASSWORD: ${DB_PASSWORD}
-      DATABASE_URL: mysql+pymysql://${DB_USER:-locus}:${DB_PASSWORD}@mysql:3306/${DB_NAME:-locus}
-      MYSQL_URL: ""
-      MYSQL_PUBLIC_URL: ""
-      DATABASE_PUBLIC_URL: ""
-      MYSQLHOST: mysql
-      MYSQLPORT: 3306
-      MYSQLDATABASE: ${DB_NAME:-locus}
-      MYSQLUSER: ${DB_USER:-locus}
-      MYSQLPASSWORD: ${DB_PASSWORD}
+      - "8100"
     depends_on:
       mysql:
         condition: service_healthy
-    command: >
-      sh -c "alembic upgrade head &&
-      uvicorn app.main:app --host 0.0.0.0 --port 8000"
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/api/v2/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  realtime:
+    build: .
+    restart: unless-stopped
+    env_file: ${LOCUS_ENV_FILE:-.env.production}
+    command: uvicorn locus_v2.entrypoints.realtime:app --host 0.0.0.0 --port 8101
+    expose:
+      - "8101"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    env_file: ${LOCUS_ENV_FILE:-.env.production}
+    command: python -m locus_v2.entrypoints.worker
+    depends_on:
+      api:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
+  control-panel:
+    build: ./control-panel
+    restart: unless-stopped
+    expose:
+      - "80"
+    depends_on:
+      api:
+        condition: service_healthy
 
   caddy:
     image: caddy:2-alpine
@@ -35,12 +60,16 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "443:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+      control-panel:
+        condition: service_started
 
   mysql:
     image: mysql:8.4
@@ -64,7 +93,20 @@ services:
       retries: 10
       start_period: 30s
 
+  valkey:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: valkey-server --save 60 1 --maxmemory 96mb --maxmemory-policy allkeys-lru
+    volumes:
+      - valkey_data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
 volumes:
   mysql_data:
+  valkey_data:
   caddy_data:
   caddy_config:

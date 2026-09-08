@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+ENV_FILE="${LOCUS_ENV_FILE:-.env.production}"
+PROJECT="${LOCUS_COMPOSE_PROJECT_NAME:-locus-backend}"
+export LOCUS_ENV_FILE="$ENV_FILE"
+COMPOSE=(docker compose --env-file "$ENV_FILE" -p "$PROJECT" -f docker-compose.prod.yml)
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "Missing $ENV_FILE. Start from .env.production.example." >&2
+  exit 2
+fi
+
+command="${1:-status}"
+case "$command" in
+  build)
+    "${COMPOSE[@]}" build api realtime worker control-panel
+    ;;
+  backup)
+    mkdir -p backups
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    "${COMPOSE[@]}" exec -T mysql sh -c \
+      'exec mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers locus' \
+      | gzip > "backups/locus-v1-$stamp.sql.gz"
+    gzip -t "backups/locus-v1-$stamp.sql.gz"
+    echo "Verified backup: backups/locus-v1-$stamp.sql.gz"
+    ;;
+  prepare-db)
+    "${COMPOSE[@]}" up -d mysql valkey
+    "${COMPOSE[@]}" exec -T mysql sh -c \
+      'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS locus_v2 CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; GRANT ALL PRIVILEGES ON locus_v2.* TO '\''$MYSQL_USER'\''@'\''%'\''; FLUSH PRIVILEGES"'
+    "${COMPOSE[@]}" run --rm api alembic upgrade head
+    "${COMPOSE[@]}" run --rm api python -m locus_v2.entrypoints.seed
+    ;;
+  import-v1)
+    "${COMPOSE[@]}" run --rm api python -m locus_v2.entrypoints.import_v1
+    ;;
+  up)
+    "${COMPOSE[@]}" up -d api realtime worker control-panel caddy
+    ;;
+  smoke)
+    "${COMPOSE[@]}" exec -T api python -c \
+      "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/api/v2/health/ready')"
+    curl --fail --silent --show-error https://api.locusguide.es/api/app/version
+    echo
+    ;;
+  logs)
+    "${COMPOSE[@]}" logs -f "${2:-api}"
+    ;;
+  status)
+    "${COMPOSE[@]}" ps
+    ;;
+  *)
+    echo "Usage: ./bin/production {build|backup|prepare-db|import-v1|up|smoke|logs [service]|status}" >&2
+    exit 2
+    ;;
+esac

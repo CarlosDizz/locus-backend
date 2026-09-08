@@ -1,7 +1,7 @@
-:80 {
-	reverse_proxy api:8000
+api.locusguide.es {
+	reverse_proxy api:8100
 }
 
-api.locusguide.es {
-	reverse_proxy api:8000
+admin.locusguide.es {
+	reverse_proxy control-panel:80
 }

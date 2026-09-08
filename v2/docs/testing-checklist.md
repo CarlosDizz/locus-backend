@@ -410,7 +410,7 @@ token móvil real de `/api/auth`. Es el capítulo de mayor riesgo técnico en lo
 - [ ] `/realtime/*` (client-secret, tools de realtime, photo-insight) — **confirmado código
       muerto en V1**: `realtime.service.ts` no lo importa ninguna página de la app. No se
       porta a propósito; se deja aquí solo para que conste la decisión.
-- [ ] **Reconexión transparente cuando la sesión con el proveedor se rompe** — es el hueco
+- [x] **Reconexión transparente cuando la sesión con el proveedor se rompe** — hecha y probada el 2026-09-08 (ver "Causa del 1008" arriba). Era el hueco
       grande que queda del capítulo. Ver "Sesiones largas" más abajo.
 - [ ] Fallback a otro proveedor si el primario falla al conectar.
 

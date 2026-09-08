@@ -41,7 +41,8 @@ observacion. Está prohibido usar `docker compose down -v` durante el corte o el
 ## Despliegues posteriores
 
 Cada `push` a `main` ejecuta el trabajo `deploy-production` de `.github/workflows/ci.yml`. El workflow necesita
-estos secrets del repositorio: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` y
-`DEPLOY_KNOWN_HOSTS`. Sin ellos falla antes de transferir nada. Sincroniza solo el código,
+el secret del repositorio `DEPLOY_SSH_KEY`; la clave es exclusiva de GitHub Actions y la huella
+SSH de la EC2 está fijada en `.github/production-known_hosts`. Sin la clave falla antes de
+transferir nada. Sincroniza solo el código,
 mantiene el dotenv y los backups de EC2, genera un dump verificado de `locus_v2`, construye las
 imágenes, recrea los servicios y ejecuta el smoke test público.

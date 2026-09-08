@@ -55,22 +55,18 @@ jobs:
       - name: Configure SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           test -n "$DEPLOY_SSH_KEY"
-          test -n "$DEPLOY_KNOWN_HOSTS"
           mkdir -p ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/locus-production
           chmod 600 ~/.ssh/locus-production
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cp .github/production-known_hosts ~/.ssh/known_hosts
 
       - name: Synchronize release
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: 15.217.177.95
+          DEPLOY_USER: ec2-user
         run: |
-          test -n "$DEPLOY_HOST"
-          test -n "$DEPLOY_USER"
           rsync -az --delete-delay \
             --exclude '.git/' \
             --exclude '.env' \
@@ -85,8 +81,8 @@ jobs:
 
       - name: Back up, build and deploy
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: 15.217.177.95
+          DEPLOY_USER: ec2-user
         run: |
           ssh -i ~/.ssh/locus-production -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" '
             set -euo pipefail

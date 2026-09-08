@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Runs on EC2. The host fetches main itself, so deploys need no inbound SSH.
+ROOT="${LOCUS_DEPLOY_ROOT:-/home/ec2-user/locus-backend-v2}"
+SOURCE="${LOCUS_DEPLOY_SOURCE:-/home/ec2-user/locus-backend-main}"
+REPOSITORY="${LOCUS_DEPLOY_REPOSITORY:-https://github.com/CarlosDizz/locus-backend.git}"
+LOCK_FILE="${LOCUS_DEPLOY_LOCK_FILE:-/home/ec2-user/.cache/locus-main-deploy.lock}"
+STATE_FILE="$ROOT/.deployed-main-sha"
+
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+
+if [[ ! -d "$SOURCE/.git" ]]; then
+  git clone --depth=1 --branch main "$REPOSITORY" "$SOURCE"
+else
+  git -C "$SOURCE" fetch --depth=1 origin main
+fi
+
+target_sha="$(git -C "$SOURCE" rev-parse origin/main)"
+current_sha="$(cat "$STATE_FILE" 2>/dev/null || true)"
+[[ "$target_sha" != "$current_sha" ]] || exit 0
+
+# Wait for CI rather than deploying a commit that has not passed its required checks.
+ci_state="$(curl --fail --silent --show-error \
+  -H 'Accept: application/vnd.github+json' \
+  "https://api.github.com/repos/CarlosDizz/locus-backend/commits/${target_sha}/check-runs" \
+  | python3 -c '
+import json, sys
+runs = {run["name"]: run for run in json.load(sys.stdin).get("check_runs", [])}
+required = ["backend", "control-panel"]
+if not all(name in runs for name in required):
+    print("pending")
+elif all(runs[name]["status"] == "completed" and runs[name].get("conclusion") == "success" for name in required):
+    print("ready")
+elif any(runs[name]["status"] == "completed" and runs[name].get("conclusion") != "success" for name in required):
+    print("failed")
+else:
+    print("pending")
+')" || exit 0
+
+case "$ci_state" in
+  ready) ;;
+  pending)
+    echo "Waiting for CI on $target_sha"
+    exit 0
+    ;;
+  failed)
+    echo "CI failed for $target_sha; refusing production deploy" >&2
+    exit 0
+    ;;
+  *)
+    echo "Unexpected CI state: $ci_state" >&2
+    exit 1
+    ;;
+esac
+
+git -C "$SOURCE" reset --hard "$target_sha"
+rsync -az --delete-delay \
+  --exclude '.git/' \
+  --exclude '.env' \
+  --exclude '.env.local' \
+  --exclude '.env.local.seed' \
+  --exclude '.env.production' \
+  --exclude 'backups/' \
+  --exclude 'control-panel/node_modules/' \
+  --exclude 'control-panel/dist/' \
+  "$SOURCE/" "$ROOT/"
+
+cd "$ROOT"
+./bin/production backup-v2
+./bin/production build
+./bin/production up
+./bin/production smoke
+printf '%s\n' "$target_sha" > "${STATE_FILE}.tmp"
+mv "${STATE_FILE}.tmp" "$STATE_FILE"
+echo "Deployed $target_sha"

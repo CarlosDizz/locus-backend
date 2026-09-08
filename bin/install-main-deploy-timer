@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${LOCUS_DEPLOY_ROOT:-/home/ec2-user/locus-backend-v2}"
+
+sudo tee /etc/systemd/system/locus-main-deploy.service >/dev/null <<EOF
+[Unit]
+Description=Deploy verified Locus main commits
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=$ROOT
+ExecStart=$ROOT/bin/pull-deploy
+EOF
+
+sudo tee /etc/systemd/system/locus-main-deploy.timer >/dev/null <<'EOF'
+[Unit]
+Description=Check main for a verified Locus release every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now locus-main-deploy.timer
+sudo systemctl start locus-main-deploy.service
+sudo systemctl status --no-pager locus-main-deploy.service

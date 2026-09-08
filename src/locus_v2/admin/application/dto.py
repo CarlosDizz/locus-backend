@@ -46,8 +46,21 @@ class PoiMapPoint(BaseModel):
     lng: float
 
 
+class BuildInfo(BaseModel):
+    """Which build the panel is looking at.
+
+    `version` is maintained by hand and `commit` is stamped by the deploy, so
+    the pair stays truthful even when someone forgets to bump the version.
+    """
+
+    version: str
+    commit: str
+    deployed_at: str
+
+
 class AdminOverview(BaseModel):
     environment: str
+    build: BuildInfo
     metrics: list[OverviewMetric]
     registered_adapters: list[str]
     models: list[ModelSummary]

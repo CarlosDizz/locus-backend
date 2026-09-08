@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     # request: behind a proxy the request host is the proxy's, not ours.
     public_api_base_url: str = "http://localhost:8200/api"
 
+    # Which commit is actually running, injected by bin/pull-deploy at deploy
+    # time. The point is to be able to answer "is the last commit live?" without
+    # opening an SSH session. Left as "dev" outside a deploy, which is honest:
+    # a working copy is not any particular commit. Never derived from the local
+    # .git, because the deployed tree is an rsync copy with no .git at all.
+    build_sha: str = "dev"
+    build_time: str = ""
+
     database_url: str = "mysql+asyncmy://locus_v2:locus_v2@localhost:3307/locus_v2"
     legacy_database_url: str | None = None
     redis_url: str = "redis://localhost:6380/0"

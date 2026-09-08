@@ -69,6 +69,13 @@ rsync -az --delete-delay \
   "$SOURCE/" "$ROOT/"
 
 cd "$ROOT"
+# Hand the commit to the containers, so "is the last commit live?" is answered
+# by production itself instead of by reading this script's state file over SSH.
+# The deployed tree is an rsync copy with no .git, so this is the only moment
+# the sha is still known.
+export LOCUS_BUILD_SHA="$target_sha"
+LOCUS_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+export LOCUS_BUILD_TIME
 ./bin/production backup-v2
 ./bin/production build
 ./bin/production up

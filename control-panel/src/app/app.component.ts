@@ -92,6 +92,27 @@ export class AppComponent {
     });
   }
 
+  /** "v0.1.0 · 74efa33 · 8 sep 16:40", trimming whatever the backend left empty. */
+  buildLabel(): string {
+    const build = this.overview()?.build;
+    if (!build) return '';
+    const parts = [`v${build.version}`, build.commit.slice(0, 7)];
+    if (build.deployed_at) {
+      const when = new Date(build.deployed_at);
+      if (!Number.isNaN(when.getTime())) {
+        parts.push(
+          when.toLocaleString('es-ES', {
+            day: 'numeric',
+            month: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+        );
+      }
+    }
+    return parts.join(' · ');
+  }
+
   modelStatus(model: ModelSummary): string {
     if (!model.enabled) return 'En espera';
     if (model.lifecycle === 'preview') return 'Preview';

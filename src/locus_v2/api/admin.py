@@ -3,7 +3,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from locus_v2.admin.application.dto import AdminOverview
+from locus_v2 import __version__
+from locus_v2.admin.application.dto import AdminOverview, BuildInfo
 from locus_v2.admin.application.service import AdminOverviewService
 from locus_v2.admin.infrastructure.sqlalchemy_overview import SqlAlchemyOverviewReader
 from locus_v2.api.admin_auth import require_admin
@@ -23,5 +24,10 @@ async def overview(session: SessionDep, settings: SettingsDep) -> AdminOverview:
     service = AdminOverviewService(SqlAlchemyOverviewReader(session))
     return await service.execute(
         environment=settings.env,
+        build=BuildInfo(
+            version=__version__,
+            commit=settings.build_sha,
+            deployed_at=settings.build_time,
+        ),
         registered_adapters=registry.available(),
     )

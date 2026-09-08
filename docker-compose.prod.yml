@@ -3,6 +3,12 @@ services:
     build: .
     restart: unless-stopped
     env_file: ${LOCUS_ENV_FILE:-.env.production}
+    # Stamped by bin/pull-deploy so /health and the control panel can say which
+    # commit is live. Only the api carries it: it is the one that reports, and
+    # every service that reads it gets recreated whenever the value changes.
+    environment:
+      LOCUS_BUILD_SHA: ${LOCUS_BUILD_SHA:-dev}
+      LOCUS_BUILD_TIME: ${LOCUS_BUILD_TIME:-}
     command: >
       sh -c "alembic upgrade head &&
       python -m locus_v2.entrypoints.seed &&

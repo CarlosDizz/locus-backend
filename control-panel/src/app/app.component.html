@@ -38,7 +38,15 @@
     <header class="topbar">
       <div class="crumb"><span>Centro de operaciones</span><b>/</b>{{ activeSection() }}</div>
       <div class="top-actions">
-        <span class="environment"><i></i>{{ overview()?.environment || 'local' }}</span>
+        <span class="environment">
+          <i></i>
+          <span class="environment-text">
+            {{ overview()?.environment || 'local' }}
+            @if (buildLabel()) {
+              <small class="build" [title]="'Commit ' + overview()!.build.commit">{{ buildLabel() }}</small>
+            }
+          </span>
+        </span>
         <button type="button" class="icon-action" (click)="loadOverview()" aria-label="Actualizar">↻</button>
         <button type="button" class="primary">Nueva prueba</button>
       </div>

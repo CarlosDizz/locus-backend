@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from locus_v2.admin.application.dto import (
     AdminOverview,
+    BuildInfo,
     CalendarActivity,
     DailyUsageSummary,
     ModelSummary,
@@ -23,7 +24,9 @@ class SqlAlchemyOverviewReader:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def read(self, *, environment: str, registered_adapters: list[str]) -> AdminOverview:
+    async def read(
+        self, *, environment: str, build: BuildInfo, registered_adapters: list[str]
+    ) -> AdminOverview:
         model_rows = (
             await self._session.execute(
                 select(AIModel, AIProvider.code)
@@ -35,6 +38,7 @@ class SqlAlchemyOverviewReader:
 
         return AdminOverview(
             environment=environment,
+            build=build,
             metrics=[
                 OverviewMetric(label="Modelos activos", value=counts["models"], tone="blue"),
                 OverviewMetric(

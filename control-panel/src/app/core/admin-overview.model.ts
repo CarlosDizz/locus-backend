@@ -39,8 +39,18 @@ export interface PoiMapPoint {
   lng: number;
 }
 
+export interface BuildInfo {
+  /** Release number we bump by hand. */
+  version: string;
+  /** Commit the deploy stamped, or 'dev' outside a deploy. */
+  commit: string;
+  /** ISO instant of the deploy; empty when running from a working copy. */
+  deployed_at: string;
+}
+
 export interface AdminOverview {
   environment: string;
+  build: BuildInfo;
   metrics: OverviewMetric[];
   registered_adapters: string[];
   models: ModelSummary[];

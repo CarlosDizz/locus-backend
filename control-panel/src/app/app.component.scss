@@ -64,6 +64,8 @@ main { min-width: 0; padding: 0 5vw 60px; }
 .top-actions { display: flex; align-items: center; gap: 10px; }
 .environment, .live-pill { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--locus-line); border-radius: 999px; padding: 8px 12px; text-transform: uppercase; letter-spacing: .12em; font-size: 9px; font-weight: 800; }
 .environment i, .live-pill i, .status i { width: 7px; height: 7px; border-radius: 50%; background: var(--locus-green); box-shadow: 0 0 0 4px rgba(108, 138, 100, .11); }
+.environment-text { display: inline-flex; flex-direction: column; gap: 2px; line-height: 1.15; }
+.environment .build { text-transform: none; letter-spacing: .04em; font-size: 9px; font-weight: 600; color: var(--locus-muted); font-variant-numeric: tabular-nums; }
 .icon-action, .primary, .text-action { cursor: pointer; }
 .icon-action { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--locus-line); background: rgba(255,255,255,.35); color: var(--locus-blue); font-size: 19px; }
 .primary { border: 0; border-radius: 999px; background: var(--locus-terracotta); color: white; padding: 11px 18px; font-size: 11px; font-weight: 800; }

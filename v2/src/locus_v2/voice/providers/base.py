@@ -28,6 +28,15 @@ class ProviderCapabilities(BaseModel):
     input_transcription: bool = False
     output_transcription: bool = False
     image_input: bool = False
+    # Can prior conversation be replayed into a fresh session without the model
+    # answering it? That is what calls/bridge.py needs to survive a dropped
+    # provider session, and it is the only one of the three that anything reads.
+    context_seeding: bool = False
+    # The provider's *own* resumption tokens and sliding-window compression.
+    # Both are False everywhere on purpose: we implement neither, and until
+    # 2026-09-08 they were declared True while nothing read or honoured them —
+    # a label the code did not back. Locus reconnects by reseeding instead
+    # (see calls/bridge.py), which works the same way on every provider.
     session_resumption: bool = False
     context_compression: bool = False
     supported_input_formats: list[AudioFormat] = Field(default_factory=list)
@@ -85,6 +94,19 @@ class LiveProvider(ABC):
         check gets a clear error instead of silently doing nothing.
         """
         raise NotImplementedError(f"{self.code} does not support image input")
+
+    async def seed_context(self, entries: list[tuple[str, str]]) -> None:
+        """Replay prior turns into a fresh session without asking for a reply.
+
+        `entries` is (role, text) with role "user" or "assistant", oldest first.
+        Used when a provider session dies mid-call and a new one has to pick up
+        where it left off: the model must know what was already said, but must
+        not greet again or re-narrate. Every provider has a shape for this —
+        Gemini `send_client_content(turn_complete=False)`, OpenAI Realtime
+        `conversation.item.create` with no `response.create` — which is exactly
+        their normal send path minus the "now answer" step.
+        """
+        raise NotImplementedError(f"{self.code} cannot be seeded with prior context")
 
     @abstractmethod
     async def submit_tool_result(self, call_id: str, result: dict) -> None:

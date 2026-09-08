@@ -233,6 +233,26 @@ class CallService:
 
         return await self.store.change(call_id, change)
 
+    async def mark_reconnecting(self, call_id: str) -> Room:
+        """Put the room back into "provider_connecting" while the bridge redials.
+
+        Deliberately the same state a call is in before its first connection:
+        Room.ui() already disables every control and reports the reason, and the
+        app already renders it, so a mid-call reconnection needs no new state and
+        no protocol change. Any half-finished assistant turn is dropped — the new
+        provider session will not continue it.
+        """
+
+        def change(room, commands, events):
+            if room.status == "ended":
+                return
+            room.ready = False
+            if room.status == "assistant_speaking":
+                room.status = "idle"
+                room.speaker_id = None
+
+        return await self.store.change(call_id, change)
+
     async def log_user_voice(self, call_id: str, text: str) -> Room:
         """Record what the current speaker actually said, once the provider transcribes it.
 

@@ -497,7 +497,82 @@ independiente del de las fotos.
   `disabled: false`, o sea que el flip de `ready` sigue llegando), foto compartida cargando
   a 1400x800 y la IA leyendo la inscripción.
 
-### Sesiones largas: la llamada se cae sola a los ~10-15 min (pendiente, plan acordado)
+### Reconexión transparente del proveedor (construida 2026-09-08)
+
+Implementa el plan acordado el día anterior. Deliberadamente **no** usa el
+`session_resumption` ni la compresión de ventana de Gemini: la caída se trata como
+operación normal, venga del tope de sesión, de un `go_away` o de un corte de red, y la
+misma solución sirve para cualquier proveedor.
+
+- `calls/bridge.py::run()` pasa a ser un bucle. Cuando la sesión con el proveedor muere y
+  la sala sigue viva, reconecta (hasta `MAX_RECONNECT_ATTEMPTS=12`, con espera
+  exponencial de 1 a 8 s). `_serve_session()` distingue "se acabó la llamada" de "se cayó
+  el proveedor" según qué tarea terminó: si fue el vigilante de la sala, la llamada
+  terminó de verdad; cualquier otra cosa es una caída.
+- **La sesión nueva no saluda.** `_connect(resume=True)` se salta el `send_text` de
+  arranque — volver a decir "hola a todos, soy Locus" es exactamente cómo el grupo notaría
+  una reconexión que debe ser invisible — y en su lugar siembra el contexto.
+- **Siembra sin turno**: `LiveProvider.seed_context(entries)`, nuevo en la interfaz. Es la
+  ruta de envío normal de cada proveedor menos el paso de "ahora contesta": en Gemini
+  `send_client_content(turn_complete=False)`, en OpenAI Realtime sería
+  `conversation.item.create` sin `response.create`. Solo Gemini lo implementa hoy; el
+  bridge comprueba `capabilities.context_seeding` y, si falta, reconecta igual pero sin
+  historia (mejor eso que quedarse sin llamada) dejando un aviso en el log.
+- El recap sale de `room.log`, que ya es nuestro y está en Redis: las últimas
+  `RESEED_ENTRIES=24` entradas convertidas en turnos (role, texto). **Las fotos se
+  replican como una nota, no como bytes** — era la decisión que quedó abierta ayer: lo que
+  importa para el hilo es que el guía ya habló de una, y su propia narración va justo
+  detrás; resubir imágenes haría que cada reconexión costara como el turno original.
+- **La etiqueta en la app no necesita protocolo nuevo.** `CallService.mark_reconnecting()`
+  devuelve la sala al mismo estado que tiene antes de su primera conexión (`ready=False`):
+  `Room.ui()` ya desactiva todos los controles y reporta `provider_connecting`, y la app ya
+  renderiza ese estado. También descarta el turno a medias del asistente, que la sesión
+  nueva no va a continuar.
+- **Corregidas las banderas que mentían**: `session_resumption` y `context_compression`
+  estaban declaradas `True` en `gemini_live`, `openai_realtime` y `mock` sin que nadie las
+  leyera ni nada las implementara. Ahora son `False` en todas partes (no las
+  implementamos) y se añade `context_seeding`, que sí se lee.
+
+**Probado en caliente contra Gemini real, en llamadas de 13 y 30 minutos** (2026-09-08):
+
+- La sesión del proveedor se cayó **sola, dos veces por llamada**, y el grupo no se enteró:
+  reconexión en 1-2 s, el guía siguió el hilo del recorrido y **se presentó exactamente una
+  vez en toda la llamada** (más de una habría significado reconexión audible).
+- Continuidad real a través de los cortes: se le dio un dato al principio ("somos el grupo
+  número 7") y al final, tras dos reconexiones, respondió *"¡Son el grupo 7, Carlitos! Que
+  no se les olvide. ¿Seguimos bajando a ver el hipogeo?"* — recuerda el dato, el nombre y
+  por dónde iba la visita.
+- Los dos arreglos posteriores quedaron verificados en la misma prueba: las dos
+  reconexiones registran `attempt=1` (el contador se reinicia tras una sesión que sirvió) y
+  `session_ended` deja la causa escrita.
+
+**El dato importante: las sesiones de Gemini duran ~4 minutos, no 10-15.** Medido cuatro
+veces: 238, 204, 285 y 277 segundos. Muy por debajo de lo que documenta Google. Implicación
+incómoda: **todas nuestras pruebas de llamadas previas eran más cortas que eso**, por lo que
+este corte llevaba ahí desde el principio sin que lo viéramos.
+
+**Causa del corte: no cerrada.** Lo que sí está medido:
+
+- El error es `APIError: 1008` ("The operation was aborted"). 1008 es *policy violation*.
+- **No hay `go_away` previo** — no es un cierre educado por tope de sesión, es un corte seco.
+- No es la ventana de contexto: los tokens por sesión varían mucho (1.953-5.752 de entrada)
+  mientras las duraciones son estables.
+- No lo provoca la resiembra: la sesión inicial, que nunca se siembra, murió igual a los
+  285 s.
+- Dentro de una sesión **no** remandamos el contexto (los tokens por turno no se acumulan:
+  784 → 1717 → 950 → 1045). Pero **cada reconexión sí paga el recap entero**: el primer
+  turno pasa de 784 tokens a 2.130 y 2.550 según crece. A ~8 reconexiones por visita de 40
+  minutos, es coste real y es el argumento para cerrar la causa en vez de convivir con ella.
+- Pista sin confirmar, del foro de Google: el 1008 se asocia a mandar entrada mientras hay
+  una tool pendiente. No encaja bien con nuestros tiempos (las tools tardan 1-2 ms y el
+  corte llega ~70 s después), pero llamamos a `plan_poi_visit` casi cada turno.
+- Indicio suelto de inactividad: preguntando cada 150 s las sesiones duraron 238/204 s;
+  cada 95 s, 285/277 s. Poca muestra para concluir.
+- **Siguiente experimento, barato y decisivo**: una llamada con `tools_json` vacío (solo un
+  cambio en base de datos, sin tocar código ni reiniciar) para ver si sin tools la sesión
+  dura más.
+
+### Sesiones largas: la llamada se cae sola a los ~10-15 min (medición previa)
 
 Encontrado el 2026-09-07 tirando del hilo de "¿aguantamos 40 minutos?". **No está
 reproducido con cronómetro**: es lectura de la documentación de Google más inspección del
@@ -511,8 +586,18 @@ código, pero las dos cosas apuntan a lo mismo.
   `session_resumption=True` / `context_compression=True`, pero **nadie lee esas banderas y
   nada las implementa** — son una etiqueta que el código no respalda. Si se deja así, hay
   que quitarlas o cumplirlas.
-- `go_away` llega como `ProviderEvent(ERROR, retryable=True)`; `calls/bridge.py` publica un
-  `call.error` en la sala y deja morir el stream. **No hay reconexión.**
+- `go_away` llegaba como `ProviderEvent(ERROR, retryable=True)`; `calls/bridge.py` publicaba
+  un `call.error` en la sala y dejaba morir el stream. **No había reconexión** — resuelto
+  arriba el 2026-09-08.
+- **Intento de cronómetro fallido, 2026-09-08**: la primera medición dio una caída a los
+  2:07 con `code=1012 (service restart)`. No era Gemini: era uvicorn recargándose porque yo
+  estaba editando código mientras la llamada corría. Anotado porque es un error fácil de
+  repetir — para cronometrar una llamada hay que dejar de tocar `src/`, que está montado en
+  el contenedor con `--reload`.
+- Ojo a la distinción, que es fácil de confundir: una cosa es que se caiga la sesión
+  **bridge ↔ proveedor** (lo que resuelve la reconexión de arriba) y otra que se caiga el
+  websocket **app ↔ nuestra API** (eso lo tiene que reintentar el cliente). Son dos
+  reconexiones distintas y solo la primera está cubierta.
 
 **Plan acordado con Carlos (2026-09-07, para la siguiente sesión)** — deliberadamente no es
 "configurar resumption de Gemini", sino algo que sirve para *cualquier* motivo de caída:

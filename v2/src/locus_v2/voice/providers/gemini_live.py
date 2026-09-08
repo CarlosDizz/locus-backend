@@ -25,8 +25,7 @@ class GeminiLiveProvider(LiveProvider):
         input_transcription=True,
         output_transcription=True,
         image_input=True,
-        session_resumption=True,
-        context_compression=True,
+        context_seeding=True,
         supported_input_formats=[AudioFormat.PCM16_16KHZ, AudioFormat.PCM16_24KHZ],
     )
 
@@ -72,6 +71,24 @@ class GeminiLiveProvider(LiveProvider):
         await self._session.send_client_content(
             turns=types.Content(role="user", parts=parts),
             turn_complete=True,
+        )
+
+    async def seed_context(self, entries: list[tuple[str, str]]) -> None:
+        self._require_session()
+        if not entries:
+            return
+        await self._session.send_client_content(
+            turns=[
+                types.Content(
+                    role="model" if role == "assistant" else "user",
+                    parts=[types.Part(text=text)],
+                )
+                for role, text in entries
+            ],
+            # The whole point: append the history to the conversation and stop.
+            # turn_complete=True here would make the guide answer the last thing
+            # the group said before the drop, all over again.
+            turn_complete=False,
         )
 
     async def submit_tool_result(self, call_id: str, result: dict) -> None:

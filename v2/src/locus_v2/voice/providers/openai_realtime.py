@@ -25,7 +25,9 @@ class OpenAIRealtimeProvider(LiveProvider):
         input_transcription=True,
         output_transcription=True,
         image_input=True,
-        session_resumption=True,
+        # No seed_context() override yet, so calls on this provider cannot yet
+        # survive a dropped session. conversation.item.create without a following
+        # response.create is the shape it needs.
         supported_input_formats=[AudioFormat.PCM16_24KHZ],
     )
 

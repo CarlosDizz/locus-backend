@@ -58,7 +58,7 @@ from locus_v2.ai.enums import PublicationStatus, ServiceKind
 from locus_v2.ai.models import AIModel, AIProvider, RoutingProfile
 from locus_v2.billing.models import UsageEvent, UsageStatus
 from locus_v2.billing.pricing import NormalizedUsage
-from locus_v2.calls.models import CallError
+from locus_v2.calls.models import CallError, Room
 from locus_v2.calls.service import CallService, decode_image
 from locus_v2.calls.store import RoomStore
 from locus_v2.catalog.models import Poi
@@ -81,6 +81,43 @@ from locus_v2.voice.tools import VoiceToolDispatcher
 logger = structlog.get_logger()
 
 _ACTIVE: dict[str, asyncio.Task[None]] = {}
+
+# Consecutive failed redials before giving up (see run(): a session that served
+# for a while resets this). Enough to ride out a provider hiccup; beyond it
+# something is wrong that retrying will not fix.
+MAX_RECONNECT_ATTEMPTS = 6
+# A provider session that lasted at least this long did its job, however short
+# the provider's cap turned out to be.
+HEALTHY_SESSION_SECONDS = 45.0
+# How much of the shared log to replay into a new session. The log itself holds
+# 80 entries; the last stretch is what keeps the guide on thread without paying
+# to re-read the whole visit on every reconnection.
+RESEED_ENTRIES = 24
+
+
+def _recap_entries(room: Room) -> list[tuple[str, str]]:
+    """Turn the room's shared log into (role, text) turns for a new session.
+
+    Photos are replayed as a note, not as image bytes: what matters for
+    continuity is that the guide already discussed one — its own narration is
+    right there in the next entry — and re-uploading images would make every
+    reconnection cost as much as the original turn.
+    """
+    entries: list[tuple[str, str]] = []
+    for item in room.log[-RESEED_ENTRIES:]:
+        text = str(item.get("text") or "").strip()
+        kind = item.get("kind")
+        if kind == "ai":
+            if text:
+                entries.append(("assistant", text))
+        elif kind in {"user-voice", "user-text"}:
+            if text:
+                entries.append(("user", f"{item.get('author') or 'Alguien'}: {text}"))
+        elif kind == "user-photo":
+            entries.append(
+                ("user", f"[{item.get('author') or 'Alguien'} compartio una foto]")
+            )
+    return entries
 
 
 def _forget(call_id: str, done: asyncio.Task[None]) -> None:
@@ -136,45 +173,127 @@ class _CallVoiceBridge:
         self._research_kicked_off = False
 
     async def run(self) -> None:
+        """Keep a live provider attached to this call for as long as it lasts.
+
+        A provider session is not expected to survive the whole call: a Gemini
+        Live audio session is capped (~15 min without context compression, with
+        a shorter connection lifetime), and any network blip does the same thing
+        early. So losing one is normal operation, not an error — reconnect, hand
+        the new session what has already been said, and let the group carry on.
+        """
         final_status = VoiceSessionStatus.COMPLETED
+        attempt = 0
         try:
-            self.provider = await self._connect()
-        except CallError as error:
-            await self.store.publish(self.call_id, {"type": "call.error", "message": str(error)})
-            return
-        except Exception as error:  # noqa: BLE001 - a broken bridge must not crash the call room
-            logger.exception("call_voice_bridge_connect_failed", call_id=self.call_id)
-            await self.store.publish(
-                self.call_id,
-                {"type": "call.error", "message": f"No se pudo conectar la IA: {error}"},
-            )
-            return
-        commands_task = asyncio.create_task(self._consume_commands())
-        events_task = asyncio.create_task(self._pump_provider_events())
-        watchdog_task = asyncio.create_task(self._watch_room_ended())
-        try:
-            done, pending = await asyncio.wait(
-                {commands_task, events_task, watchdog_task}, return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in pending:
-                task.cancel()
-            for task in pending:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
-            for task in done:
-                if task is not watchdog_task:
-                    with contextlib.suppress(Exception):
-                        task.result()
+            while True:
+                try:
+                    self.provider = await self._connect(resume=attempt > 0)
+                except CallError as error:
+                    await self.store.publish(
+                        self.call_id, {"type": "call.error", "message": str(error)}
+                    )
+                    return
+                except Exception as error:  # noqa: BLE001 - never crash the call room
+                    logger.exception("call_voice_bridge_connect_failed", call_id=self.call_id)
+                    await self.store.publish(
+                        self.call_id,
+                        {"type": "call.error", "message": f"No se pudo conectar la IA: {error}"},
+                    )
+                    return
+
+                served_from = perf_counter()
+                provider_lost = await self._serve_session()
+                served_seconds = perf_counter() - served_from
+                with contextlib.suppress(Exception):
+                    await self.provider.close()
+                with contextlib.suppress(Exception):
+                    await self._finish(final_status)
+                self.voice_session_id = None
+
+                if not provider_lost or not await self._call_still_running():
+                    return
+                # The budget is consecutive *failures*, not reconnections. Measured
+                # 2026-09-08: a real Gemini session lasts ~3.5-4 minutes, so a
+                # two-hour room legitimately needs ~30 of them — counting every
+                # reconnection would give up on a perfectly healthy call. A session
+                # that actually served resets the budget; only redials that die
+                # immediately burn it, which is what "we cannot reconnect" means.
+                if served_seconds >= HEALTHY_SESSION_SECONDS:
+                    attempt = 0
+                attempt += 1
+                if attempt > MAX_RECONNECT_ATTEMPTS:
+                    logger.warning(
+                        "call_voice_bridge_reconnect_exhausted",
+                        call_id=self.call_id, attempts=attempt,
+                    )
+                    await self.store.publish(
+                        self.call_id,
+                        {"type": "call.error", "message": "No he podido reconectar la IA"},
+                    )
+                    return
+                logger.info(
+                    "call_voice_bridge_reconnecting", call_id=self.call_id, attempt=attempt
+                )
+                with contextlib.suppress(Exception):
+                    await self.service.mark_reconnecting(self.call_id)
+                await asyncio.sleep(min(2 ** (attempt - 1), 8))
         except Exception:  # noqa: BLE001 - still need to close out the session below
             final_status = VoiceSessionStatus.FAILED
             raise
         finally:
-            with contextlib.suppress(Exception):
-                await self.provider.close()
+            if self.provider is not None:
+                with contextlib.suppress(Exception):
+                    await self.provider.close()
             with contextlib.suppress(Exception):
                 await self._finish(final_status)
 
-    async def _connect(self) -> LiveProvider:
+    async def _serve_session(self) -> bool:
+        """Run one provider session. True if it died and the call may continue."""
+        commands_task = asyncio.create_task(self._consume_commands())
+        events_task = asyncio.create_task(self._pump_provider_events())
+        watchdog_task = asyncio.create_task(self._watch_room_ended())
+        done, pending = await asyncio.wait(
+            {commands_task, events_task, watchdog_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        for task in done:
+            if task is watchdog_task:
+                continue
+            try:
+                task.result()
+            except Exception as error:  # noqa: BLE001 - reported, never re-raised
+                # Why a session ended is the only clue to whether we are hitting
+                # the provider's cap, a go_away, or a real fault — swallowing it
+                # silently made a ~4 minute drop look like it had no cause.
+                logger.warning(
+                    "call_voice_bridge_session_ended",
+                    call_id=self.call_id,
+                    source="events" if task is events_task else "commands",
+                    error_type=type(error).__name__,
+                    error=str(error)[:300],
+                )
+            else:
+                logger.info(
+                    "call_voice_bridge_session_ended",
+                    call_id=self.call_id,
+                    source="events" if task is events_task else "commands",
+                    error_type=None,
+                )
+        # The room watchdog finishing means the call itself is over; anything
+        # else means the provider stream stopped under us.
+        return watchdog_task not in done
+
+    async def _call_still_running(self) -> bool:
+        try:
+            room = await self.store.get(self.call_id)
+        except CallError:
+            return False
+        return room.status != "ended"
+
+    async def _connect(self, *, resume: bool = False) -> LiveProvider:
         room = await self.store.get(self.call_id)
         self.locale = room.language
         async with self.database.sessions() as session:
@@ -297,6 +416,15 @@ class _CallVoiceBridge:
             model=model.external_id,
             tool_count=len(tools),
         )
+        if resume:
+            # Picking up a dropped session, not starting a call. Replay what has
+            # already been said so the guide keeps its thread, and say nothing:
+            # greeting again ("hola a todos, soy Locus") is exactly how the group
+            # would notice a reconnection that is supposed to be invisible.
+            await self._reseed(provider, room)
+            await self.service.mark_ready(self.call_id)
+            return provider
+
         await self.service.mark_ready(self.call_id)
         # Nobody has said anything yet — the bridge has to speak first, same trick V1's
         # RealtimeBridge.handle_session_updated() used (request a response with an empty
@@ -308,6 +436,25 @@ class _CallVoiceBridge:
             "como indica tu guion. No documentes ni expliques nada todavia.]"
         )
         return provider
+
+    async def _reseed(self, provider: LiveProvider, room: Room) -> None:
+        entries = _recap_entries(room)
+        if not entries:
+            return
+        if not provider.capabilities.context_seeding:
+            logger.warning(
+                "call_voice_bridge_reseed_unsupported",
+                call_id=self.call_id, adapter=provider.code,
+            )
+            return
+        try:
+            await provider.seed_context(entries)
+        except Exception:  # noqa: BLE001 - a call without its history beats no call
+            logger.exception("call_voice_bridge_reseed_failed", call_id=self.call_id)
+            return
+        logger.info(
+            "call_voice_bridge_reseeded", call_id=self.call_id, entries=len(entries)
+        )
 
     async def _finish(self, status: str) -> None:
         if self.voice_session_id is None:

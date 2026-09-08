@@ -18,7 +18,6 @@ class MockLiveProvider(LiveProvider):
         function_calling=True,
         input_transcription=True,
         output_transcription=True,
-        session_resumption=True,
         supported_input_formats=[AudioFormat.PCM16_16KHZ, AudioFormat.PCM16_24KHZ],
     )
 

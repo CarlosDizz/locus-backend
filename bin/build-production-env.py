@@ -98,6 +98,8 @@ def build(legacy: dict[str, str], local: dict[str, str], existing: dict[str, str
                 "capacitor://localhost",
                 "ionic://localhost",
                 "http://localhost",
+                "http://localhost:8100",
+                "http://localhost:8200",
                 "https://localhost",
             ]
         ),

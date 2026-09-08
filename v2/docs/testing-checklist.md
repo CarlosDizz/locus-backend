@@ -892,6 +892,30 @@ despliegue que olvide la variable **falla cerrado** en vez de abierto. Ambos fic
 entorno locales las ponen explícitamente, así que el desarrollo no cambia. Verificado:
 sin las variables, `env=production` y el login local desactivado; con el entorno de
 desarrollo, todo igual que antes.
+- [x] **Comparador de contratos V1 vs V2 (`bin/contract_diff.py`, 2026-09-08).** Levanta
+      las dos versiones a la vez y lanza la misma petición a ambas, comparando lo que de
+      verdad importa para el corte: **la forma**, no el contenido. Mismo código de estado,
+      mismas rutas de claves, mismos tipos. Las dos bases tienen filas distintas y una
+      respuesta de IA nunca es idéntica dos veces, así que comparar valores no diría nada;
+      comparar la forma es exactamente lo que permite que la app siga funcionando cambiando
+      solo `apiBaseUrl`.
+      - **Resultado de la primera pasada: 11 de 11 en verde.** `/app/version`,
+        `/catalog/poi-types`, `/cities`, `/pois`, los tres errores de auth (400, 401 y 422
+        idénticos), `/auth/me`, `/billing/wallet`, `/ledger` y `/usage-events`. **Ningún
+        campo falta en V2.** Las únicas diferencias son campos *de más* en V2 (más idiomas
+        en `names`), que es aditivo y la app ignora.
+      - Para levantar V1 en local hay dos trampas, ambas resueltas en `bin/v1-local-db.yml`
+        y documentadas en la cabecera del script: su `.env` apunta `MYSQL_PUBLIC_URL` a un
+        host de Railway que ya no existe **y su config prefiere esa variable sobre
+        `DATABASE_URL`**, así que sin el override V1 arranca contra una base inalcanzable;
+        y su base local estaba en una migración anterior a su propio código (`alembic
+        upgrade head` lo arregla).
+      - Un falso positivo que costó entender y conviene recordar: un campo nulo en un lado
+        y con valor en el otro no es una diferencia de contrato. El comparador ya lo trata
+        así — compara rutas de claves, y solo señala el tipo cuando ambos lados tienen valor.
+      - **Pendiente de ampliar**: faltan `/chat/*`, `/sessions/*` y el WebSocket de llamadas.
+        Los dos primeros son directos; el WebSocket necesita otro enfoque porque V1 y V2
+        hablan protocolos distintos por diseño.
 - [ ] `./bin/locus up` en local con datos importados, capítulos 1–7 en verde.
 - [ ] Desplegar V2 en paralelo en ECS sin tráfico real.
 - [ ] Cambiar `apiBaseUrl` de Ionic de `https://api.locusguide.es/api` al host V2.

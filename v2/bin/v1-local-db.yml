@@ -1,0 +1,9 @@
+# Temporary: V1's .env points MYSQL_PUBLIC_URL at a dead Railway host, and its
+# config prefers that over DATABASE_URL. `environment:` beats `env_file`, so this
+# pins the local database for the contract comparison without touching the repo.
+services:
+  api:
+    environment:
+      MYSQL_PUBLIC_URL: "mysql+pymysql://locus:locus@mysql:3306/locus"
+      DATABASE_PUBLIC_URL: ""
+      MYSQL_URL: ""

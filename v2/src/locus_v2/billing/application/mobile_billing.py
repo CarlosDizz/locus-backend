@@ -14,7 +14,7 @@ from hashlib import sha256
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -319,9 +319,17 @@ class MobileBillingService:
             async with self.session.begin_nested():
                 self.session.add(topup)
                 await self.session.flush()
-        except IntegrityError:
+        except (IntegrityError, OperationalError):
+            # Someone else got there first. The unique key did its job — the money
+            # is safe either way — but a client that retried because its network
+            # dropped deserves its receipt back, not a 500. Roll the whole
+            # transaction back before re-reading: MySQL discards the savepoint
+            # when the losing INSERT fails after a lock wait, so continuing on
+            # this session raises "SAVEPOINT ... does not exist" instead
+            # (measured 2026-09-08 with eight simultaneous submits of one token).
+            await self.session.rollback()
             existing = await self.session.scalar(
-                select(TopUp).where(TopUp.purchase_dedupe_key == dedupe_key).with_for_update()
+                select(TopUp).where(TopUp.purchase_dedupe_key == dedupe_key)
             )
             if existing is None:
                 raise

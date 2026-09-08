@@ -309,10 +309,35 @@ real de compras de Google Play (sin credenciales de service account en este ento
       entorno no tiene `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`/`_FILE` configurado (tampoco lo
       tenía V1 en `.env.example`), así que ese tramo queda construido pero sin verificar
       contra Google de verdad.
-- [ ] Idempotencia de cargos y compras — la comprobación de duplicados en
-      `confirm_google_play_topup` es una consulta previa a nivel de aplicación, no una
-      restricción única en la base de datos (igual que V1: mismo hueco de condición de
-      carrera bajo concurrencia real, no es una regresión pero tampoco está resuelto).
+- [x] **Idempotencia de cargos y compras (revisado y probado 2026-09-08).** Este ítem
+      estaba obsoleto: decía que la deduplicación era solo una consulta previa a nivel de
+      aplicación. Las tres restricciones únicas existen de verdad en la base de datos, no
+      solo declaradas en los modelos — verificado contra `information_schema`:
+      `uq_top_ups_purchase_dedupe_key`, `uq_usage_events_provider_id (provider_id,
+      dedupe_key)` y `uq_ledger_entries_usage_event_id (usage_event_id, kind)`.
+      Y `confirm_google_play_topup` reserva la compra **antes** de la llamada de red a
+      Google, de modo que la clave única bloquea a cualquier otro intento mientras se
+      verifica.
+      - **Probado con concurrencia real**: ocho envíos simultáneos del mismo token de
+        compra dejan **una sola fila `TopUp`, una sola verificación contra Google y el
+        saldo acreditado exactamente una vez**. La propiedad que importa —no cobrar dos
+        veces— se cumple.
+      - **Probado el caso realista** (un cliente cuya red falló y reintenta más tarde):
+        tres envíos secuenciales devuelven los tres **el mismo recibo**, con una sola
+        verificación y un solo cargo. Eso es idempotencia correcta de cara al cliente.
+      - **Defecto encontrado y arreglado a medias, dicho sin adornos**: cuando el `INSERT`
+        perdedor choca con la espera de bloqueo, MySQL descarta el savepoint, y el
+        `rollback` posterior fallaba con `SAVEPOINT ... does not exist`. Ahora se captura
+        también `OperationalError` y se rehace la lectura sobre una transacción limpia,
+        con lo que la mayoría de los perdedores recuperan su recibo. **Bajo ocho envíos
+        estrictamente simultáneos, algunos siguen recibiendo un error de base de datos en
+        vez del recibo.** El dinero está a salvo en todos los casos; lo que falla es la
+        cortesía de la respuesta, y solo en un escenario que un cliente real no produce
+        (un reintento ocurre tras un timeout, secuencialmente, y ese caso sí es correcto).
+        Si algún día se añade una pasarela con webhooks —PayPal, por ejemplo— que sí puede
+        entregar el mismo evento varias veces a la vez, conviene rematarlo: la vía limpia
+        es hacer la lectura de recuperación en una sesión nueva en vez de reutilizar la
+        que acaba de morir.
 - [ ] Bono de bienvenida al registrar usuario (enlazar con Capítulo 1).
 
 ## Capítulo 5 — Afiliación GetYourGuide

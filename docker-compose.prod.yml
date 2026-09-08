@@ -84,6 +84,13 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      # Off on purpose: performance_schema reserves several hundred MB for
+      # instrumentation nobody reads here, on a 1 GB t3.micro where mysqld had
+      # 503 MB paged out to swap (measured 2026-09-08). Turn it back on only
+      # while actually diagnosing a query problem. The live database still runs
+      # from the older locus-backend/ compose file; this keeps the two
+      # definitions from disagreeing if mysql is ever recreated from this one.
+      - --performance-schema=OFF
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:

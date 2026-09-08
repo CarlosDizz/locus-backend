@@ -2,10 +2,10 @@ import asyncio
 from time import perf_counter
 
 import structlog
-from openai import AsyncOpenAI
 
 from locus_v2.affiliates.service import ReferralService
 from locus_v2.config import Settings
+from locus_v2.shared.openai_client import build_openai_client
 from locus_v2.shared.openai_usage import ToolUsage, usage_from_openai_response
 
 logger = structlog.get_logger()
@@ -136,7 +136,7 @@ una introducción ni menciones limitaciones. Si un dato no es fiable, omítelo."
     async def _ask_model(self, prompt: str) -> str:
         if self.settings.openai_api_key is None:
             raise VoiceToolError("The OpenAI key required by voice tools is not configured")
-        client = AsyncOpenAI(api_key=self.settings.openai_api_key.get_secret_value())
+        client = build_openai_client(self.settings)
         try:
             response = await client.responses.create(
                 model=self.settings.tool_model,

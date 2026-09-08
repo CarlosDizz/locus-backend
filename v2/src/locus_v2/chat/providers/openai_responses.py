@@ -13,6 +13,8 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from locus_v2.billing.pricing import NormalizedUsage
+from locus_v2.config import Settings
+from locus_v2.shared.openai_client import build_openai_client
 
 
 @dataclass(frozen=True)
@@ -34,8 +36,14 @@ class ChatProviderResult:
 class OpenAIResponsesAdapter:
     code = "openai_responses"
 
-    def __init__(self, api_key: str) -> None:
-        self._client = AsyncOpenAI(api_key=api_key)
+    def __init__(self, api_key: str, settings: Settings | None = None) -> None:
+        # settings is optional so the admin "test this model" path can build one
+        # without a Settings to hand; when present, base URL and timeout apply.
+        self._client = (
+            build_openai_client(settings, api_key)
+            if settings is not None
+            else AsyncOpenAI(api_key=api_key)
+        )
 
     async def respond(
         self,

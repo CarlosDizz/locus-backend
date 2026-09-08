@@ -22,10 +22,10 @@ from typing import Any
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 import structlog
-from openai import AsyncOpenAI
 
 from locus_v2.config import Settings
 from locus_v2.sessions.application.service import MapSessionService
+from locus_v2.shared.openai_client import build_openai_client
 from locus_v2.shared.openai_usage import ToolUsage, usage_from_openai_response
 from locus_v2.shared.text import clean_text
 
@@ -329,7 +329,7 @@ class ReferralService:
     ) -> tuple[list[AccessReferralLink], ToolUsage]:
         if self.settings.openai_api_key is None:
             return [], ToolUsage()
-        client = AsyncOpenAI(api_key=self.settings.openai_api_key.get_secret_value())
+        client = build_openai_client(self.settings)
         try:
             response = await client.responses.create(
                 model=self.settings.tool_model,

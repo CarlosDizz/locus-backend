@@ -14,7 +14,13 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    env: Literal["local", "production"] = "local"
+    # Defaults to production on purpose: `local` unlocks POST /admin/v2/auth/local,
+    # which hands out an admin session with no credentials at all. Nothing about
+    # that route checks the caller's address — "local" is a claim in the config,
+    # not a fact about the network — so a deploy that forgets LOCUS_ENV must fail
+    # closed, not open. Both .env.local and .env.example set it explicitly, so
+    # local development is unaffected.
+    env: Literal["local", "production"] = "production"
     log_level: str = "INFO"
     api_host: str = "0.0.0.0"
     api_port: int = 8100
@@ -35,7 +41,9 @@ class Settings(BaseSettings):
     jwt_access_minutes: int = 30
     jwt_refresh_days: int = 30
     admin_email: EmailStr
-    allow_insecure_local_admin: bool = True
+    # Second lock on the credential-free admin login, and also fail-closed: both
+    # this and `env` have to be permissive for that route to answer at all.
+    allow_insecure_local_admin: bool = False
     google_auth_client_ids: list[str] = Field(default_factory=list)
     admin_session_days: int = 7
     admin_session_cookie: str = "locus_admin_session"
@@ -45,6 +53,12 @@ class Settings(BaseSettings):
     ]
 
     openai_api_key: SecretStr | None = None
+    # Both ported from V1 (OPENAI_BASE_URL / OPENAI_RESPONSE_TIMEOUT_SECONDS), which
+    # applied them to every OpenAI call. Without the timeout a stuck request rides the
+    # SDK's default, far longer than V1 would ever have waited, and a chat turn hangs
+    # with it. None on the base URL means the SDK's own default endpoint.
+    openai_base_url: str | None = None
+    openai_timeout_seconds: float = Field(default=180.0, gt=0)
     gemini_api_key: SecretStr | None = None
     tool_model: str = "gpt-5-mini"
     # gpt-5-mini's reasoning tokens count against wall-clock time, not just the token

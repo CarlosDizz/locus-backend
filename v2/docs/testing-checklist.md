@@ -762,6 +762,59 @@ Estado: **pendiente**, es el último capítulo por diseño.
       restaurantes ni servicios (Capítulo 3). Las dos se descubrieron por casualidad, no
       por una comprobación. Repasar `.env.example` contra el entorno real de V1 antes del
       corte, y confirmar que cada clave con valor en V1 tiene su equivalente `LOCUS_*`.
+      **Auditoría hecha el 2026-09-08** (ver abajo); lo que queda es aplicar la lista al
+      entorno real de producción cuando exista.
+
+#### Auditoría de paridad V1 → V2 (2026-09-08)
+
+Comparadas las 66 variables que lee `app/config.py` contra los 52 campos de
+`Settings` de V2, descartando por concepto y no por nombre.
+
+- **Equivalentes con otro nombre, sin acción**: `CORS_ALLOWED_ORIGINS`→`cors_origins`,
+  `HOST`/`PORT`→`api_host`/`api_port`, `DB_*`/`MYSQL_*`→`database_url`, `APP_ENV`→`env`,
+  `AUTH_TOKEN_TTL_DAYS`→`jwt_refresh_days`, y los bloques `BILLING_*`, `GOOGLE_PLAY_*`,
+  `WIKIDATA_*`, `OVERPASS_*`, `GETYOURGUIDE_*`, `MAPS_API_KEY`.
+- **Por diseño en base de datos, no en entorno**: `OPENAI_CHAT_MODEL`,
+  `OPENAI_REALTIME_MODEL`, `_VOICE`, `_MAX_OUTPUT_TOKENS`, `_SECRET_TTL_SECONDS`,
+  `_INPUT_TRANSCRIPTION_*`. Son `ai_models`/`ai_routing_profiles`/`prompt_versions`, que es
+  la razón de ser de V2: editables desde el panel sin redespliegue.
+- **Muertas en V1, no se portan**: `LIVEKIT_*` (solo aparece en su propio config, ningún
+  código la usa) y `WIKIPEDIA_LANGUAGE` (V2 no llama a la API de Wikipedia; `wikipedia_title`
+  es una columna del POI, no un cliente).
+- **Huecos reales, dos corregidos**: `OPENAI_BASE_URL` y `OPENAI_RESPONSE_TIMEOUT_SECONDS`
+  no existían en V2, así que cada llamada esperaba el timeout por defecto del SDK en vez de
+  los 180 s de V1. Añadidos como `openai_base_url` / `openai_timeout_seconds` y aplicados
+  desde `shared/openai_client.py` (con dos excepciones deliberadas documentadas allí: la
+  sesión de voz en vivo y el importador de catálogo).
+- **Hueco real no corregido**: `OPENAI_CHAT_ENABLE_WEB_SEARCH`. V1 podía dar la tool
+  `web_search` al chat; el chat de mapa de V2 no la tiene. Es diferencia funcional, no de
+  configuración — añadirla sería una tool nueva, decisión de producto.
+
+**Variables que hay que poner sí o sí en el entorno de producción de V2.** Solo
+`LOCUS_JWT_SECRET` y `LOCUS_ADMIN_EMAIL` fallan al arrancar si faltan; las demás tienen
+valor por defecto y **cambian el comportamiento en silencio**, que es justo el peligro:
+
+| Variable | Si falta |
+|---|---|
+| `LOCUS_ENV=production` | **Crítico.** Habilita `POST /admin/v2/auth/local`, que da sesión de admin sin credenciales |
+| `LOCUS_ALLOW_INSECURE_LOCAL_ADMIN=false` | Segundo cerrojo de lo mismo |
+| `LOCUS_JWT_SECRET` | No arranca (mínimo 32 caracteres) |
+| `LOCUS_ADMIN_EMAIL` | No arranca |
+| `LOCUS_PUBLIC_API_BASE_URL` | Las fotos compartidas en llamada apuntan a localhost y no cargan |
+| `LOCUS_GETYOURGUIDE_PARTNER_ID` | Toda la afiliación sale sin comisión |
+| `LOCUS_MAPS_API_KEY` | El chat del mapa no encuentra restaurantes ni servicios |
+| `LOCUS_DATABASE_URL`, `LOCUS_REDIS_URL` | Apuntan a localhost |
+| `LOCUS_LEGACY_DATABASE_URL` | Sin acceso a los datos de V1 |
+| `LOCUS_CORS_ORIGINS` | La app real no puede llamar a la API |
+| `LOCUS_OPENAI_API_KEY`, `LOCUS_GEMINI_API_KEY` | Sin IA |
+| `LOCUS_GOOGLE_AUTH_CLIENT_IDS` | Nadie puede iniciar sesión |
+
+**Los dos defaults inseguros se han corregido** (2026-09-08): `env` ahora vale
+`production` por defecto y `allow_insecure_local_admin` vale `False`, de modo que un
+despliegue que olvide la variable **falla cerrado** en vez de abierto. Ambos ficheros de
+entorno locales las ponen explícitamente, así que el desarrollo no cambia. Verificado:
+sin las variables, `env=production` y el login local desactivado; con el entorno de
+desarrollo, todo igual que antes.
 - [ ] `./bin/locus up` en local con datos importados, capítulos 1–7 en verde.
 - [ ] Desplegar V2 en paralelo en ECS sin tráfico real.
 - [ ] Cambiar `apiBaseUrl` de Ionic de `https://api.locusguide.es/api` al host V2.

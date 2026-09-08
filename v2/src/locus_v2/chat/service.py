@@ -125,7 +125,7 @@ class ChatService:
             }
             tool_schemas = [_function_schema(tool) for tool in configuration.tools]
 
-        adapter = OpenAIResponsesAdapter(api_key)
+        adapter = OpenAIResponsesAdapter(api_key, self.settings)
         usage = NormalizedUsage()
         tool_call_count = 0
         rounds = 0

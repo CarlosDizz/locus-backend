@@ -25,9 +25,7 @@ class OpenAIRealtimeProvider(LiveProvider):
         input_transcription=True,
         output_transcription=True,
         image_input=True,
-        # No seed_context() override yet, so calls on this provider cannot yet
-        # survive a dropped session. conversation.item.create without a following
-        # response.create is the shape it needs.
+        context_seeding=True,
         supported_input_formats=[AudioFormat.PCM16_24KHZ],
     )
 
@@ -71,6 +69,22 @@ class OpenAIRealtimeProvider(LiveProvider):
             }
         )
         await self._connection.response.create()
+
+    async def seed_context(self, entries: list[tuple[str, str]]) -> None:
+        self._require_connection()
+        for role, text in entries:
+            is_assistant = role == "assistant"
+            await self._connection.conversation.item.create(
+                item={
+                    "type": "message",
+                    "role": "assistant" if is_assistant else "user",
+                    "content": [
+                        {"type": "text" if is_assistant else "input_text", "text": text}
+                    ],
+                }
+            )
+        # No response.create: the point is to hand the session its history, not to
+        # make it answer the last thing that was said before the drop all over again.
 
     async def submit_tool_result(self, call_id: str, result: dict) -> None:
         self._require_connection()

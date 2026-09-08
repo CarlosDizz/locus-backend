@@ -412,7 +412,26 @@ token móvil real de `/api/auth`. Es el capítulo de mayor riesgo técnico en lo
       porta a propósito; se deja aquí solo para que conste la decisión.
 - [x] **Reconexión transparente cuando la sesión con el proveedor se rompe** — hecha y probada el 2026-09-08 (ver "Causa del 1008" arriba). Era el hueco
       grande que queda del capítulo. Ver "Sesiones largas" más abajo.
-- [ ] Fallback a otro proveedor si el primario falla al conectar.
+- [x] **Fallback a otro proveedor (2026-09-08)**. `voice/gateway.py` ya lo hacía desde el
+      principio; ahora lo hacen también las llamadas de grupo y el chat.
+      - **Llamadas** (`calls/bridge.py::_connect_any`): prueba el modelo primario y, si no
+        conecta, el `fallback_model` del perfil. `VoiceSession.active_model_id` registra cuál
+        sirvió de verdad, que es para lo que existe ese campo frente a `primary_model_id`.
+        Probado en caliente rompiendo el modelo de Gemini: la llamada arrancó con
+        `openai_realtime`/`gpt-realtime-mini` marcada como `fallback=True`.
+      - **Chat** (`chat/service.py::_first_response`): solo la **primera** llamada del turno
+        puede caer al fallback. Después de eso alguna tool ya ha marcado POIs en el mapa o
+        escrito en el catálogo, y repetir el turno con otro modelo lo haría dos veces; un
+        fallo posterior se propaga en vez de reintentarse. Probado con un modelo primario
+        inexistente: 404 en el primario, respuesta correcta desde el fallback, y el usuario
+        sin enterarse.
+      - **`seed_context` implementado también para `openai_realtime`**
+        (`conversation.item.create` sin `response.create`), para que una llamada que cae al
+        fallback conserve el hilo al reconectar en vez de empezar en blanco.
+      - **Bug encontrado por la propia prueba**: la consulta del bridge solo cargaba con
+        antelación el proveedor del modelo primario, así que al llegar al fallback el objeto
+        estaba desligado de la sesión y saltaba `DetachedInstanceError` en vez de conectar.
+        Corregido con el `joinedload` que `voice/configuration.py` ya tenía.
 
 ### Fotos compartidas en llamada: causa raíz y arreglo (2026-09-07)
 

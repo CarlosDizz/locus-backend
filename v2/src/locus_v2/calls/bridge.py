@@ -301,6 +301,11 @@ class _CallVoiceBridge:
                 select(RoutingProfile)
                 .options(
                     joinedload(RoutingProfile.primary_model).joinedload(AIModel.provider),
+                    # The fallback's provider too: _connect_any() reads
+                    # model.provider.code after this session closes, and a lazy
+                    # load there raises DetachedInstanceError instead of falling
+                    # back — which is exactly how the first fallback test failed.
+                    joinedload(RoutingProfile.fallback_model).joinedload(AIModel.provider),
                     joinedload(RoutingProfile.prompt_version),
                 )
                 .where(
@@ -347,9 +352,14 @@ class _CallVoiceBridge:
                 )
             except PromptRenderingError as error:
                 raise CallError(str(error), 503) from error
+            # Primary first, then the profile's fallback if it has one. A call that
+            # cannot reach Gemini is better served by OpenAI than by an apology —
+            # voice/gateway.py has done this since day one; calls never did.
+            candidates = [profile.primary_model]
+            if profile.fallback_model is not None:
+                candidates.append(profile.fallback_model)
             model = profile.primary_model
             self.host_id = room.host_id
-            self.model_id = model.id
             self.tool_definitions = [
                 tool
                 for tool in (profile.prompt_version.tools_json or [])
@@ -363,7 +373,9 @@ class _CallVoiceBridge:
                 user_id=self.host_id,
                 routing_profile_id=profile.id,
                 prompt_version_id=profile.prompt_version_id,
-                primary_model_id=model.id,
+                primary_model_id=profile.primary_model_id,
+                # Which model actually answered — not necessarily the primary one,
+                # since the loop below falls back when the primary will not connect.
                 active_model_id=model.id,
                 status=VoiceSessionStatus.ACTIVE,
                 locale=room.language,
@@ -375,8 +387,6 @@ class _CallVoiceBridge:
             session.add(voice_session)
             await session.commit()
             self.voice_session_id = voice_session.id
-        registry = build_provider_registry(self.settings)
-        provider = registry.create(model.adapter_code)
         tools = [
             {
                 "type": "function",
@@ -394,28 +404,10 @@ class _CallVoiceBridge:
         runtime_config = _deep_merge(
             profile.config_json, profile.prompt_version.runtime_config_json
         )
-        options = _deep_merge(model.runtime_defaults_json, runtime_config)
-        provider_overrides = options.pop("provider_overrides", {})
-        options = _deep_merge(options, provider_overrides.get(model.provider.code, {}))
-        voice = options.pop("voice", None)
-        await provider.connect(
-            LiveSessionConfig(
-                model=model.external_id,
-                prompt=prompt,
-                locale=room.language,
-                voice=voice,
-                audio_format=AudioFormat.PCM16_24KHZ,
-                tools=tools,
-                provider_options=options,
-            )
+        provider, model = await self._connect_any(
+            candidates, runtime_config, prompt, room.language, tools
         )
-        logger.info(
-            "call_voice_bridge_connected",
-            call_id=self.call_id,
-            adapter=model.adapter_code,
-            model=model.external_id,
-            tool_count=len(tools),
-        )
+        self.model_id = model.id
         if resume:
             # Picking up a dropped session, not starting a call. Replay what has
             # already been said so the guide keeps its thread, and say nothing:
@@ -436,6 +428,61 @@ class _CallVoiceBridge:
             "como indica tu guion. No documentes ni expliques nada todavia.]"
         )
         return provider
+
+    async def _connect_any(
+        self,
+        candidates: list[AIModel],
+        runtime_config: dict[str, Any],
+        prompt: str,
+        locale: str,
+        tools: list[dict[str, Any]],
+    ) -> tuple[LiveProvider, AIModel]:
+        """Connect the first candidate model that will have us.
+
+        Each model brings its own defaults and its own provider_overrides block,
+        so the option merge has to happen per candidate rather than once up front.
+        """
+        registry = build_provider_registry(self.settings)
+        failures: list[str] = []
+        for model in candidates:
+            options = _deep_merge(model.runtime_defaults_json, runtime_config)
+            overrides = options.pop("provider_overrides", {})
+            options = _deep_merge(options, overrides.get(model.provider.code, {}))
+            voice = options.pop("voice", None)
+            try:
+                provider = registry.create(model.adapter_code)
+                await provider.connect(
+                    LiveSessionConfig(
+                        model=model.external_id,
+                        prompt=prompt,
+                        locale=locale,
+                        voice=voice,
+                        audio_format=AudioFormat.PCM16_24KHZ,
+                        tools=tools,
+                        provider_options=options,
+                    )
+                )
+            except Exception as error:  # noqa: BLE001 - try the next candidate
+                failures.append(f"{model.external_id}: {error}")
+                logger.warning(
+                    "call_voice_bridge_connect_attempt_failed",
+                    call_id=self.call_id,
+                    adapter=model.adapter_code,
+                    model=model.external_id,
+                    error_type=type(error).__name__,
+                    error=str(error)[:200],
+                )
+                continue
+            logger.info(
+                "call_voice_bridge_connected",
+                call_id=self.call_id,
+                adapter=model.adapter_code,
+                model=model.external_id,
+                tool_count=len(tools),
+                fallback=model is not candidates[0],
+            )
+            return provider, model
+        raise CallError(f"No se pudo conectar ningun proveedor ({'; '.join(failures)})", 503)
 
     async def _reseed(self, provider: LiveProvider, room: Room) -> None:
         entries = _recap_entries(room)

@@ -100,9 +100,18 @@ class ChatService:
                 map_session=map_session,
             )
         )
-        primary = configuration.primary
-        if primary.adapter_code != OpenAIResponsesAdapter.code:
-            raise ChatServiceError(f"Unsupported chat adapter: {primary.adapter_code}")
+        # Primary first, the profile's fallback after it. Only the *first* call of
+        # the turn may fall back: once a tool has run it has already marked POIs on
+        # the map or written to the catalog, and replaying the turn on another model
+        # would do it twice. A failure after that point is surfaced, not retried.
+        candidates = [configuration.primary]
+        if configuration.fallback is not None:
+            candidates.append(configuration.fallback)
+        candidates = [c for c in candidates if c.adapter_code == OpenAIResponsesAdapter.code]
+        if not candidates:
+            raise ChatServiceError(
+                f"Unsupported chat adapter: {configuration.primary.adapter_code}"
+            )
 
         api_key = (
             self.settings.openai_api_key.get_secret_value().strip()
@@ -134,15 +143,22 @@ class ChatService:
                 {"role": "user", "content": [{"type": "input_text", "text": message}]}
             ]
             previous_response_id: str | None = None
+            primary = candidates[0]
+            result = None
             while True:
-                result = await adapter.respond(
-                    model=primary.model,
-                    instructions=primary.prompt,
-                    input_items=input_items,
-                    options=primary.provider_options,
-                    tools=tool_schemas or None,
-                    previous_response_id=previous_response_id,
-                )
+                if result is None:
+                    result, primary = await self._first_response(
+                        candidates, adapter, input_items, tool_schemas, trace_id
+                    )
+                else:
+                    result = await adapter.respond(
+                        model=primary.model,
+                        instructions=primary.prompt,
+                        input_items=input_items,
+                        options=primary.provider_options,
+                        tools=tool_schemas or None,
+                        previous_response_id=previous_response_id,
+                    )
                 rounds += 1
                 usage = _accumulate(usage, result.usage)
                 if not result.function_calls or dispatcher is None:
@@ -232,6 +248,43 @@ class ChatService:
             tool_calls=tool_call_count,
             rounds=rounds,
         )
+
+    async def _first_response(
+        self,
+        candidates: list[Any],
+        adapter: OpenAIResponsesAdapter,
+        input_items: list[dict[str, Any]],
+        tool_schemas: list[dict[str, Any]],
+        trace_id: str,
+    ) -> tuple[ChatProviderResult, Any]:
+        """Open the turn with the first model that answers.
+
+        Only reached before any tool has run, so retrying on another model is
+        free of side effects — which is exactly why the caller never comes back
+        here for later rounds.
+        """
+        failures: list[str] = []
+        for resolved in candidates:
+            try:
+                result = await adapter.respond(
+                    model=resolved.model,
+                    instructions=resolved.prompt,
+                    input_items=input_items,
+                    options=resolved.provider_options,
+                    tools=tool_schemas or None,
+                )
+            except Exception as error:  # noqa: BLE001 - try the next model
+                failures.append(f"{resolved.model}: {error}")
+                logger.warning(
+                    "chat_model_attempt_failed",
+                    trace_id=trace_id, model=resolved.model,
+                    error_type=type(error).__name__, error=str(error)[:200],
+                )
+                continue
+            if resolved is not candidates[0]:
+                logger.info("chat_fallback_used", trace_id=trace_id, model=resolved.model)
+            return result, resolved
+        raise ChatServiceError(f"No chat model answered ({'; '.join(failures)})")
 
     async def _run_tools(
         self,

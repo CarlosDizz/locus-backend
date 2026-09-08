@@ -191,8 +191,10 @@ bucle de tool-calling; ver "Bucle de tools y dominio del mapa" al final del cap�
 - [ ] Modelos y repositorio persistentes del dominio Chat (mensajes). Hoy el historial
       vive en `map_sessions.memory_json` (igual que V1) y se inyecta en el prompt; no hay
       tabla de mensajes propia.
-- [ ] Fallback provider como en Voice (`configuration.fallback` se resuelve pero
-      `ChatService` solo usa `primary`).
+- [x] **Fallback provider (2026-09-08)** — `ChatService._first_response()`. Solo la primera
+      llamada del turno puede caer al fallback: después alguna tool ya ha escrito en el mapa
+      o en el catálogo y repetir el turno lo haría dos veces. Ver Capítulo 6 para el detalle
+      y la prueba en caliente.
 - **Hallazgo (2026-09-06), corrige el alcance de este capítulo**: `POST /chat/setup` y
   `POST /chat/messages` de V1 NO son "chat sobre un POI" — son el chat de recomendaciones
   del mapa de la pantalla de inicio de Ionic, y dependen de `session_id`/ubicación/perfil

@@ -7,7 +7,12 @@ cd "$ROOT"
 ENV_FILE="${LOCUS_ENV_FILE:-.env.production}"
 PROJECT="${LOCUS_COMPOSE_PROJECT_NAME:-locus-backend}"
 export LOCUS_ENV_FILE="$ENV_FILE"
-COMPOSE=(docker compose --env-file "$ENV_FILE" -p "$PROJECT" -f docker-compose.prod.yml)
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE_BIN=(docker compose)
+else
+  COMPOSE_BIN=(docker-compose)
+fi
+COMPOSE=("${COMPOSE_BIN[@]}" --env-file "$ENV_FILE" -p "$PROJECT" -f docker-compose.prod.yml)
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "Missing $ENV_FILE. Start from .env.production.example." >&2

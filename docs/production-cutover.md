@@ -15,7 +15,8 @@ sustituye los contenedores del proyecto Compose `locus-backend`, conserva el vol
 
 ## Secuencia
 
-1. Copiar esta revision a `/home/ec2-user/locus-backend-v2` y crear `.env.production`.
+1. Copiar esta revision a `/home/ec2-user/locus-backend-v2` y crear `.env.production` con
+   `bin/build-production-env.py`; el script traduce los nombres sin mostrar secretos.
 2. Ejecutar `./bin/production build` mientras V1 sigue atendiendo trafico.
 3. Ejecutar `./bin/production backup` y conservar el nombre del dump verificado.
 4. Ejecutar `./bin/production prepare-db` para crear/migrar/sembrar `locus_v2`.

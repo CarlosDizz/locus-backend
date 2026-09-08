@@ -253,6 +253,22 @@ class CallService:
 
         return await self.store.change(call_id, change)
 
+    async def end_idle(self, call_id: str) -> Room:
+        """Hang up a call nobody is on any more.
+
+        The AI bridge calls this after several provider sessions in a row where
+        no one spoke, typed or shared anything: sessions ending is normal (the
+        provider caps their duration), but reconnecting forever for an empty
+        room is paying to keep a call alive that nobody is attending.
+        """
+
+        def change(room, commands, events):
+            if room.status != "ended":
+                room.end()
+                room.append_log("system", "Llamada cerrada por inactividad")
+
+        return await self.store.change(call_id, change)
+
     async def log_user_voice(self, call_id: str, text: str) -> Room:
         """Record what the current speaker actually said, once the provider transcribes it.
 

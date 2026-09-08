@@ -82,13 +82,12 @@ logger = structlog.get_logger()
 
 _ACTIVE: dict[str, asyncio.Task[None]] = {}
 
-# Consecutive failed redials before giving up (see run(): a session that served
-# for a while resets this). Enough to ride out a provider hiccup; beyond it
-# something is wrong that retrying will not fix.
-MAX_RECONNECT_ATTEMPTS = 6
-# A provider session that lasted at least this long did its job, however short
-# the provider's cap turned out to be.
-HEALTHY_SESSION_SECONDS = 45.0
+# Consecutive reconnections that nobody said a word through. A provider session
+# ends on its own when it hits its duration cap, so reconnecting is routine —
+# but doing it over and over for a room where nobody is talking is paying to
+# keep an empty call alive. After this many silent rounds the call hangs up,
+# and any real interaction resets the count (see run()).
+MAX_SILENT_RECONNECTS = 3
 # How much of the shared log to replay into a new session. The log itself holds
 # 80 entries; the last stretch is what keeps the guide on thread without paying
 # to re-read the whole visit on every reconnection.
@@ -171,6 +170,10 @@ class _CallVoiceBridge:
         # it's supposed to be.
         self._assistant_turn_count = 0
         self._research_kicked_off = False
+        # Did anyone actually take part during the current provider session?
+        # Reset per session in run(); decides whether a reconnection counts as
+        # "the room is still alive" or as another round of silence.
+        self._heard_from_group = False
 
     async def run(self) -> None:
         """Keep a live provider attached to this call for as long as it lasts.
@@ -200,9 +203,8 @@ class _CallVoiceBridge:
                     )
                     return
 
-                served_from = perf_counter()
+                self._heard_from_group = False
                 provider_lost = await self._serve_session()
-                served_seconds = perf_counter() - served_from
                 with contextlib.suppress(Exception):
                     await self.provider.close()
                 with contextlib.suppress(Exception):
@@ -211,24 +213,22 @@ class _CallVoiceBridge:
 
                 if not provider_lost or not await self._call_still_running():
                     return
-                # The budget is consecutive *failures*, not reconnections. Measured
-                # 2026-09-08: a real Gemini session lasts ~3.5-4 minutes, so a
-                # two-hour room legitimately needs ~30 of them — counting every
-                # reconnection would give up on a perfectly healthy call. A session
-                # that actually served resets the budget; only redials that die
-                # immediately burn it, which is what "we cannot reconnect" means.
-                if served_seconds >= HEALTHY_SESSION_SECONDS:
+                # What the budget counts is silence, not reconnections. Sessions
+                # end on their own at the provider's duration cap, so a long
+                # visit needs many of them and counting those would hang up on a
+                # call that is going fine. Anyone speaking, typing or sharing a
+                # photo resets it; only rounds where the group said nothing at
+                # all burn it, and running out means nobody is there any more.
+                if self._heard_from_group:
                     attempt = 0
                 attempt += 1
-                if attempt > MAX_RECONNECT_ATTEMPTS:
-                    logger.warning(
-                        "call_voice_bridge_reconnect_exhausted",
-                        call_id=self.call_id, attempts=attempt,
+                if attempt > MAX_SILENT_RECONNECTS:
+                    logger.info(
+                        "call_voice_bridge_ended_idle",
+                        call_id=self.call_id, silent_rounds=attempt,
                     )
-                    await self.store.publish(
-                        self.call_id,
-                        {"type": "call.error", "message": "No he podido reconectar la IA"},
-                    )
+                    with contextlib.suppress(Exception):
+                        await self.service.end_idle(self.call_id)
                     return
                 logger.info(
                     "call_voice_bridge_reconnecting", call_id=self.call_id, attempt=attempt
@@ -508,6 +508,8 @@ class _CallVoiceBridge:
         assert self.provider is not None
         async for command in self.store.commands(self.call_id):
             kind = command.get("type")
+            if kind in {"audio.chunk", "audio.commit", "text.submit", "image.submit"}:
+                self._heard_from_group = True
             try:
                 if kind == "reset":
                     await self.provider.cancel_response()
@@ -592,6 +594,18 @@ class _CallVoiceBridge:
             elif event.type == ProviderEventType.TOOL_CALL:
                 await self._handle_tool_call(event)
             elif event.type == ProviderEventType.ERROR:
+                if event.error_code == "go_away":
+                    # Not an error and not something the group should ever see:
+                    # it is the provider telling us the session is about to end
+                    # and that *we* must close it. Ignoring it is what gets the
+                    # connection killed — measured 2026-09-08, the abort said so
+                    # verbatim: "Connection aborted because the client failed to
+                    # close the connection after receiving a GoAway signal once
+                    # the session duration [limit was reached]". Returning here
+                    # ends this session so run() reconnects immediately, while
+                    # the old one is still answering — so the swap is silent.
+                    logger.info("call_voice_bridge_go_away", call_id=self.call_id)
+                    return
                 await self.store.publish(
                     self.call_id, {"type": "call.error", "message": event.text or "assistant_error"}
                 )

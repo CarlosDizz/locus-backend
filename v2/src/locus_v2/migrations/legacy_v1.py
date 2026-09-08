@@ -64,7 +64,7 @@ def legacy_adapter_code(provider_code: str, service_kind: str) -> str:
         if normalized_provider == "openai":
             return "openai_realtime"
         if normalized_provider in {"google", "gemini"}:
-            return "gemini_live"
+            return "gemini_live_3"
     if service_kind == "chat" and normalized_provider == "openai":
         return "openai_responses"
     return "legacy_v1"

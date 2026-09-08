@@ -49,7 +49,7 @@ MODELS = (
         "gemini-3.1-flash-live-preview",
         "Gemini 3.1 Flash Live",
         ServiceKind.VOICE,
-        "gemini_live",
+        "gemini_live_3",
         Lifecycle.PREVIEW,
         True,
     ),
@@ -134,7 +134,7 @@ MODEL_RUNTIME_DEFAULTS = {
         "verbosity": "medium",
     },
     "openai_realtime": {"max_output_tokens": 1200, "temperature": 0.8},
-    "gemini_live": {"max_output_tokens": 1200, "temperature": 0.8},
+    "gemini_live_3": {"max_output_tokens": 1200, "temperature": 0.8},
     "mock_live": {"max_output_tokens": 1200},
 }
 
@@ -216,7 +216,7 @@ MAP_CHAT_TOOL_CODES = (
 
 def _adapter_for(provider_code: str, service_kind: str) -> str | None:
     if service_kind == ServiceKind.VOICE:
-        return {"openai": "openai_realtime", "google": "gemini_live"}.get(provider_code)
+        return {"openai": "openai_realtime", "google": "gemini_live_3"}.get(provider_code)
     if service_kind == ServiceKind.CHAT and provider_code == "openai":
         return "openai_responses"
     return None
@@ -678,7 +678,7 @@ async def seed() -> None:
                 environment=settings.env,
                 status=PublicationStatus.PUBLISHED,
                 voice_mode=VoiceMode.PUSH_TO_TALK,
-                primary_model_id=models["gemini_live"].id,
+                primary_model_id=models["gemini_live_3"].id,
                 fallback_model_id=models["openai_realtime"].id,
                 prompt_version_id=prompt.id,
                 config_json={"audio_persistence": False},
@@ -692,7 +692,7 @@ async def seed() -> None:
         # silently masking which one actually answered.
         for test_code, test_name, adapter in (
             ("voice.poi.test.openai", "POI voz · prueba OpenAI Realtime", "openai_realtime"),
-            ("voice.poi.test.gemini", "POI voz · prueba Gemini Live", "gemini_live"),
+            ("voice.poi.test.gemini", "POI voz · prueba Gemini Live", "gemini_live_3"),
             ("voice.poi.test.mock", "POI voz · prueba Mock (sin coste)", "mock_live"),
         ):
             test_profile = await session.scalar(
@@ -790,7 +790,7 @@ async def seed() -> None:
                     environment=settings.env,
                     status=PublicationStatus.PUBLISHED,
                     voice_mode=VoiceMode.PUSH_TO_TALK,
-                    primary_model_id=models["gemini_live"].id,
+                    primary_model_id=models["gemini_live_3"].id,
                     fallback_model_id=models["openai_realtime"].id,
                     prompt_version_id=call_prompt.id,
                     config_json={"audio_persistence": False},

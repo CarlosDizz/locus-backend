@@ -568,11 +568,81 @@ este corte llevaba ahí desde el principio sin que lo viéramos.
   corte llega ~70 s después), pero llamamos a `plan_poi_visit` casi cada turno.
 - Indicio suelto de inactividad: preguntando cada 150 s las sesiones duraron 238/204 s;
   cada 95 s, 285/277 s. Poca muestra para concluir.
-- **Siguiente experimento, barato y decisivo**: una llamada con `tools_json` vacío (solo un
-  cambio en base de datos, sin tocar código ni reiniciar) para ver si sin tools la sesión
-  dura más.
+### Causa del 1008 encontrada: éramos nosotros (2026-09-08)
 
-### Sesiones largas: la llamada se cae sola a los ~10-15 min (medición previa)
+El corte no era un capricho del proveedor. Cuando una sesión Live agota su duración,
+Gemini manda `go_away` y **espera que el cliente cierre la conexión**; si no lo haces, te
+la aborta. El mensaje lo dice literalmente:
+
+> `1008: Connection aborted because the client failed to close the connection after
+> receiving a GoAway signal once the session duration [limit was reached]`
+
+Nosotros publicábamos ese aviso en la sala como `call.error` y seguíamos con el socket
+abierto. Ahora `calls/bridge.py` lo trata como lo que es: cierra la sesión y reconecta en
+el acto, sin enseñar nada al grupo.
+
+**Cómo se llegó hasta ahí**, porque el camino importa más que el resultado:
+
+- Se descartaron por medición la ventana de contexto, la resiembra, un bucle vivo en
+  nuestro código, remandar contexto por turno, las tools (sin ellas también caía) y las
+  señales de actividad.
+- **Carlos insistió dos veces donde yo había cerrado en falso.** Primero con que 3.1 es un
+  modelo *preview*: eso llevó a separar los adaptadores y destapó que `cancel_response()`
+  mandaba `activity_start` (control **explícito** de actividad) teniendo el VAD
+  **automático** activado — combinación ilegal que mata al 2.5 al instante
+  (`1007 Explicit activity control is not supported when automatic activity detection is
+  enabled`) y que se disparaba justo al **interrumpir al guía**, la función central del
+  producto. Segundo, con que el audio de prueba era un zumbido sintético y quizá el VAD lo
+  descartaba: al cambiarlo por habla real las sesiones pasaron de ~250 s a ~590 s, vivieron
+  lo bastante para alcanzar el límite de duración de verdad, y ahí apareció el `go_away`
+  con el mensaje que lo explicaba todo.
+- Moraleja para la próxima: **una hipótesis descartada con pruebas que no reproducen el
+  escenario real no está descartada.** Todas mis mediciones anteriores eran de texto; el
+  producto es voz.
+
+**Tres cambios, probados en caliente contra Gemini real:**
+
+- **`go_away` deja de ser un error**: cierra y reconecta al instante. Medido en la llamada
+  de validación — `go_away`, `session_ended` y `reconnecting` en el **mismo segundo**, y la
+  sesión nueva sembrada con 11 entradas **dos segundos** después. **Cero errores 1008 en
+  toda la llamada** (antes, uno por sesión).
+- **El presupuesto de reintentos cuenta silencio, no reconexiones** (`MAX_SILENT_RECONNECTS
+  = 3`): cualquiera que hable, escriba o comparta una foto lo reinicia. Una visita larga
+  encadena todas las sesiones que necesite sin gastarlo.
+- **Colgar por inactividad** (`CallService.end_idle()`): tres rondas seguidas sin que nadie
+  diga nada y la llamada se cierra, en vez de pagar por mantener viva una sala vacía. Idea
+  de Carlos: si nadie interactúa, que muera no es un fallo.
+
+**Los dos adaptadores de Gemini** (`gemini_live_3` / `gemini_live_2`) salen de aquí: no son
+la misma API con otro número. El 2.x *native audio* rechaza `speech_config.language_code`
+(`1007 Unsupported language code 'es'`) y deduce el idioma de la conversación; el 3.x lo
+exige. Cada familia tiene su clase y su constructor de configuración, y
+`ai_models.adapter_code` decide. Lo único compartido es el mapeo de lo que **vuelve**,
+porque ahí las dos hablan el mismo `LiveServerMessage`.
+
+**Calidad del guía, catada sobre la transcripción real** (no es bloqueante, es material
+para el taller de prompts): el comportamiento de guía es correcto — saluda, espera al
+grupo, va por paradas y da indicaciones físicas. Pero mete errores factuales con el mismo
+aplomo que los aciertos: dijo que la fachada tiene "cuatro niveles de arquerías" cuando
+solo tres lo son (el cuarto es un ático macizo) y acto seguido enumeró tres estilos;
+presentó el travertino como un revestimiento perdido cuando es la propia piedra del muro; y
+dio por hecho que se inundaba la arena para naumaquias justo antes de describir el hipogeo,
+que es lo que lo hacía imposible. Además habla de *ustedes* con la localización en `es-ES`.
+
+**Pendientes anotados de esta pasada:**
+
+- Tras reconectar, el guía repitió una respuesta **palabra por palabra**. Lo más probable es
+  artefacto de la prueba (el turista simulado recicla las mismas cinco frases, así que el
+  mismo estímulo dio la misma salida) pero no está descartado que la resiembra no calara.
+  Se zanja con una prueba que use frases **distintas** después del corte.
+- Una llamada de grupo **no deja transcripción persistente en ningún sitio**: vive solo en
+  Redis y muere con la sala (`voice_turns` solo lo rellena el guía de un usuario del panel).
+  Candidato de producto, no urgente.
+- `gemini-2.5-flash-native-audio-latest` quedó dado de alta con su tarifa real (texto más
+  barato que 3.1: $0,50/$2,00 frente a $0,75/$4,50; audio idéntico a $12,00) pero **sin
+  validar** como alternativa.
+
+### Sesiones largas: cómo se veía antes de encontrar la causa (medición previa)
 
 Encontrado el 2026-09-07 tirando del hilo de "¿aguantamos 40 minutos?". **No está
 reproducido con cronómetro**: es lectura de la documentación de Google más inspección del

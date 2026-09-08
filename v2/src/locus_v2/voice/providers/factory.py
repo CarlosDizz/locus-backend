@@ -1,6 +1,9 @@
 from locus_v2.config import Settings
 from locus_v2.voice.providers.future_openai_live import FutureOpenAILiveProvider
-from locus_v2.voice.providers.gemini_live import GeminiLiveProvider
+from locus_v2.voice.providers.gemini_live import (
+    GeminiLive2Provider,
+    GeminiLive3Provider,
+)
 from locus_v2.voice.providers.mock import MockLiveProvider
 from locus_v2.voice.providers.openai_realtime import OpenAIRealtimeProvider
 from locus_v2.voice.providers.registry import ProviderRegistry
@@ -26,8 +29,9 @@ def build_provider_registry(settings: Settings) -> ProviderRegistry:
         else ""
     )
     if gemini_key:
-        registry.register(
-            GeminiLiveProvider.code,
-            lambda: GeminiLiveProvider(gemini_key),
-        )
+        for provider_cls in (GeminiLive3Provider, GeminiLive2Provider):
+            registry.register(
+                provider_cls.code,
+                lambda cls=provider_cls: cls(gemini_key),  # type: ignore[misc]
+            )
     return registry

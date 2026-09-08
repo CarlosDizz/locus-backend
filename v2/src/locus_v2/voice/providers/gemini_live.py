@@ -1,3 +1,20 @@
+"""Two Gemini Live families, two adapters.
+
+They are not one API with a version bump. The 3.x half-cascade models take a
+`speech_config.language_code`; the 2.x native-audio ones reject it outright
+(`1007 Unsupported language code 'es'`), picking the language up from the
+conversation instead. Keeping both behind a single class meant every such
+difference had to become a conditional, so each family gets its own adapter and
+its own connect config, and `ai_models.adapter_code` decides which one a model
+uses.
+
+What is genuinely shared is the wire format of what comes *back* — both speak
+the same `LiveServerMessage` — so the response mapping below stays common. If
+the two families ever start answering differently, split that too rather than
+branching inside it.
+"""
+
+
 import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
@@ -16,8 +33,8 @@ from locus_v2.voice.providers.base import (
 )
 
 
-class GeminiLiveProvider(LiveProvider):
-    code = "gemini_live"
+class GeminiLive3Provider(LiveProvider):
+    code = "gemini_live_3"
     capabilities = ProviderCapabilities(
         full_duplex=True,
         function_calling=True,
@@ -39,7 +56,7 @@ class GeminiLiveProvider(LiveProvider):
         self._config = config
         self._manager = self._client.aio.live.connect(
             model=config.model,
-            config=_gemini_config(config),
+            config=_gemini3_config(config),
         )
         self._session = await self._manager.__aenter__()
 
@@ -103,7 +120,22 @@ class GeminiLiveProvider(LiveProvider):
         )
 
     async def cancel_response(self) -> None:
-        if self._session is not None:
+        """Interrupt the model mid-answer.
+
+        `activity_start` is *explicit* activity control, which the API only
+        accepts when automatic voice activity detection is off — send it with
+        automatic VAD enabled (our default) and the session is killed outright:
+        "1007 Explicit activity control is not supported when automatic activity
+        detection is enabled" (measured 2026-09-08; the 2.5 family enforces it
+        immediately, 3.x is laxer about it). With automatic VAD there is nothing
+        to send: the model yields on its own as soon as the interrupting user's
+        audio arrives, which is exactly what a barge-in already is.
+        """
+        if self._session is None:
+            return
+        options = self._config.provider_options if self._config else {}
+        detection = options.get("turn_detection") or {}
+        if detection.get("type") == "manual":
             await self._session.send_realtime_input(activity_start={})
 
     async def events(self) -> AsyncIterator[ProviderEvent]:
@@ -124,10 +156,136 @@ class GeminiLiveProvider(LiveProvider):
 
     def _require_session(self) -> None:
         if self._session is None or self._config is None:
-            raise RuntimeError("Gemini Live is not connected")
+            raise RuntimeError("GeminiLive3Provider is not connected")
 
 
-def _gemini_config(config: LiveSessionConfig) -> dict:
+class GeminiLive2Provider(LiveProvider):
+    code = "gemini_live_2"
+    capabilities = ProviderCapabilities(
+        full_duplex=True,
+        function_calling=True,
+        async_function_calling=True,
+        input_transcription=True,
+        output_transcription=True,
+        image_input=True,
+        context_seeding=True,
+        supported_input_formats=[AudioFormat.PCM16_16KHZ, AudioFormat.PCM16_24KHZ],
+    )
+
+    def __init__(self, api_key: str) -> None:
+        self._client = genai.Client(api_key=api_key)
+        self._manager: Any = None
+        self._session: Any = None
+        self._config: LiveSessionConfig | None = None
+
+    async def connect(self, config: LiveSessionConfig) -> None:
+        self._config = config
+        self._manager = self._client.aio.live.connect(
+            model=config.model,
+            config=_gemini2_config(config),
+        )
+        self._session = await self._manager.__aenter__()
+
+    async def send_audio(self, chunk: bytes) -> None:
+        self._require_session()
+        rate = 16000 if self._config.audio_format == AudioFormat.PCM16_16KHZ else 24000
+        await self._session.send_realtime_input(
+            audio=types.Blob(data=chunk, mime_type=f"audio/pcm;rate={rate}")
+        )
+
+    async def commit_audio(self) -> None:
+        self._require_session()
+        await self._session.send_realtime_input(audio_stream_end=True)
+
+    async def send_text(self, text: str) -> None:
+        self._require_session()
+        await self._session.send_client_content(
+            turns=types.Content(role="user", parts=[types.Part(text=text)]),
+            turn_complete=True,
+        )
+
+    async def send_image(
+        self, image_bytes: bytes, mime_type: str, caption: str | None = None
+    ) -> None:
+        self._require_session()
+        parts = [types.Part(inline_data=types.Blob(data=image_bytes, mime_type=mime_type))]
+        if caption:
+            parts.insert(0, types.Part(text=caption))
+        await self._session.send_client_content(
+            turns=types.Content(role="user", parts=parts),
+            turn_complete=True,
+        )
+
+    async def seed_context(self, entries: list[tuple[str, str]]) -> None:
+        self._require_session()
+        if not entries:
+            return
+        await self._session.send_client_content(
+            turns=[
+                types.Content(
+                    role="model" if role == "assistant" else "user",
+                    parts=[types.Part(text=text)],
+                )
+                for role, text in entries
+            ],
+            # The whole point: append the history to the conversation and stop.
+            # turn_complete=True here would make the guide answer the last thing
+            # the group said before the drop, all over again.
+            turn_complete=False,
+        )
+
+    async def submit_tool_result(self, call_id: str, result: dict) -> None:
+        self._require_session()
+        payload = dict(result)
+        await self._session.send_tool_response(
+            function_responses=types.FunctionResponse(
+                id=call_id,
+                name=payload.pop("_tool_name", "locus_tool"),
+                response=payload,
+            )
+        )
+
+    async def cancel_response(self) -> None:
+        """Interrupt the model mid-answer.
+
+        `activity_start` is *explicit* activity control, which the API only
+        accepts when automatic voice activity detection is off — send it with
+        automatic VAD enabled (our default) and the session is killed outright:
+        "1007 Explicit activity control is not supported when automatic activity
+        detection is enabled" (measured 2026-09-08; the 2.5 family enforces it
+        immediately, 3.x is laxer about it). With automatic VAD there is nothing
+        to send: the model yields on its own as soon as the interrupting user's
+        audio arrives, which is exactly what a barge-in already is.
+        """
+        if self._session is None:
+            return
+        options = self._config.provider_options if self._config else {}
+        detection = options.get("turn_detection") or {}
+        if detection.get("type") == "manual":
+            await self._session.send_realtime_input(activity_start={})
+
+    async def events(self) -> AsyncIterator[ProviderEvent]:
+        self._require_session()
+        yield ProviderEvent(type=ProviderEventType.READY)
+        while self._session is not None:
+            async for message in self._session.receive():
+                for event in _map_gemini_message(message):
+                    yield event
+            await asyncio.sleep(0)
+
+    async def close(self) -> None:
+        if self._manager is not None:
+            await self._manager.__aexit__(None, None, None)
+        self._manager = None
+        self._session = None
+        self._client.close()
+
+    def _require_session(self) -> None:
+        if self._session is None or self._config is None:
+            raise RuntimeError("GeminiLive2Provider is not connected")
+
+
+def _gemini3_config(config: LiveSessionConfig) -> dict:
     options = dict(config.provider_options)
     options.pop("interaction_mode", None)
     turn_detection = options.pop("turn_detection", {})
@@ -137,6 +295,44 @@ def _gemini_config(config: LiveSessionConfig) -> dict:
         "system_instruction": config.prompt,
         "speech_config": {
             "language_code": config.locale,
+            "voice_config": {"prebuilt_voice_config": {"voice_name": config.voice or "Kore"}},
+        },
+        "tools": [
+            {
+                "function_declarations": [
+                    {
+                        "name": tool["name"],
+                        "description": tool.get("description", ""),
+                        "parameters_json_schema": tool.get("parameters", {}),
+                    }
+                    for tool in config.tools
+                ]
+            }
+        ]
+        if config.tools
+        else [],
+        "input_audio_transcription": {},
+        "output_audio_transcription": {},
+        "realtime_input_config": _gemini_turn_detection(turn_detection),
+    }
+    for key in ("temperature", "top_p", "top_k", "max_output_tokens"):
+        if key in options:
+            live_config[key] = options[key]
+    return live_config
+
+
+def _gemini2_config(config: LiveSessionConfig) -> dict:
+    options = dict(config.provider_options)
+    options.pop("interaction_mode", None)
+    turn_detection = options.pop("turn_detection", {})
+    options.pop("input_audio_transcription", None)
+    live_config: dict = {
+        "response_modalities": ["AUDIO"],
+        "system_instruction": config.prompt,
+        # No language_code: the native-audio family refuses it outright
+        # ("1007 Unsupported language code 'es'") and takes the language from
+        # the system instruction and the conversation instead.
+        "speech_config": {
             "voice_config": {"prebuilt_voice_config": {"voice_name": config.voice or "Kore"}},
         },
         "tools": [

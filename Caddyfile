@@ -17,7 +17,10 @@ app.locusguide.es {
 	# cachear para siempre. El índice y los ficheros del service worker no:
 	# si se cachean, una versión nueva puede tardar días en llegar al móvil de
 	# alguien que ya tiene la app instalada.
-	@revalidate path /index.html /ngsw.json /ngsw-worker.js /safety-worker.js /manifest.webmanifest
+	# "/" va explícito: el matcher se evalúa sobre la ruta pedida, no sobre la
+	# que resuelve try_files, así que sin él la portada — la que carga todo el
+	# mundo — se quedaba sin cabecera de caché.
+	@revalidate path / /index.html /ngsw.json /ngsw-worker.js /safety-worker.js /manifest.webmanifest
 	header @revalidate Cache-Control "no-cache, must-revalidate"
 
 	@immutable {

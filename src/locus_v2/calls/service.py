@@ -298,8 +298,16 @@ class CallService:
         def change(room, commands, events):
             if room.status == "ended":
                 return
-            room.status = "idle"
-            room.speaker_id = None
+            # Only close the floor if it is still the assistant's. A user who
+            # interrupts takes the floor immediately, but the provider keeps
+            # emitting for a moment and this lands afterwards: clearing the
+            # floor unconditionally handed it back to nobody, and every audio
+            # chunk the interrupting user was already streaming was refused with
+            # "You do not hold the floor". They saw the guide stop and then go
+            # deaf. The reconnect path above guards the same way.
+            if room.status == "assistant_speaking":
+                room.status = "idle"
+                room.speaker_id = None
             if text:
                 room.append_log("ai", text)  # matches call.page.ts's trackLabel(), not a free label
             events.append({"type": "assistant.done", "text": text})

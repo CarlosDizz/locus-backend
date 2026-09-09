@@ -65,6 +65,7 @@ from locus_v2.catalog.models import Poi
 from locus_v2.config import Settings
 from locus_v2.infrastructure.database.session import Database
 from locus_v2.shared.clock import utc_now
+from locus_v2.shared.openai_client import build_openai_client
 from locus_v2.shared.openai_usage import ToolUsage
 from locus_v2.shared.prompting import PromptRenderingError, localized_field, render_prompt
 from locus_v2.voice.models import VoiceSession, VoiceSessionStatus
@@ -77,6 +78,7 @@ from locus_v2.voice.providers.base import (
 )
 from locus_v2.voice.providers.factory import build_provider_registry
 from locus_v2.voice.tools import VoiceToolDispatcher
+from locus_v2.voice.transcription import audio_seconds, transcribe_turn
 
 logger = structlog.get_logger()
 
@@ -174,6 +176,13 @@ class _CallVoiceBridge:
         # Reset per session in run(); decides whether a reconnection counts as
         # "the room is still alive" or as another round of silence.
         self._heard_from_group = False
+        # Audio del turno en curso, para transcribirlo al soltar el boton.
+        self._turn_audio = bytearray()
+        # Lo que transcribio el propio proveedor, por si el nuestro falla.
+        self._provider_transcript = ""
+        # Se guardan para que no las recoja el recolector de basura a medias
+        # y para poder esperarlas al cerrar la llamada.
+        self._pending_transcriptions: set[asyncio.Task] = set()
 
     async def run(self) -> None:
         """Keep a live provider attached to this call for as long as it lasts.
@@ -240,6 +249,14 @@ class _CallVoiceBridge:
             final_status = VoiceSessionStatus.FAILED
             raise
         finally:
+            # Se da un margen a las transcripciones en vuelo antes de cerrar: son
+            # una peticion corta, y perderlas dejaria la ultima intervencion sin
+            # constar en la bitacora justo al final de la llamada.
+            if self._pending_transcriptions:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait(set(self._pending_transcriptions), timeout=10)
+                for task in set(self._pending_transcriptions):
+                    task.cancel()
             if self.provider is not None:
                 with contextlib.suppress(Exception):
                     await self.provider.close()
@@ -561,9 +578,13 @@ class _CallVoiceBridge:
                 if kind == "reset":
                     await self.provider.cancel_response()
                 elif kind == "audio.chunk":
-                    await self.provider.send_audio(base64.b64decode(command["audio"]))
+                    pcm = base64.b64decode(command["audio"])
+                    if self._transcription_enabled:
+                        self._turn_audio.extend(pcm)
+                    await self.provider.send_audio(pcm)
                 elif kind == "audio.commit":
                     await self.provider.commit_audio()
+                    self._start_turn_transcription()
                 elif kind == "text.submit":
                     author = command.get("author", "")
                     await self.provider.send_text(
@@ -635,7 +656,12 @@ class _CallVoiceBridge:
                     await self._on_assistant_turn_done(text)
             elif event.type == ProviderEventType.INPUT_TRANSCRIPT_DONE:
                 if event.text:
-                    await self.service.log_user_voice(self.call_id, event.text)
+                    if self._transcription_enabled:
+                        # Se guarda como respaldo en vez de escribirse: si el
+                        # nuestro responde, esta linea sobra y saldrian dos.
+                        self._provider_transcript = event.text
+                    else:
+                        await self.service.log_user_voice(self.call_id, event.text)
             elif event.type == ProviderEventType.USAGE and event.usage is not None:
                 await self._persist_usage(event.usage)
             elif event.type == ProviderEventType.TOOL_CALL:
@@ -724,6 +750,88 @@ class _CallVoiceBridge:
             tool=event.tool_name,
             elapsed_ms=round((perf_counter() - started_at) * 1000, 1),
         )
+
+    @property
+    def _transcription_enabled(self) -> bool:
+        return bool(self.settings.transcription_model)
+
+    def _start_turn_transcription(self) -> None:
+        """Send the finished turn off to be transcribed, without waiting for it.
+
+        Deliberately fire-and-forget: the log entry can arrive a second late,
+        but the live conversation must not wait on an HTTP round trip. The task
+        is kept so a session ending mid-flight can cancel it.
+        """
+        if not self._transcription_enabled or not self._turn_audio:
+            return
+        pcm = bytes(self._turn_audio)
+        self._turn_audio.clear()
+        fallback = self._provider_transcript
+        self._provider_transcript = ""
+        task = asyncio.create_task(self._transcribe_and_log(pcm, fallback))
+        self._pending_transcriptions.add(task)
+        task.add_done_callback(self._pending_transcriptions.discard)
+
+    async def _transcribe_and_log(self, pcm: bytes, fallback: str) -> None:
+        seconds = audio_seconds(pcm)
+        text = ""
+        try:
+            client = build_openai_client(self.settings)
+            result = await transcribe_turn(
+                client,
+                model=self.settings.transcription_model,
+                pcm=pcm,
+                language=self.locale,
+            )
+            text = result.text
+        except Exception as error:  # noqa: BLE001 - a failed log line must not break the call
+            logger.warning(
+                "call_voice_bridge_transcription_failed",
+                call_id=self.call_id,
+                error=str(error)[:200],
+            )
+        # El respaldo es el texto del propio proveedor: peor, pero mejor que una
+        # entrada vacia en la bitacora que ademas se replicaria al reconectar.
+        final = text or fallback
+        if not final:
+            return
+        await self.service.log_user_voice(self.call_id, final)
+        if text:
+            await self._persist_transcription_usage(seconds)
+
+    async def _persist_transcription_usage(self, seconds: float) -> None:
+        if self.voice_session_id is None or self.host_id is None:
+            return
+        async with self.database.sessions() as session:
+            model = await session.scalar(
+                select(AIModel)
+                .join(AIProvider, AIProvider.id == AIModel.provider_id)
+                .where(
+                    AIProvider.code == "openai",
+                    AIModel.external_id == self.settings.transcription_model,
+                )
+            )
+            if model is None:
+                logger.warning(
+                    "call_voice_bridge_transcription_unpriced",
+                    call_id=self.call_id,
+                    transcription_model=self.settings.transcription_model,
+                )
+                return
+            session.add(
+                UsageEvent(
+                    user_id=self.host_id,
+                    voice_session_id=self.voice_session_id,
+                    provider_id=model.provider_id,
+                    model_id=model.id,
+                    dedupe_key=f"{self.trace_id}:transcription:{uuid4().hex}",
+                    interaction_type="transcription",
+                    raw_usage_json={"audio_seconds": round(seconds, 2)},
+                    status=UsageStatus.PENDING,
+                    trace_id=self.trace_id,
+                )
+            )
+            await session.commit()
 
     async def _persist_tool_usage(
         self, tool_name: str, handler_code: str, usage: ToolUsage

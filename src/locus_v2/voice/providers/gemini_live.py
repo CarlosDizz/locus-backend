@@ -23,6 +23,7 @@ from google import genai
 from google.genai import types
 
 from locus_v2.billing.pricing import NormalizedUsage
+from locus_v2.voice.locales import speech_locale
 from locus_v2.voice.protocol import AudioFormat
 from locus_v2.voice.providers.base import (
     LiveProvider,
@@ -294,7 +295,9 @@ def _gemini3_config(config: LiveSessionConfig) -> dict:
         "response_modalities": ["AUDIO"],
         "system_instruction": config.prompt,
         "speech_config": {
-            "language_code": config.locale,
+            # Con "es" a secas Gemini elige un espanol generico que suena
+            # latinoamericano; la region hay que pedirla explicita.
+            "language_code": speech_locale(config.locale),
             "voice_config": {"prebuilt_voice_config": {"voice_name": config.voice or "Kore"}},
         },
         "tools": [

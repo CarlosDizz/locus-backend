@@ -5,3 +5,34 @@ api.locusguide.es {
 admin.locusguide.es {
 	reverse_proxy control-panel:80
 }
+
+# La app Ionic compilada como PWA. Los ficheros los sube bin/deploy-web desde el
+# repo de la app; viven fuera de este proyecto porque el despliegue del backend
+# hace rsync --delete sobre su propio directorio y se los llevaría por delante.
+app.locusguide.es {
+	root * /srv/app
+	encode zstd gzip
+
+	# Angular emite los recursos con un hash en el nombre, así que se pueden
+	# cachear para siempre. El índice y los ficheros del service worker no:
+	# si se cachean, una versión nueva puede tardar días en llegar al móvil de
+	# alguien que ya tiene la app instalada.
+	@revalidate path /index.html /ngsw.json /ngsw-worker.js /safety-worker.js /manifest.webmanifest
+	header @revalidate Cache-Control "no-cache, must-revalidate"
+
+	@immutable {
+		path *.js *.css *.woff2
+		not path /ngsw-worker.js /safety-worker.js
+	}
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
+	# Angular enruta en el cliente: cualquier ruta desconocida devuelve el índice
+	# o /call, /poi/3 y demás darían 404 al recargar o al abrir un enlace.
+	try_files {path} /index.html
+	file_server
+}

@@ -69,6 +69,10 @@ services:
       - "443:443/udp"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Ruta absoluta del host a propósito: el despliegue hace rsync --delete
+      # sobre este directorio, así que un ./algo relativo se borraría en el
+      # siguiente despliegue del backend. La PWA vive fuera y la sube su repo.
+      - ${LOCUS_WEB_ROOT:-/home/ec2-user/locus-app/www}:/srv/app:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

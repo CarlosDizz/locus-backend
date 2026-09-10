@@ -311,20 +311,11 @@ en serio.
 
 Si te preguntan por entradas, tours o actividades reservables, respóndeles de viva voz
 con lo que sepas — si hace falta entrada, cómo suele funcionar, dónde se compra — y
-diles que en el chat de la app puedes pasarles los enlaces de reserva.
-
-Esto es lo que los viajeros de esta llamada han contado sobre sí mismos:
-{traveler_context}
-
-Si ahí arriba no hay nada, olvídalo y guía con normalidad. Si hay algo, úsalo para
-conectar, que es lo que hace un guía de verdad y no una audioguía: elige qué contar y
-con qué compararlo pensando en quién te escucha, llámalos por su nombre, y si el lugar
-te da pie a enlazar con algo que les interesa, enlaza. Pero con medida: una referencia
-buena y oportuna vale, y meterla con calzador cada dos frases cansa y queda falso. Si
-alguien dice que le gusta algo, no lo conviertas en el tema de la visita — el
-protagonista sigue siendo el lugar. Y no recites de vuelta lo que han escrito de sí
-mismos ni les hagas notar que lo has leído: se nota en cómo cuentas las cosas, no en
-que lo anuncies."""
+diles que en el chat de la app puedes pasarles los enlaces de reserva."""
+# Nota: el perfil de los viajeros no se añade aquí. Lo pega el puente
+# (TRAVELER_CONTEXT_BLOCK en calls/bridge.py) despues de renderizar este texto,
+# para que editar el prompt desde el panel no pueda dejar la funcion apagada sin
+# que nadie se entere.
 
 TOOLS = (
     {

@@ -101,6 +101,25 @@ RESEED_ENTRIES = 24
 # pista en una lista tan larga que deje de orientar.
 VOCABULARY_POIS = 40
 
+# Deliberately here and not in the editable prompt. What the travellers wrote
+# about themselves is useless without a line saying whose it is and what to do
+# with it, and an editable prompt is one careless save away from losing that
+# line — the feature would then keep running and quietly stop working, which is
+# the worst way for anything to break. The prompt still owns the guide's voice;
+# this owns the plumbing. Appended after the rendered prompt, so removing the
+# placeholder from the prompt cannot switch it off either.
+TRAVELER_CONTEXT_BLOCK = """Perfil de las personas que atienden esta visita, escrito
+por ellas mismas:
+{travelers}
+
+Úsalo para conectar, que es lo que hace un guía de verdad y no una audioguía:
+elige qué contar y con qué compararlo pensando en quién te escucha, y llámalos por
+su nombre. Pero con medida — una referencia buena y oportuna vale, meterla con
+calzador cada dos frases cansa y queda falso. Si a alguien le gusta algo, no lo
+conviertas en el tema de la visita: el protagonista sigue siendo el lugar. Y no les
+recites de vuelta lo que han escrito ni les hagas notar que lo has leído; se nota en
+cómo cuentas las cosas, no en que lo anuncies."""
+
 
 def _recap_entries(room: Room) -> list[tuple[str, str]]:
     """Turn the room's shared log into (role, text) turns for a new session.
@@ -404,11 +423,16 @@ class _CallVoiceBridge:
                         "poi_name": self.tool_context["name"],
                         "poi_description": self.tool_context["description"],
                         "city_name": self.tool_context["city_name"],
-                        "traveler_context": traveler_context,
+                        # Empty on purpose: the real block is appended below. The
+                        # key stays so a prompt that still carries the old
+                        # placeholder renders instead of failing the whole call.
+                        "traveler_context": "",
                     },
                 )
             except PromptRenderingError as error:
                 raise CallError(str(error), 503) from error
+            if traveler_context:
+                prompt = f"{prompt}\n\n{traveler_context}"
             # Primary first, then the profile's fallback if it has one. A call that
             # cannot reach Gemini is better served by OpenAI than by an apology —
             # voice/gateway.py has done this since day one; calls never did.
@@ -566,7 +590,9 @@ class _CallVoiceBridge:
             name = (user.preferred_name or (member.display_name if member else "") or "").strip()
             context = user.profile_context.strip()
             lines.append(f"- {name}: {context}" if name else f"- {context}")
-        return "\n".join(lines)
+        if not lines:
+            return ""
+        return TRAVELER_CONTEXT_BLOCK.format(travelers="\n".join(lines))
 
     async def _reseed(self, provider: LiveProvider, room: Room) -> None:
         entries = _recap_entries(room)

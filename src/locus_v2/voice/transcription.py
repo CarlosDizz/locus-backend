@@ -51,12 +51,36 @@ def audio_seconds(pcm: bytes, sample_rate: int = SAMPLE_RATE_HZ) -> float:
     return len(pcm) / (sample_rate * SAMPLE_WIDTH_BYTES * CHANNELS)
 
 
+def build_vocabulary_prompt(place: str, city: str, nearby: list[str]) -> str:
+    """Tell the model which proper nouns to expect before it hears them.
+
+    What comes back wrong is almost always the names — "Pasaje de Lodares",
+    "iglesia de la Purísima Concepción". A speech model hearing them cold has no
+    way to guess the spelling, or even the word boundaries. Naming the place,
+    the city and the other stops in it is the cheapest accuracy we can buy: no
+    extra call, no extra latency.
+    """
+    names: list[str] = []
+    for name in [place, city, *nearby]:
+        clean = (name or "").strip()
+        if clean and clean not in names:
+            names.append(clean)
+    if not names:
+        return ""
+    lugar = names[0]
+    return (
+        f"Visita guiada en {lugar}. "
+        f"Pueden mencionarse estos nombres propios: {', '.join(names)}."
+    )
+
+
 async def transcribe_turn(
     client,
     *,
     model: str,
     pcm: bytes,
     language: str | None = None,
+    prompt: str | None = None,
     sample_rate: int = SAMPLE_RATE_HZ,
 ) -> TurnTranscription:
     """Return what was said in this turn. Raises whatever the client raises."""
@@ -67,6 +91,8 @@ async def transcribe_turn(
     if language:
         # Solo el código base: la API espera ISO-639-1 ("es"), no "es-ES".
         options["language"] = language.split("-")[0].lower()
+    if prompt:
+        options["prompt"] = prompt
     response = await client.audio.transcriptions.create(**options)
     return TurnTranscription(
         text=(getattr(response, "text", "") or "").strip(),

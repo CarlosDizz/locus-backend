@@ -73,7 +73,12 @@ class Settings(BaseSettings):
     # too, but badly enough to matter: those lines are what the group reads and
     # what rebuilds the context on every provider reconnection. Empty disables
     # it and falls back to the provider's own transcript.
-    transcription_model: str = "gpt-4o-mini-transcribe"
+    #
+    # A realtime transcription model, not a batch one: it runs in its own
+    # session next to the conversation and, unlike the batch endpoint, can be
+    # told which proper nouns to expect — which is what was actually coming
+    # back wrong.
+    transcription_model: str = "gpt-live-transcribe"
     # gpt-5-mini's reasoning tokens count against wall-clock time, not just the token
     # budget: a real document_poi call at the 8000-token ceiling (see voice/tools.py)
     # timed out at exactly 60s (2026-09-06, live), got killed mid-reasoning, and the

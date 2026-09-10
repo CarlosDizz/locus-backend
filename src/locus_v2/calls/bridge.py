@@ -601,6 +601,13 @@ class _CallVoiceBridge:
             "call_voice_bridge_usage_recorded",
             call_id=self.call_id,
             voice_session_id=self.voice_session_id,
+            # A live session bills the whole prompt on every turn, so this
+            # number climbing call after call *is* the cost curve. It only ever
+            # came out of hand-written SQL before; a turn that suddenly carries
+            # four minutes of audio should be readable in `docker logs`.
+            audio_input_tokens=usage.audio_input_tokens,
+            text_input_tokens=usage.text_input_tokens,
+            audio_output_tokens=usage.audio_output_tokens,
         )
 
     async def _consume_commands(self) -> None:

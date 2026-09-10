@@ -286,6 +286,25 @@ class GeminiLive2Provider(LiveProvider):
             raise RuntimeError("GeminiLive2Provider is not connected")
 
 
+# Live sessions bill the whole prompt on every response, and the prompt carries
+# every second of audio said so far — the user's and the guide's. So the cost of
+# a turn grows with the call: measured live on 2026-09-10 (voice session 116, 22
+# turns over 7 minutes), the audio in context went from 230 tokens on the first
+# turn to 7567 on the last, and 81333 audio tokens were billed for a context that
+# never held more than 7567. A call's cost grows with the square of its length.
+#
+# A sliding window caps that. The trigger is set explicitly and low on purpose:
+# the documented example passes an empty SlidingWindow(), which inherits the
+# model's own default trigger — far above the 11400 tokens this call reached — so
+# it would lift the 15-minute cap on audio-only sessions without saving anything.
+# 8000/4000 keeps roughly the last two minutes of audio; `system_instruction` is
+# not part of the window and survives untouched.
+CONTEXT_WINDOW_COMPRESSION = {
+    "trigger_tokens": 8000,
+    "sliding_window": {"target_tokens": 4000},
+}
+
+
 def _gemini3_config(config: LiveSessionConfig) -> dict:
     options = dict(config.provider_options)
     options.pop("interaction_mode", None)
@@ -317,8 +336,18 @@ def _gemini3_config(config: LiveSessionConfig) -> dict:
         "input_audio_transcription": {},
         "output_audio_transcription": {},
         "realtime_input_config": _gemini_turn_detection(turn_detection),
+        "context_window_compression": dict(CONTEXT_WINDOW_COMPRESSION),
     }
-    for key in ("temperature", "top_p", "top_k", "max_output_tokens"):
+    # context_window_compression is in the list so the trigger can be retuned
+    # from the panel's Prompt workshop (runtime_config_json) without a deploy:
+    # whether 8000 is too tight is exactly what a live call will tell us.
+    for key in (
+        "temperature",
+        "top_p",
+        "top_k",
+        "max_output_tokens",
+        "context_window_compression",
+    ):
         if key in options:
             live_config[key] = options[key]
     return live_config
@@ -355,8 +384,18 @@ def _gemini2_config(config: LiveSessionConfig) -> dict:
         "input_audio_transcription": {},
         "output_audio_transcription": {},
         "realtime_input_config": _gemini_turn_detection(turn_detection),
+        "context_window_compression": dict(CONTEXT_WINDOW_COMPRESSION),
     }
-    for key in ("temperature", "top_p", "top_k", "max_output_tokens"):
+    # context_window_compression is in the list so the trigger can be retuned
+    # from the panel's Prompt workshop (runtime_config_json) without a deploy:
+    # whether 8000 is too tight is exactly what a live call will tell us.
+    for key in (
+        "temperature",
+        "top_p",
+        "top_k",
+        "max_output_tokens",
+        "context_window_compression",
+    ):
         if key in options:
             live_config[key] = options[key]
     return live_config

@@ -3,8 +3,28 @@
 } @else if (!admin()) {
   <locus-login (authenticated)="onAuthenticated($event)" />
 } @else {
-<div class="shell">
-  <aside class="rail">
+<div class="shell" [class.menu-open]="menuOpen()">
+  <!-- Barra propia del móvil, fuera del topbar: el topbar solo se renderiza en
+       "Pulso", así que un botón ahí no existiría en las otras ocho secciones.
+       Pegajosa y arriba, que es donde se busca un menú. -->
+  <header class="mobile-bar">
+    <span class="brand-mark"><i></i></span>
+    <div class="mobile-brand"><strong>LOCUS</strong><small>{{ activeSection() }}</small></div>
+    <button
+      type="button"
+      class="rail-toggle"
+      [attr.aria-expanded]="menuOpen()"
+      aria-controls="locus-rail"
+      [attr.aria-label]="menuOpen() ? 'Cerrar menú' : 'Abrir menú'"
+      (click)="toggleMenu()"
+    >{{ menuOpen() ? '✕' : '☰' }}<span>Menú</span></button>
+  </header>
+
+  @if (menuOpen()) {
+    <button type="button" class="rail-scrim" aria-label="Cerrar menú" (click)="toggleMenu()"></button>
+  }
+
+  <aside class="rail" id="locus-rail">
     <div class="brand" aria-label="Locus Control">
       <span class="brand-mark"><i></i></span>
       <div>

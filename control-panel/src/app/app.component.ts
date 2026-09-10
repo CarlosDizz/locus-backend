@@ -30,6 +30,9 @@ export class AppComponent {
   readonly error = signal<string | null>(null);
   readonly overview = signal<AdminOverview | null>(null);
   readonly activeSection = signal('Pulso');
+  // Solo significa algo por debajo de 700px, que es donde el raíl deja de ser
+  // una columna y pasa a ser un cajón. Por encima, el CSS lo ignora.
+  readonly menuOpen = signal(false);
 
   readonly navigation = [
     { label: 'Pulso', glyph: 'pulse' },
@@ -75,6 +78,13 @@ export class AppComponent {
 
   selectSection(section: string): void {
     this.activeSection.set(section);
+    // En el movil el raíl es un cajón que tapa la pantalla: dejarlo abierto
+    // despues de elegir esconderia justo lo que se acaba de pedir.
+    this.menuOpen.set(false);
+  }
+
+  toggleMenu(): void {
+    this.menuOpen.update((open) => !open);
   }
 
   loadOverview(): void {

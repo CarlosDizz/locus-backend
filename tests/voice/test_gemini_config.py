@@ -36,14 +36,14 @@ def test_both_families_ask_for_a_sliding_window() -> None:
     for build in (_gemini3_config, _gemini2_config):
         compression = build(config())["context_window_compression"]
 
-        assert compression["trigger_tokens"] == 8000
-        assert compression["sliding_window"]["target_tokens"] == 4000
+        assert compression["trigger_tokens"] == 6000
+        assert compression["sliding_window"]["target_tokens"] == 3500
 
 
 def test_the_panel_can_retune_the_trigger_without_a_deploy() -> None:
-    # Whether 8000 is too tight is something only a live call tells us, and the
-    # answer should not need a deploy: runtime_config_json reaches here as
-    # provider_options.
+    # What the trigger should be is something only a live call tells us — 8000
+    # turned out never to fire — and the answer should not need a deploy:
+    # runtime_config_json reaches here as provider_options.
     tuned = {"trigger_tokens": 16000, "sliding_window": {"target_tokens": 8000}}
 
     built = _gemini3_config(config(provider_options={"context_window_compression": tuned}))
@@ -57,4 +57,4 @@ def test_the_default_is_not_shared_between_sessions() -> None:
     built = _gemini3_config(config())
     built["context_window_compression"]["trigger_tokens"] = 1
 
-    assert CONTEXT_WINDOW_COMPRESSION["trigger_tokens"] == 8000
+    assert CONTEXT_WINDOW_COMPRESSION["trigger_tokens"] == 6000

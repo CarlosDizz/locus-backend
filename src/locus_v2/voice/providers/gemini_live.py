@@ -295,13 +295,18 @@ class GeminiLive2Provider(LiveProvider):
 #
 # A sliding window caps that. The trigger is set explicitly and low on purpose:
 # the documented example passes an empty SlidingWindow(), which inherits the
-# model's own default trigger — far above the 11400 tokens this call reached — so
+# model's own default trigger — far above the 11400 tokens that call reached — so
 # it would lift the 15-minute cap on audio-only sessions without saving anything.
-# 8000/4000 keeps roughly the last two minutes of audio; `system_instruction` is
-# not part of the window and survives untouched.
+#
+# 6000/3500 rather than the 8000/4000 first tried: at 8000 the window never
+# engaged at all in three real calls (sessions 116-118), which peaked at 6864
+# tokens over three to four minutes. A trigger that only fires past the five
+# minute mark does nothing for the calls people actually make. What the target
+# has to leave room for is the system instruction and the tool schemas, roughly
+# 1800 tokens of the budget before a single word is spoken.
 CONTEXT_WINDOW_COMPRESSION = {
-    "trigger_tokens": 8000,
-    "sliding_window": {"target_tokens": 4000},
+    "trigger_tokens": 6000,
+    "sliding_window": {"target_tokens": 3500},
 }
 
 

@@ -52,6 +52,7 @@ from uuid import uuid4
 
 import structlog
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from locus_v2.ai.enums import PublicationStatus, ServiceKind
@@ -63,6 +64,7 @@ from locus_v2.calls.service import CallService, decode_image
 from locus_v2.calls.store import RoomStore
 from locus_v2.catalog.models import Poi
 from locus_v2.config import Settings
+from locus_v2.identity.models import User
 from locus_v2.infrastructure.database.session import Database
 from locus_v2.shared.clock import utc_now
 from locus_v2.shared.openai_usage import ToolUsage
@@ -392,6 +394,8 @@ class _CallVoiceBridge:
             if self._transcription_enabled and self._transcriber_task is None:
                 self._transcriber_task = asyncio.create_task(self._run_transcriber())
 
+            traveler_context = await self._traveler_context(session, room)
+
             try:
                 prompt = render_prompt(
                     profile.prompt_version.content,
@@ -400,6 +404,7 @@ class _CallVoiceBridge:
                         "poi_name": self.tool_context["name"],
                         "poi_description": self.tool_context["description"],
                         "city_name": self.tool_context["city_name"],
+                        "traveler_context": traveler_context,
                     },
                 )
             except PromptRenderingError as error:
@@ -535,6 +540,33 @@ class _CallVoiceBridge:
             )
             return provider, model
         raise CallError(f"No se pudo conectar ningun proveedor ({'; '.join(failures)})", 503)
+
+    async def _traveler_context(self, session: AsyncSession, room: Room) -> str:
+        """What the people on this call have said about themselves.
+
+        This is the whole point of the profile field: a guide that knows you
+        came with two children, or that you are into manga, can connect what it
+        is showing you to something you already care about — which is exactly
+        what a good human guide does and a recorded audioguide never will.
+
+        Everyone in the room is asked, not only the host: a group call has
+        several people listening, and the one who opened it is not necessarily
+        the one being addressed. Empty for a room where nobody wrote anything,
+        which is the common case and has to cost nothing.
+        """
+        ids = [int(key) for key in room.members if key.isdigit()]
+        if not ids:
+            return ""
+        rows = await session.scalars(
+            select(User).where(User.id.in_(ids), User.profile_context != "")
+        )
+        lines: list[str] = []
+        for user in rows:
+            member = room.members.get(str(user.id))
+            name = (user.preferred_name or (member.display_name if member else "") or "").strip()
+            context = user.profile_context.strip()
+            lines.append(f"- {name}: {context}" if name else f"- {context}")
+        return "\n".join(lines)
 
     async def _reseed(self, provider: LiveProvider, room: Room) -> None:
         entries = _recap_entries(room)

@@ -30,6 +30,19 @@ class User(TimestampMixin, Base):
     locale: Mapped[str] = mapped_column(String(16), default="es-ES", nullable=False)
     status: Mapped[str] = mapped_column(String(20), default=UserStatus.ACTIVE, nullable=False)
 
+    # What the traveller wants the guide to know about them — "voy con dos niños",
+    # "soy fan de One Piece", "me interesa la arquitectura". It hangs off the user
+    # and not off a session on purpose: it used to live on map_sessions, whose id
+    # is random per device (`LOCUS-` + eight characters), so a new phone or a
+    # cleared storage lost it. Every row in production had it empty.
+    # VARCHAR y no TEXT: MySQL no deja poner DEFAULT en una columna TEXT, y sin
+    # default la migración tendría que rellenar a mano cada fila existente. Mil
+    # caracteres es además el tope que valida la API, porque este texto se pega
+    # en la instrucción del guía y se factura en cada turno de una llamada.
+    profile_context: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
+    # What they want to be called, which is not always the name Google gave us.
+    preferred_name: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+
     roles: Mapped[list["Role"]] = relationship(
         secondary="user_roles", lazy="selectin", back_populates="users"
     )

@@ -42,6 +42,8 @@ class MobileUserView:
     auth_provider: str
     avatar_url: str
     is_active: bool
+    profile_context: str = ""
+    preferred_name: str = ""
 
 
 class MobileAuthService:
@@ -190,4 +192,6 @@ class MobileAuthService:
             auth_provider=user.auth_provider,
             avatar_url=user.avatar_url or "",
             is_active=user.status == UserStatus.ACTIVE,
+            profile_context=user.profile_context or "",
+            preferred_name=user.preferred_name or "",
         )

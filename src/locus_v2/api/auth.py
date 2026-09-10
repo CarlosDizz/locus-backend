@@ -48,6 +48,17 @@ class UserResponse(BaseModel):
     auth_provider: str
     avatar_url: str
     is_active: bool
+    profile_context: str = ""
+    preferred_name: str = ""
+
+
+class ProfileUpdateRequest(BaseModel):
+    # Both optional so the app can send one without clearing the other, and
+    # capped so a prompt variable cannot be used to smuggle in a whole essay:
+    # this text is pasted into the guide's system instruction, which is billed
+    # on every single turn of a call.
+    profile_context: str | None = Field(default=None, max_length=1000)
+    preferred_name: str | None = Field(default=None, max_length=160)
 
 
 class AuthResponse(BaseModel):
@@ -63,6 +74,8 @@ def _view(view: MobileUserView) -> UserResponse:
         auth_provider=view.auth_provider,
         avatar_url=view.avatar_url,
         is_active=view.is_active,
+        profile_context=view.profile_context,
+        preferred_name=view.preferred_name,
     )
 
 
@@ -141,13 +154,41 @@ async def google_auth(
 
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: CurrentUserDep) -> UserResponse:
-    return _view(
-        MobileUserView(
-            id=mobile_id(current_user),
-            email=current_user.email,
-            display_name=current_user.display_name,
-            auth_provider=current_user.auth_provider,
-            avatar_url=current_user.avatar_url or "",
-            is_active=current_user.status == "active",
-        )
+    return _view(_me_view(current_user))
+
+
+@router.put("/me/profile", response_model=UserResponse)
+async def update_my_profile(
+    payload: ProfileUpdateRequest,
+    current_user: CurrentUserDep,
+    session: SessionDep,
+) -> UserResponse:
+    """Save what the traveller wants the guide to know about them.
+
+    Deliberately asks for nothing but the text. The app used to save this
+    through the session endpoint, which meant taking a GPS fix first: a denied
+    or slow permission killed the save before it left the phone, and since the
+    caller swallowed the error the button simply did nothing. Nobody had ever
+    managed to save a profile in production.
+    """
+    if payload.profile_context is not None:
+        current_user.profile_context = payload.profile_context.strip()
+    if payload.preferred_name is not None:
+        current_user.preferred_name = payload.preferred_name.strip()
+    session.add(current_user)
+    await session.commit()
+    await session.refresh(current_user)
+    return _view(_me_view(current_user))
+
+
+def _me_view(user: User) -> MobileUserView:
+    return MobileUserView(
+        id=mobile_id(user),
+        email=user.email,
+        display_name=user.display_name,
+        auth_provider=user.auth_provider,
+        avatar_url=user.avatar_url or "",
+        is_active=user.status == "active",
+        profile_context=user.profile_context or "",
+        preferred_name=user.preferred_name or "",
     )

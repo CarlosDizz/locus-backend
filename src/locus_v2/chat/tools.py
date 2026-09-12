@@ -153,8 +153,17 @@ class ChatToolDispatcher:
         return {
             "ok": True,
             "need": need,
-            "persistence_policy": "ephemeral_only_never_saved_to_catalog",
-            "map_action": "nothing_shown_yet_call_mark_pois_on_map_to_show_them",
+            # Antes esto decia "ephemeral_only_never_saved_to_catalog", y era una
+            # instruccion, no un dato: el modelo leia que nada podia guardarse y
+            # no volvia a mirar promote_poi_to_catalog. Lo visitable si se guarda.
+            "persistence_policy": (
+                "sights_should_be_promoted_with_promote_poi_to_catalog; "
+                "restaurants_bars_and_services_stay_ephemeral"
+            ),
+            "map_action": (
+                "nothing_shown_yet: for sights call promote_poi_to_catalog, "
+                "for services call mark_pois_on_map"
+            ),
             "pois": [poi.model_dump() for poi in pois],
         }
 
@@ -213,10 +222,38 @@ class ChatToolDispatcher:
     # ---- catalog promotion ----------------------------------------------
 
     async def _promote_poi(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        poi_name = clean_text(str(arguments.get("poi_name") or ""))
-        if not poi_name:
-            return {"ok": False, "error": "poi_name is required"}
+        """Sube al catalogo uno o varios lugares.
 
+        Acepta lista porque con un solo nombre por llamada el modelo nunca la
+        usaba: pedir cinco museos costaba cinco llamadas frente a una sola de
+        mark_pois_on_map, asi que siempre elegia marcar y nada llegaba a ser un
+        POI de verdad. El nombre suelto se sigue admitiendo.
+        """
+        raw = arguments.get("poi_names") or arguments.get("poi_name") or ""
+        requested = [raw] if isinstance(raw, str) else list(raw)
+        names = [clean_text(str(name)) for name in requested if str(name).strip()]
+        if not names:
+            return {"ok": False, "error": "poi_names is required"}
+
+        results = [
+            await self._promote_one(name, arguments, set_active=len(names) == 1)
+            for name in names
+        ]
+        promoted = [item for item in results if item.get("ok")]
+        return {
+            # Que uno no sea promocionable (un bar) no invalida el turno: lo que
+            # importa es si algo llego al catalogo.
+            "ok": bool(promoted),
+            "promoted_count": len(promoted),
+            "results": results,
+            "map_action": (
+                "catalog_pois_now_fixed_on_the_map" if promoted else "nothing_added"
+            ),
+        }
+
+    async def _promote_one(
+        self, poi_name: str, arguments: dict[str, Any], *, set_active: bool
+    ) -> dict[str, Any]:
         existing = await self.session.scalar(
             select(Poi).where(
                 Poi.is_active.is_(True),
@@ -225,7 +262,7 @@ class ChatToolDispatcher:
         )
         if existing is not None:
             runtime = _catalog_row_to_session_poi(existing)
-            await self._adopt_catalog_poi(runtime)
+            await self._adopt_catalog_poi(runtime, set_active=set_active)
             return {
                 "ok": True,
                 "poi_name": existing.name,
@@ -307,7 +344,7 @@ class ChatToolDispatcher:
         )
 
         runtime = _catalog_row_to_session_poi(row)
-        await self._adopt_catalog_poi(runtime)
+        await self._adopt_catalog_poi(runtime, set_active=set_active)
         return {
             "ok": True,
             "poi_name": runtime.name,
@@ -354,8 +391,12 @@ class ChatToolDispatcher:
         )
         return row.id if row is not None else None
 
-    async def _adopt_catalog_poi(self, poi: SessionPoi) -> None:
-        """Make a freshly-promoted POI a fixed pin and drop its ephemeral twin."""
+    async def _adopt_catalog_poi(self, poi: SessionPoi, *, set_active: bool = True) -> None:
+        """Make a freshly-promoted POI a fixed pin and drop its ephemeral twin.
+
+        `set_active` se apaga al promocionar en lote: dejar como foco al ultimo
+        de cinco es arbitrario y pisa el sitio del que se estaba hablando.
+        """
         state = await self.sessions.get_or_create(self.session_id)
         merged: list[SessionPoi] = []
         seen: set[str] = set()
@@ -372,7 +413,8 @@ class ChatToolDispatcher:
             self.session_id,
             [item for item in state.ephemeral_map_pois if slugify(item.name) != slugify(poi.name)],
         )
-        await self.sessions.set_active_poi(self.session_id, poi)
+        if set_active:
+            await self.sessions.set_active_poi(self.session_id, poi)
 
     # ---- candidate bookkeeping ------------------------------------------
 

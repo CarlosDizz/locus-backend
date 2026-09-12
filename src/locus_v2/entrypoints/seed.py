@@ -440,7 +440,11 @@ TOOLS = (
         "code": "mark_pois_on_map",
         "name": "Marcar en el mapa",
         "description": (
-            "Muestra en el mapa de Locus los lugares que acabas de encontrar. "
+            "Pone una marca TEMPORAL en el mapa: desaparece al refrescar y no tiene "
+            "ficha ni visita guiada. Úsala para restaurantes, bares, tiendas y "
+            "servicios. Si lo que enseñas es algo visitable —monumento, museo, "
+            "iglesia, plaza, mirador— usa promote_poi_to_catalog en su lugar, que "
+            "es lo que el usuario espera ver cuando pide sitios. "
             "Usa los nombres exactos devueltos por una búsqueda de este mismo turno."
         ),
         "handler_code": "map.mark_pois",
@@ -487,9 +491,12 @@ TOOLS = (
         "code": "promote_poi_to_catalog",
         "name": "Añadir al catálogo",
         "description": (
-            "Añade un lugar al catálogo fijo de Locus, con ficha propia y visita guiada. "
-            "Úsala cuando el usuario eche en falta en el mapa un sitio que merece la pena "
-            "visitar. Solo para monumentos, museos y similares: nunca restaurantes ni servicios."
+            "Añade lugares al catálogo fijo de Locus, con ficha propia y visita guiada, "
+            "y los deja clavados en el mapa. Es la forma NORMAL de enseñar sitios "
+            "visitables: úsala siempre que el usuario pida monumentos, museos, iglesias, "
+            "plazas, miradores o qué ver, y también cuando eche en falta uno en el mapa. "
+            "Acepta varios nombres en una sola llamada. Nunca restaurantes, bares ni "
+            "servicios: ésos van con mark_pois_on_map."
         ),
         "handler_code": "catalog.promote_poi",
         "service_kinds": [ServiceKind.CHAT],
@@ -497,14 +504,21 @@ TOOLS = (
         "schema": {
             "type": "object",
             "properties": {
-                "poi_name": {"type": "string", "description": "Nombre exacto del lugar"},
+                "poi_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Nombres exactos de los lugares a añadir. Puedes mandar varios "
+                        "de una vez en lugar de llamar una vez por sitio."
+                    ),
+                },
                 "poi_type_code": {
                     "type": "string",
                     "description": "Tipo: museum, monument, church, square, building...",
                 },
                 "reason": {"type": "string", "description": "Por qué merece estar en el catálogo"},
             },
-            "required": ["poi_name"],
+            "required": ["poi_names"],
             "additionalProperties": False,
         },
     },
@@ -692,6 +706,22 @@ async def seed() -> None:
                 )
                 session.add(tool)
                 await session.flush()
+            else:
+                # Hasta ahora una herramienta ya existente no se tocaba nunca, asi
+                # que cambiar aqui una descripcion no llegaba a produccion: la fila
+                # se quedaba con el texto del dia que se creo. Y como el prompt del
+                # mapa guarda una copia congelada de estas filas, el modelo seguia
+                # leyendo la version vieja para siempre. Nada mas escribe estos
+                # campos —el panel solo los lee y elige que herramientas usa un
+                # prompt—, asi que este fichero puede mandar sobre ellos.
+                tool.name = definition_data["name"]
+                tool.description = definition_data["description"]
+                tool.handler_code = definition_data["handler_code"]
+                tool.requires_approval = definition_data["requires_approval"]
+                tool.service_kinds_json = definition_data["service_kinds"]
+                tool.schema_json = definition_data["schema"]
+                # `enabled` se queda como este: apagar una herramienta es una
+                # decision de operacion, no de este fichero.
             tools[tool.code] = tool
 
         definition = await session.scalar(

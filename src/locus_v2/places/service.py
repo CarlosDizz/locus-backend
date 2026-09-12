@@ -10,6 +10,7 @@ Ported from V1 `app/services/poi_service.py`, with two deliberate changes:
   on the same rows.
 """
 
+import re
 from decimal import Decimal
 from math import cos, radians, sqrt
 
@@ -40,8 +41,20 @@ _GENERIC_QUERIES = {
 }
 
 _SERVICE_LABELS = (
-    "restaurante", "restaurant", "bar", "pub", "cafe", "café", "hotel",
+    "restaurante", "restaurant", "bar", "pub", "cafe", "café", "cafeteria",
+    "cafetería", "taberna", "bistro", "pizzeria", "pizzería", "hotel",
     "hostel", "farmacia", "pharmacy", "supermercado", "taxi", "garden",
+)
+
+# Palabra entera, no subcadena. Buscando "bar" suelto dentro del texto, "Catedral
+# de Barcelona", "Barrio Gotico", "Museo Barroco" y "Santa Barbara" daban todos
+# positivo y quedaban fuera del catalogo. Daba igual mientras nadie promocionaba;
+# en cuanto promocionar es la via normal para los sitios visitables, este filtro
+# decide que entra y que no. El sufijo opcional cubre el plural que el limite de
+# palabra deja fuera: bar/bares, hotel/hoteles, restaurante/restaurantes.
+_SERVICE_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(label) for label in _SERVICE_LABELS) + r")(?:e?s)?\b",
+    re.IGNORECASE,
 )
 
 
@@ -56,8 +69,7 @@ def is_generic_query(query: str) -> bool:
 
 
 def looks_like_service(text: str) -> bool:
-    lowered = clean_text(text).lower()
-    return any(token in lowered for token in _SERVICE_LABELS)
+    return _SERVICE_PATTERN.search(clean_text(text)) is not None
 
 
 class PlaceSearchService:

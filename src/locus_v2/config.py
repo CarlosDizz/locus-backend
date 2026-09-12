@@ -117,6 +117,31 @@ class Settings(BaseSettings):
     billing_signup_bonus_cents: int = Field(default=200, ge=0)
     billing_manual_topups_enabled: bool = False
 
+    # Pagos web, solo para la PWA. Sin clave la función queda apagada y los
+    # endpoints responden 503: mejor no poder recargar que abrir un camino de
+    # cobro a medio configurar. En Android no se usa nunca — la politica de
+    # Google Play exige que los bienes digitales dentro de la app pasen por Play
+    # Billing, y saltarsela cuesta la retirada de la ficha.
+    #
+    # Paddle es el proveedor activo. Se eligio por ser *merchant of record*: el
+    # vendedor de cara al cliente es Paddle, que se ocupa del IVA, y eso permite
+    # cobrar sin estar dado de alta como empresa. Cuesta 5% + 0,50 $ frente al
+    # ~4% de Stripe, y sigue por debajo del 15% de Google Play.
+    paddle_api_key: SecretStr | None = None
+    paddle_client_token: str = ""
+    paddle_webhook_secret: SecretStr | None = None
+    paddle_sandbox: bool = True
+
+    # Stripe queda escrito y probado, pero apagado: su formulario de alta no
+    # tiene opcion de persona fisica en España, solo empresa o autonomo. El dia
+    # que haya alta, es mas barato que Paddle y basta con poner estas claves.
+    stripe_secret_key: SecretStr | None = None
+    stripe_webhook_secret: SecretStr | None = None
+    # Donde vuelve el usuario al terminar o cancelar el pago. Explicito y no
+    # derivado de la peticion, por lo mismo que public_api_base_url: detras de un
+    # proxy el host de la peticion es el del proxy, no el nuestro.
+    web_app_base_url: str = "https://app.locusguide.es"
+
     getyourguide_referrals_enabled: bool = True
     getyourguide_partner_id: str = ""
 

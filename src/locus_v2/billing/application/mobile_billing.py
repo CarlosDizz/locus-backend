@@ -23,8 +23,21 @@ from locus_v2.billing.infrastructure.google_play import (
     GooglePlayVerificationError,
     GooglePlayVerifier,
 )
+from locus_v2.billing.infrastructure.paddle_gateway import (
+    PaddleGateway,
+    PaddleNotConfigured,
+)
 from locus_v2.billing.models import LedgerEntry, LedgerEntryKind, TopUp, UsageEvent, Wallet
+from locus_v2.billing.topup_catalogue import (
+    CURRENCY,
+    WEB_TOPUP_MAX_CENTS,
+    WEB_TOPUP_MIN_CENTS,
+    WEB_TOPUP_PRODUCTS,
+    resolve_amount_cents,
+)
 from locus_v2.config import Settings
+from locus_v2.identity.models import User
+from locus_v2.infrastructure.database.session import get_database
 from locus_v2.shared.clock import utc_now
 from locus_v2.shared.mobile_ids import mobile_id
 from locus_v2.voice.models import VoiceSession
@@ -322,15 +335,8 @@ class MobileBillingService:
         except (IntegrityError, OperationalError):
             # Someone else got there first. The unique key did its job — the money
             # is safe either way — but a client that retried because its network
-            # dropped deserves its receipt back, not a 500. Roll the whole
-            # transaction back before re-reading: MySQL discards the savepoint
-            # when the losing INSERT fails after a lock wait, so continuing on
-            # this session raises "SAVEPOINT ... does not exist" instead
-            # (measured 2026-09-08 with eight simultaneous submits of one token).
-            await self.session.rollback()
-            existing = await self.session.scalar(
-                select(TopUp).where(TopUp.purchase_dedupe_key == dedupe_key)
-            )
+            # dropped deserves its receipt back, not a 500.
+            existing = await self._recover_topup(dedupe_key)
             if existing is None:
                 raise
             if existing.user_id != user_id:
@@ -364,6 +370,152 @@ class MobileBillingService:
             reserved_topup=topup,
         )
         return _topup_view(topup)
+
+    async def create_web_checkout(
+        self,
+        *,
+        user: User,
+        product_id: str = "",
+        amount_cents: int | None = None,
+        gateway: PaddleGateway | None = None,
+    ) -> str:
+        """Abre una transacción en Paddle y devuelve a dónde mandar el navegador.
+
+        Lo que vuelve es una URL de la propia PWA con `?_ptxn=<id>`: Paddle no
+        aloja la pantalla de pago como hacía Stripe, la abre en una capa sobre
+        una página nuestra.
+        """
+        active = gateway or PaddleGateway(self.settings)
+        if not active.enabled:
+            raise PaddleNotConfigured("Los pagos web no están configurados")
+        # Aqui se decide el importe, y solo aqui. Lo que llegue del navegador es
+        # una propuesta.
+        resolved = resolve_amount_cents(product_id, amount_cents)
+        await self._wallet_or_raise(user.id)
+        transaction = await active.create_transaction(
+            amount_cents=resolved,
+            user_public_id=user.public_id,
+            product_id=product_id,
+            description=f"Saldo Locus · {resolved / 100:.2f} €".replace(".", ","),
+        )
+        transaction_id = transaction.get("id")
+        if not transaction_id:
+            raise BillingError("Paddle no devolvió una transacción")
+        base = self.settings.web_app_base_url.rstrip("/")
+        return f"{base}/billing?_ptxn={transaction_id}"
+
+    async def confirm_web_topup(self, transaction: dict[str, Any]) -> TopUpView | None:
+        """Abona una transacción pagada de Paddle. Idempotente, y segura dos veces.
+
+        Se llega por dos caminos a propósito: el webhook, que es la verdad porque
+        el usuario puede cerrar la pestaña justo al pagar, y la vuelta a la app,
+        que cubre un webhook que llegue tarde. Los dos acaban en la misma clave de
+        deduplicación, así que el segundo encuentra el recibo y no cambia nada.
+
+        Devuelve None si la transacción no está pagada — un checkout abandonado no
+        es un error, es el caso común.
+        """
+        if transaction.get("status") != "completed":
+            return None
+        detalle = dict(transaction.get("details") or {})
+        totales = dict(detalle.get("totals") or {})
+        if (totales.get("currency_code") or "").lower() != CURRENCY:
+            raise BillingError("Moneda de pago inesperada")
+
+        transaction_id = transaction.get("id")
+        if not transaction_id:
+            raise BillingError("El pago no trae identificador de transacción")
+
+        metadata = dict(transaction.get("custom_data") or {})
+        user_public_id = str(metadata.get("user_public_id") or "")
+        user_id = await self.session.scalar(
+            select(User.id).where(User.public_id == user_public_id)
+        )
+        if user_id is None:
+            raise BillingError("El pago no corresponde a ningún usuario")
+
+        # Se abona lo que Paddle dice que se cobró de verdad — `grand_total`, ya
+        # con impuestos — y no lo que pidiera nadie por el camino. El rango se
+        # vuelve a comprobar aquí porque este número llega de fuera, aunque venga
+        # firmado.
+        amount_cents = int(totales.get("grand_total") or 0)
+        product_id = str(metadata.get("product_id") or "")
+        expected = WEB_TOPUP_PRODUCTS.get(product_id) if product_id else None
+        if product_id and expected is None:
+            raise BillingError("El pago menciona un producto que no existe")
+        if expected is not None:
+            # Un tramo del catalogo se comprueba contra su precio exacto, y ahi
+            # acaba la validacion. Aplicarle ademas el rango del importe libre
+            # rechazaba todos los pagos de 4,99 EUR, porque el suelo del campo
+            # libre son 5,00 — con el dinero ya cobrado y el saldo sin subir.
+            if amount_cents != expected:
+                raise BillingError("El importe cobrado no coincide con el producto")
+        elif not WEB_TOPUP_MIN_CENTS <= amount_cents <= WEB_TOPUP_MAX_CENTS:
+            raise BillingError("Importe de recarga fuera de rango")
+
+        dedupe_key = sha256(str(transaction_id).encode()).hexdigest()
+        existing = await self.session.scalar(
+            select(TopUp).where(TopUp.purchase_dedupe_key == dedupe_key)
+        )
+        if existing is not None:
+            return _topup_view(existing)
+
+        wallet = await self._wallet_or_raise(user_id)
+        topup = TopUp(
+            user_id=user_id,
+            wallet_id=wallet.id,
+            amount_cents=amount_cents,
+            bonus_cents=0,
+            provider="paddle",
+            provider_reference=str(transaction_id),
+            purchase_dedupe_key=dedupe_key,
+            status="pending",
+            metadata_json={},
+        )
+        try:
+            async with self.session.begin_nested():
+                self.session.add(topup)
+                await self.session.flush()
+        except (IntegrityError, OperationalError):
+            # Paddle entrega el mismo evento varias veces sin avisar. La clave
+            # unica ya ha protegido el dinero; aqui solo hay que devolver el
+            # recibo para que deje de reintentar.
+            recovered = await self._recover_topup(dedupe_key)
+            if recovered is None:
+                raise
+            return _topup_view(recovered)
+
+        topup = await self._apply_topup(
+            user_id=user_id,
+            amount_cents=amount_cents,
+            provider="paddle",
+            provider_reference=str(transaction_id),
+            metadata={
+                "transaction_id": str(transaction_id),
+                "product_id": product_id,
+            },
+            reserved_topup=topup,
+        )
+        return _topup_view(topup)
+
+    async def _recover_topup(self, dedupe_key: str) -> TopUp | None:
+        """Read back the row that won the race, on a session that is still alive.
+
+        The losing INSERT leaves this session unusable: MySQL discards the
+        savepoint when it fails after a lock wait, so a read on the same session
+        raises "SAVEPOINT ... does not exist" instead of returning the receipt
+        (measured 2026-09-08 with eight simultaneous submits of one token). It
+        was cosmetic while only Google Play used this — a phone that retried got
+        an ugly error and the money was still safe. It stops being cosmetic with
+        a payment webhook: Stripe reads a 500 as "try again" and keeps redelivering
+        the same event for days, so a duplicate that cannot answer 200 turns into
+        a loop.
+        """
+        await self.session.rollback()
+        async with get_database().sessions() as session:
+            return await session.scalar(
+                select(TopUp).where(TopUp.purchase_dedupe_key == dedupe_key)
+            )
 
     async def _apply_topup(
         self,

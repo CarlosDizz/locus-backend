@@ -57,3 +57,44 @@ def resolve_amount_cents(product_id: str, amount_cents: int | None) -> int:
     if amount_cents > WEB_TOPUP_MAX_CENTS:
         raise TopUpError(f"La recarga máxima es de {WEB_TOPUP_MAX_CENTS // 100} €")
     return amount_cents
+
+
+# Lo que se queda la pasarela, para poder enseñar en el panel lo que de verdad
+# llega a la cuenta y no solo lo que pagó el cliente. Son estimaciones nuestras,
+# no el liquidado real: Paddle cobra 5% + 0,50 $ y el cambio se mueve, y Google
+# se lleva un 15% limpio. Sirven para saber si un tramo compensa, no para cuadrar
+# con el extracto.
+PADDLE_FEE_RATE = 0.05
+PADDLE_FEE_FIXED_CENTS = 46  # 0,50 $ a 0,87 EUR/USD, redondeado hacia arriba.
+GOOGLE_PLAY_FEE_RATE = 0.15
+
+
+def estimated_fee_cents(provider: str, amount_cents: int) -> int:
+    """Comisión estimada de una recarga, en céntimos.
+
+    Un proveedor que no conocemos se cuenta como comisión cero: inventar un
+    número sería peor que enseñar el bruto y que se note que falta el dato.
+    """
+    if amount_cents <= 0:
+        return 0
+    if provider == "paddle":
+        return round(amount_cents * PADDLE_FEE_RATE) + PADDLE_FEE_FIXED_CENTS
+    if provider == "google_play":
+        return round(amount_cents * GOOGLE_PLAY_FEE_RATE)
+    return 0
+
+
+def estimated_fees_for(provider: str, gross_cents: int, top_ups: int) -> int:
+    """Lo mismo pero para un montón de recargas ya sumadas.
+
+    La parte fija se cobra una vez por cobro, así que hace falta saber cuántos
+    fueron: sin eso, un total de 100 EUR en veinte recargas parecería igual de
+    rentable que en una sola, y no lo es ni de lejos.
+    """
+    if gross_cents <= 0 or top_ups <= 0:
+        return 0
+    if provider == "paddle":
+        return round(gross_cents * PADDLE_FEE_RATE) + PADDLE_FEE_FIXED_CENTS * top_ups
+    if provider == "google_play":
+        return round(gross_cents * GOOGLE_PLAY_FEE_RATE)
+    return 0

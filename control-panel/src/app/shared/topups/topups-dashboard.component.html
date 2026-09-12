@@ -1,0 +1,94 @@
+<section class="billing-toolbar">
+  <div><p class="eyebrow">DINERO QUE ENTRA</p><strong>Quién ha pagado, cuánto y cuándo.</strong></div>
+  <label>
+    <span>Periodo</span>
+    <select [(ngModel)]="days" (change)="load()">
+      <option [ngValue]="0">Todo el histórico</option>
+      <option [ngValue]="7">Últimos 7 días</option>
+      <option [ngValue]="30">Últimos 30 días</option>
+      <option [ngValue]="90">Últimos 90 días</option>
+    </select>
+  </label>
+</section>
+
+@if (loading()) {
+  <section class="state"><i></i>Contando recargas...</section>
+} @else if (error()) {
+  <section class="state error">{{ error() }} <button type="button" (click)="load()">Reintentar</button></section>
+} @else if (dashboard(); as data) {
+  <!-- Una recarga sin abonar es dinero cobrado a alguien que no tiene su saldo.
+       No es una estadística: es una incidencia, y va arriba del todo. -->
+  @if (data.totals.pending_top_ups > 0) {
+    <section class="alarm">
+      <strong>{{ data.totals.pending_top_ups }} recarga(s) sin abonar</strong>
+      <span>{{ money(data.totals.pending_cents) }} cobrados en la pasarela que no han llegado al monedero. Búscalas abajo por su estado.</span>
+    </section>
+  }
+
+  <section class="money-strip">
+    <article class="charged">
+      <span>Cobrado</span><strong>{{ money(data.totals.gross_cents) }}</strong>
+      <small>{{ data.totals.top_ups }} recargas · {{ data.totals.paying_users }} personas</small>
+    </article>
+    <article class="cost">
+      <span>Comisiones</span><strong>−{{ money(data.totals.estimated_fees_cents) }}</strong>
+      <small>{{ feePercent(data.totals.gross_cents, data.totals.estimated_fees_cents) }}</small>
+    </article>
+    <article class="margin">
+      <span>Neto estimado</span><strong>{{ money(data.totals.net_cents) }}</strong>
+      <small>Ticket medio {{ money(data.totals.average_cents) }}</small>
+    </article>
+    <article>
+      <span>Saldo sin gastar</span><strong>{{ money(data.totals.outstanding_balance_cents) }}</strong>
+      <small>Hoy, en todos los monederos. Es servicio que debemos.</small>
+    </article>
+  </section>
+
+  <p class="disclaimer">Las comisiones son una estimación nuestra — Paddle 5 % + 0,50 $ por cobro, Google Play 15 % — para saber si un tramo compensa. El liquidado real lo dice el extracto de la pasarela.</p>
+
+  <section class="billing-grid">
+    <article class="panel rhythm">
+      <div class="title"><div><p class="eyebrow">RITMO</p><h2>Recargas por día</h2></div><span>{{ data.daily.length }} días con ingresos</span></div>
+      <div class="bars">
+        @for (point of data.daily; track point.day) {
+          <div class="bar-column" [title]="shortDate(point.day) + ': ' + money(point.gross_cents) + ' en ' + point.top_ups + ' recarga(s)'">
+            <div class="bar"><i [style.height.%]="dailyHeight(point.gross_cents)"></i></div>
+            <span>{{ shortDate(point.day) }}</span>
+          </div>
+        } @empty {
+          <p class="empty">Todavía no ha entrado dinero en este periodo.</p>
+        }
+      </div>
+    </article>
+
+    <article class="panel model-mix">
+      <div class="title"><div><p class="eyebrow">VÍAS DE COBRO</p><h2>De dónde viene</h2></div></div>
+      @for (item of data.by_provider; track item.provider) {
+        <div class="model-item">
+          <div><span class="monogram">{{ monogram(item.provider) }}</span><p><strong>{{ providerLabel(item.provider) }}</strong><small>{{ item.top_ups }} recargas</small></p><b>{{ money(item.gross_cents) }}</b></div>
+          <div class="model-bar"><i [style.width.%]="providerWidth(item.gross_cents)"></i></div>
+          <small>Comisión {{ money(item.estimated_fees_cents) }} · neto {{ money(item.gross_cents - item.estimated_fees_cents) }}</small>
+        </div>
+      } @empty {
+        <p class="empty">Ninguna vía ha cobrado nada.</p>
+      }
+    </article>
+  </section>
+
+  <section class="panel event-panel">
+    <div class="title"><div><p class="eyebrow">UNA A UNA</p><h2>Últimas recargas</h2></div><span>Máximo 100</span></div>
+    <div class="event-head"><span>Momento</span><span>Quién</span><span>Importe</span><span>Neto</span><span>Vía</span><span>Estado</span></div>
+    @for (item of data.recent; track item.id) {
+      <div class="event-row">
+        <span><strong>{{ item.created_at | date:'d MMM, HH:mm' }}</strong><small>{{ item.created_at | date:'yyyy' }}</small></span>
+        <span><strong>{{ who(item) }}</strong><small>{{ item.user_email }}</small></span>
+        <span class="amount"><strong>{{ money(item.amount_cents) }}</strong>@if (item.bonus_cents > 0) {<small>+{{ money(item.bonus_cents) }} de bono</small>}</span>
+        <span><strong>{{ money(item.amount_cents - item.estimated_fee_cents) }}</strong><small>−{{ money(item.estimated_fee_cents) }}</small></span>
+        <span><strong>{{ providerLabel(item.provider) }}</strong><small [title]="item.provider_reference">{{ shortReference(item.provider_reference) }}</small></span>
+        <span class="event-status" [attr.data-status]="item.status"><i></i>{{ item.status }}</span>
+      </div>
+    } @empty {
+      <p class="empty">No hay recargas en este periodo.</p>
+    }
+  </section>
+}

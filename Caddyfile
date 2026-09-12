@@ -9,6 +9,20 @@
 	header Strict-Transport-Security "max-age=31536000"
 }
 
+# La raiz del dominio la servia Nominalia con una pagina de aparcamiento: un
+# frameset que cargaba http://courtesy.nominalia.com, es decir contenido de un
+# tercero, por HTTP y bajo nuestro dominio. Google marco locusguide.es entero
+# como "enganoso para obtener datos personales" por ese contenido, y Chrome
+# aplica las marcas de dominio a todos sus subdominios: app.locusguide.es
+# aparecia como "Sitio peligroso" sin estar marcada ella misma (el informe de
+# transparencia la da como "sin datos"). Servir la raiz nosotros es lo que
+# saca ese contenido del dominio; sin eso, pedir la revision a Google no
+# sirve de nada porque lo que la motivo sigue publicado.
+locusguide.es, www.locusguide.es {
+	import hsts
+	redir https://app.locusguide.es{uri} permanent
+}
+
 api.locusguide.es {
 	import hsts
 	reverse_proxy api:8100

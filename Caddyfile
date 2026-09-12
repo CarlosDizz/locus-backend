@@ -1,8 +1,21 @@
+# Sin esta cabecera, escribir "locusguide.es" sin https:// hace que el navegador
+# mande primero una peticion en claro y solo despues suba con el 308. Ese primer
+# salto viaja sin cifrar: por api van los tokens de sesion y por app se paga.
+# Con HSTS el navegador lo sube el solo, antes de que salga nada del dispositivo.
+# Es un compromiso a un ano: aunque se quite la cabecera, quien ya la recibio
+# seguira exigiendo HTTPS hasta que caduque. Depende de que Caddy siga renovando
+# el certificado solo, que es lo que lleva haciendo desde el principio.
+(hsts) {
+	header Strict-Transport-Security "max-age=31536000"
+}
+
 api.locusguide.es {
+	import hsts
 	reverse_proxy api:8100
 }
 
 admin.locusguide.es {
+	import hsts
 	reverse_proxy control-panel:80
 }
 
@@ -32,6 +45,7 @@ app.locusguide.es {
 	header {
 		X-Content-Type-Options nosniff
 		Referrer-Policy strict-origin-when-cross-origin
+		Strict-Transport-Security "max-age=31536000"
 	}
 
 	# Angular enruta en el cliente: cualquier ruta desconocida devuelve el índice

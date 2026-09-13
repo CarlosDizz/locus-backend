@@ -35,6 +35,20 @@ MODELS = (
         Lifecycle.STABLE,
         True,
     ),
+    # Releva a gpt-5-mini: es una generacion mas nuevo y ademas mas barato
+    # (0,20/1,20 frente a 0,25/2,00), asi que no hay nada que sopesar. El motivo
+    # de fondo es de calidad: documentando la Plaza del Altozano de Albacete,
+    # gpt-5-mini reconocio no saber nada y relleno 3.700 caracteres con farolas y
+    # papeleras, cuando es la plaza central de la ciudad.
+    (
+        "openai",
+        "gpt-5.6-luna",
+        "GPT-5.6 luna",
+        ServiceKind.CHAT,
+        "openai_responses",
+        Lifecycle.STABLE,
+        True,
+    ),
     (
         "openai",
         "gpt-realtime-2.1-mini",
@@ -112,6 +126,17 @@ PRICE_CARDS = (
             "cached_text_input_per_million_usd": "0.025",
             "text_output_per_million_usd": "2.00",
             "tool_call_usd": "0.01",
+        },
+    ),
+    (
+        "openai",
+        "gpt-5.6-luna",
+        datetime(2026, 9, 13),
+        "https://developers.openai.com/api/docs/pricing",
+        {
+            "text_input_per_million_usd": "0.20",
+            "cached_text_input_per_million_usd": "0.02",
+            "text_output_per_million_usd": "1.20",
         },
     ),
     (

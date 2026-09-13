@@ -68,7 +68,12 @@ class Settings(BaseSettings):
     openai_base_url: str | None = None
     openai_timeout_seconds: float = Field(default=180.0, gt=0)
     gemini_api_key: SecretStr | None = None
-    tool_model: str = "gpt-5-mini"
+    # Una generacion mas nuevo que gpt-5-mini y ademas mas barato (0,20/1,20
+    # frente a 0,25/2,00). El cambio no es por precio sino por lo que sabe:
+    # documentando la Plaza del Altozano de Albacete, gpt-5-mini admitio no
+    # conocerla y llenó 3.700 caracteres describiendo farolas y papeleras — y es
+    # la plaza central de la ciudad.
+    tool_model: str = "gpt-5.6-luna"
     # Speech-to-text for the shared log. The live provider transcribes the user
     # too, but badly enough to matter: those lines are what the group reads and
     # what rebuilds the context on every provider reconnection. Empty disables
@@ -85,7 +90,7 @@ class Settings(BaseSettings):
     # model narrated the group-call opening without it. Raised so raising the token
     # ceiling doesn't just trade "empty answer" for "no answer at all".
     tool_timeout_seconds: float = Field(default=120.0, gt=0)
-    # Documentar el POI con gpt-5-mini nada mas arrancar una llamada, en paralelo
+    # Documentar el POI con tool_model nada mas arrancar una llamada, en paralelo
     # y sin que la llamada espere. Es un puente: gemini documenta de memoria, y de
     # memoria "Calle Feria" es la de Sevilla y no la de Albacete. Su busqueda
     # nativa lo arreglaria, pero hoy tumba la sesion entera (bug abierto de Google,

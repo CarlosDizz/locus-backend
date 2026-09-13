@@ -310,6 +310,37 @@ CONTEXT_WINDOW_COMPRESSION = {
 }
 
 
+def _gemini_tools(config: LiveSessionConfig) -> list[dict]:
+    """Las herramientas que ve Gemini: la busqueda nativa y las nuestras.
+
+    La busqueda va primero porque es la que resuelve el problema real. Hasta
+    ahora el guia solo tenia su memoria: una llamada sobre la Calle Feria de
+    Albacete acababa contando la de Sevilla, porque con el nombre a secas eso es
+    lo que sabe del mundo. Y no era que se negara a documentarse — es que no
+    tenia con que. document_poi existe pero pasa por otro modelo y otra llamada
+    de red; la busqueda de Gemini ocurre dentro de la misma sesion y en segundos,
+    que es lo unico que aguanta una conversacion hablada.
+
+    Se declara siempre, tambien cuando no hay herramientas nuestras: un guia sin
+    forma de comprobar un dato es justamente el que se lo inventa.
+    """
+    herramientas: list[dict] = [{"google_search": {}}]
+    if config.tools:
+        herramientas.append(
+            {
+                "function_declarations": [
+                    {
+                        "name": tool["name"],
+                        "description": tool.get("description", ""),
+                        "parameters_json_schema": tool.get("parameters", {}),
+                    }
+                    for tool in config.tools
+                ]
+            }
+        )
+    return herramientas
+
+
 def _gemini3_config(config: LiveSessionConfig) -> dict:
     options = dict(config.provider_options)
     options.pop("interaction_mode", None)
@@ -324,20 +355,7 @@ def _gemini3_config(config: LiveSessionConfig) -> dict:
             "language_code": speech_locale(config.locale),
             "voice_config": {"prebuilt_voice_config": {"voice_name": config.voice or "Kore"}},
         },
-        "tools": [
-            {
-                "function_declarations": [
-                    {
-                        "name": tool["name"],
-                        "description": tool.get("description", ""),
-                        "parameters_json_schema": tool.get("parameters", {}),
-                    }
-                    for tool in config.tools
-                ]
-            }
-        ]
-        if config.tools
-        else [],
+        "tools": _gemini_tools(config),
         "input_audio_transcription": {},
         "output_audio_transcription": {},
         "realtime_input_config": _gemini_turn_detection(turn_detection),
@@ -372,20 +390,7 @@ def _gemini2_config(config: LiveSessionConfig) -> dict:
         "speech_config": {
             "voice_config": {"prebuilt_voice_config": {"voice_name": config.voice or "Kore"}},
         },
-        "tools": [
-            {
-                "function_declarations": [
-                    {
-                        "name": tool["name"],
-                        "description": tool.get("description", ""),
-                        "parameters_json_schema": tool.get("parameters", {}),
-                    }
-                    for tool in config.tools
-                ]
-            }
-        ]
-        if config.tools
-        else [],
+        "tools": _gemini_tools(config),
         "input_audio_transcription": {},
         "output_audio_transcription": {},
         "realtime_input_config": _gemini_turn_detection(turn_detection),

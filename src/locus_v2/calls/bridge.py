@@ -121,6 +121,44 @@ recites de vuelta lo que han escrito ni les hagas notar que lo has leído; se no
 cómo cuentas las cosas, no en que lo anuncies."""
 
 
+# Sin esto, el prompt solo decia el nombre del sitio y le pedia contarlo "de
+# memoria". Con un nombre que se repite por media España eso sale mal de forma
+# predecible: una llamada sobre la Calle Feria de Albacete acababa contando la
+# Calle Feria de Sevilla, y una sobre la Plaza Altozano se iba a la de Triana.
+# El modelo no estaba inventando por capricho — le faltaba el unico dato que
+# desambigua, y lo rellenaba con lo que sabe del mundo, que es siempre el sitio
+# mas famoso.
+#
+# El nombre de la ciudad y la descripcion ya se calculaban y se pasaban a
+# render_prompt; simplemente la plantilla no los usaba. Van en codigo y no en el
+# prompt por lo mismo que el perfil del viajero: es un dato factual del que
+# depende que la visita sea del sitio correcto, y una edicion descuidada desde
+# el panel no deberia poder quitarlo.
+POI_LOCATION_BLOCK = """Datos de este lugar, que mandan sobre lo que creas recordar:
+{facts}
+
+Hay lugares con este mismo nombre en otras ciudades, y casi siempre son mas
+conocidos que este. No son este. La visita va del que esta en la ciudad de
+arriba: si lo que recuerdas no encaja con ella, es que estas recordando otro
+sitio, y entonces no lo cuentes. Preguntar o reconocer que no te consta es
+correcto; contar el equivocado con seguridad, no."""
+
+
+def _poi_location_block(context: dict[str, str]) -> str:
+    """Los hechos del sitio, o cadena vacia si no sabemos ninguno.
+
+    Un bloque que dijera "Ciudad: " vacio seria peor que no ponerlo: invita a
+    rellenar el hueco, que es justo el fallo que esto viene a evitar.
+    """
+    campos = (("Nombre", "name"), ("Ciudad", "city_name"), ("Ficha", "description"))
+    lineas = [
+        f"- {etiqueta}: {valor}"
+        for etiqueta, clave in campos
+        if (valor := (context.get(clave) or "").strip())
+    ]
+    return POI_LOCATION_BLOCK.format(facts="\n".join(lineas)) if lineas else ""
+
+
 def _recap_entries(room: Room) -> list[tuple[str, str]]:
     """Turn the room's shared log into (role, text) turns for a new session.
 
@@ -431,6 +469,11 @@ class _CallVoiceBridge:
                 )
             except PromptRenderingError as error:
                 raise CallError(str(error), 503) from error
+            # Los hechos del sitio van antes que el perfil de quien escucha: si la
+            # visita acaba siendo de otra ciudad, da igual a quien se la cuentes.
+            location_block = _poi_location_block(self.tool_context)
+            if location_block:
+                prompt = f"{prompt}\n\n{location_block}"
             if traveler_context:
                 prompt = f"{prompt}\n\n{traveler_context}"
             # Primary first, then the profile's fallback if it has one. A call that

@@ -324,7 +324,13 @@ def _gemini_tools(config: LiveSessionConfig) -> list[dict]:
     Se declara siempre, tambien cuando no hay herramientas nuestras: un guia sin
     forma de comprobar un dato es justamente el que se lo inventa.
     """
-    herramientas: list[dict] = [{"google_search": {}}]
+    # DESACTIVADO 2026-09-13. Declarar {"google_search": {}} aqui hizo que Gemini
+    # rechazara la sesion entera con "1007 Request contains an invalid argument"
+    # y ninguna llamada llegaba a conectar. Queda pendiente averiguar si es el
+    # nombre del campo, el modelo (Gemini 3.1 Flash Live) o que no se pueda
+    # combinar con function_declarations; hasta saberlo, el guia se queda sin
+    # busqueda, que es peor que antes pero infinitamente mejor que sin llamadas.
+    herramientas: list[dict] = []
     if config.tools:
         herramientas.append(
             {

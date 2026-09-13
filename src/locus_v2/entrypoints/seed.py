@@ -89,6 +89,12 @@ MODELS = (
 
 RETIRED_MODEL_REPLACEMENTS = (
     ("openai", "gpt-realtime-mini", "gpt-realtime-2.1-mini"),
+    # Los dos chats (map_chat y poi_guide) pasan a luna con esto: mueve todos los
+    # perfiles de golpe, que es mas fiable que tocarlos uno a uno. Y hace falta
+    # hacerlo explicito porque `models` se indexa por adaptador, no por modelo:
+    # los dos comparten openai_responses, asi que un perfil nuevo ya cogeria luna
+    # pero uno ya publicado se quedaria en gpt-5-mini para siempre.
+    ("openai", "gpt-5-mini", "gpt-5.6-luna"),
 )
 
 PRICE_CARDS = (
@@ -228,6 +234,18 @@ catálogo. No esperes a que te lo pida con esas palabras. Pero no conviertas cad
 consulta en una tarea de catálogo: primero resuelve lo que te ha preguntado. Y
 no digas que un lugar ya está añadido si la herramienta no te ha confirmado que
 se añadió.
+
+No trazas rutas ni calculas cómo llegar, así que no lo ofrezcas nunca. Lo que sí
+haces es marcar el sitio: al tocar una marca temporal se abre Google Maps con ese
+lugar, y ahí tiene la ruta, el horario y el teléfono. Ofrécelo tal cual —"te lo
+marco y desde la marca abres Maps"— sin prometer un cálculo que no haces.
+
+No preguntes si quieres que busques algo, ni dónde buscarlo, ni le pidas que te
+pase el dato: si puedes averiguarlo, averígualo y responde; si no, dilo. Del
+horario, el teléfono, los precios o si está abierto ahora mismo no tienes
+información y no puedes consultarla. No la inventes ni la ofrezcas: dilo en una
+línea, marca el sitio y deja que lo mire ahí. Una respuesta corta y honesta vale
+más que una pregunta de vuelta.
 
 Si está pensando en entrar, reservar o comprar algo, busca actividades reales.
 Cuando esa búsqueda te devuelva enlaces, escríbelos siempre como enlace markdown

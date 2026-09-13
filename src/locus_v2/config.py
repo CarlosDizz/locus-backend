@@ -85,6 +85,15 @@ class Settings(BaseSettings):
     # model narrated the group-call opening without it. Raised so raising the token
     # ceiling doesn't just trade "empty answer" for "no answer at all".
     tool_timeout_seconds: float = Field(default=120.0, gt=0)
+    # Documentar el POI con gpt-5-mini nada mas arrancar una llamada, en paralelo
+    # y sin que la llamada espere. Es un puente: gemini documenta de memoria, y de
+    # memoria "Calle Feria" es la de Sevilla y no la de Albacete. Su busqueda
+    # nativa lo arreglaria, pero hoy tumba la sesion entera (bug abierto de Google,
+    # 1007 invalid argument). Cuando eso se cierre, esto se apaga con este flag.
+    call_opening_research_enabled: bool = True
+    # La ficha se guarda en el POI, asi que se paga una vez por sitio y no por
+    # llamada. Se rehace pasado este plazo por si el lugar cambia.
+    call_opening_research_ttl_days: int = Field(default=90, ge=1)
     event_log_retention_days: int = Field(default=30, ge=1, le=365)
 
     billing_usd_to_eur: Decimal = Field(default=Decimal("0.87"), gt=0)

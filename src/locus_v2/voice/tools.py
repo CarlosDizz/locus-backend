@@ -106,6 +106,50 @@ una introducción ni menciones limitaciones. Si un dato no es fiable, omítelo."
             "model": self.settings.tool_model,
         }
 
+    async def research_opening_brief(self, context: dict, locale: str) -> dict:
+        """Documenta un lugar antes de que al guia le haga falta.
+
+        No es una herramienta que el modelo pueda pedir, y por eso existe aparte
+        de `execute()`: `document_poi` se quito de las llamadas porque el modelo
+        no puede hablar mientras corre una herramienta y el grupo se comia hasta
+        un minuto de silencio. Aqui la llamada no espera a nada — esto corre en
+        paralelo y la ficha se inyecta cuando esta.
+
+        El encargo es distinto al de `_research`, que responde a una pregunta
+        concreta a mitad de visita: esto es el material de partida, y lo que hay
+        que evitar no es la vaguedad sino el homonimo. "Calle Feria" y "Plaza del
+        Altozano" existen en Sevilla y son mas famosas que las de Albacete, asi
+        que la ciudad y las coordenadas mandan sobre el nombre.
+        """
+        ciudad = context.get("city_name") or ""
+        prompt = f"""Documenta este lugar para un guia turistico que ya esta en directo.
+Lugar: {context.get('name', '')}
+Ciudad: {ciudad}
+Direccion o ficha: {context.get('description', '')}
+Coordenadas: {context.get('lat', '')}, {context.get('lng', '')}
+Wikidata: {context.get('wikidata_id', '')}
+Wikipedia: {context.get('wikipedia_title', '')}
+Idioma de respuesta: {locale}
+
+Puede haber lugares con este mismo nombre en otras ciudades, y suelen ser mas
+conocidos que este. Documenta unicamente el de {ciudad}, el de esas coordenadas.
+Si lo que te viene a la cabeza es el de otra ciudad, no lo cuentes.
+
+Escribe lo que un guia necesita tener delante: que es, de cuando, quien lo hizo,
+para que servia, que ha pasado ahi, que se ve al mirarlo y como encaja en su
+barrio y en la ciudad. Hechos concretos, fechas y nombres cuando los sepas.
+
+Si de este lugar concreto apenas te consta nada, dilo en una linea y dedica el
+resto a lo que si es verificable: su calle, su barrio, su entorno y el momento en
+que la ciudad creció hacia ahí. Un guia prefiere poco y cierto a mucho e
+inventado. No escribas introduccion ni cierre."""
+        answer = await self._ask_model(prompt)
+        return {
+            "kind": "poi_opening_brief",
+            "answer": answer,
+            "model": self.settings.tool_model,
+        }
+
     async def _plan_visit(self, arguments: dict, context: dict, locale: str) -> dict:
         # No model call here on purpose (2026-09-06): confirmed live that gemini_live
         # documents places well from its own knowledge, no document_poi round-trip

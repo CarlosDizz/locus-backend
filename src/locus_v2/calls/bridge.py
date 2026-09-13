@@ -45,6 +45,7 @@ still silent.
 import asyncio
 import base64
 import contextlib
+from datetime import datetime, timedelta
 from functools import partial
 from time import perf_counter
 from typing import Any
@@ -144,6 +145,54 @@ sitio, y entonces no lo cuentes. Preguntar o reconocer que no te consta es
 correcto; contar el equivocado con seguridad, no."""
 
 
+BRIEF_BLOCK = """Documentacion contrastada sobre este lugar, preparada por tu equipo:
+{brief}
+
+Manda sobre lo que creas recordar. El grupo no sabe que existe este texto y no
+debe notarlo: no lo menciones, no digas que te han informado ni que has
+consultado nada. Simplemente cuenta con ello."""
+
+BRIEF_METADATA_KEY = "call_brief"
+
+
+def _cached_brief(poi: Poi | None, ttl_days: int) -> str:
+    """La ficha guardada en el POI, si la hay y no ha caducado.
+
+    Vive en el POI y no en la sesion porque el coste es por sitio, no por
+    llamada: la segunda persona que llame al mismo lugar no vuelve a pagarla, y
+    ademas la recibe en el prompt de arranque en vez de a mitad de conversacion.
+    """
+    if poi is None:
+        return ""
+    guardada = (poi.metadata_json or {}).get(BRIEF_METADATA_KEY)
+    if not isinstance(guardada, dict):
+        return ""
+    texto = str(guardada.get("text") or "").strip()
+    if not texto:
+        return ""
+    try:
+        escrita = datetime.fromisoformat(str(guardada.get("created_at")))
+    except (TypeError, ValueError):
+        # Sin fecha legible no se puede saber si caduco. Se aprovecha igual: una
+        # ficha vieja es mejor que ninguna, y la reescribira el siguiente cambio.
+        return texto
+    return "" if utc_now() - escrita > timedelta(days=ttl_days) else texto
+
+
+def _should_research(poi: Poi | None, cached_brief: str, *, enabled: bool) -> bool:
+    """Si merece la pena pagar una documentacion para este lugar.
+
+    El filtro que importa es el `wikidata_id`: un sitio resuelto a una entidad
+    real es de los que el modelo ya cuenta bien de memoria — es el Pasaje de
+    Lodares, que tiene Q5948330. Los que se inventa son los que no estan en
+    ninguna base, como la Calle Feria de Albacete, que no existe en Wikidata.
+    Documentar los primeros seria pagar por lo que ya sale bien.
+    """
+    if not enabled or poi is None or cached_brief:
+        return False
+    return not (poi.wikidata_id or "").strip()
+
+
 def _poi_location_block(context: dict[str, str]) -> str:
     """Los hechos del sitio, o cadena vacia si no sabemos ninguno.
 
@@ -235,6 +284,11 @@ class _CallVoiceBridge:
         # it's supposed to be.
         self._assistant_turn_count = 0
         self._research_kicked_off = False
+        # Ficha de apertura: se decide al cargar el POI y corre suelta tras
+        # conectar. Nadie la espera (ver _research_opening_brief).
+        self._poi_id: int | None = None
+        self._needs_opening_research = False
+        self._research_task: asyncio.Task | None = None
         # Did anyone actually take part during the current provider session?
         # Reset per session in run(); decides whether a reconnection counts as
         # "the room is still alive" or as another round of silence.
@@ -264,6 +318,16 @@ class _CallVoiceBridge:
             while True:
                 try:
                     self.provider = await self._connect(resume=attempt > 0)
+                    if self._needs_opening_research and attempt == 0:
+                        # Aqui y no dentro de _connect: la tarea compara contra
+                        # self.provider para saber si su sesion sigue viva, y ahi
+                        # dentro todavia no esta asignado. Sin await a proposito
+                        # — la llamada no espera a esto, que es toda la diferencia
+                        # con document_poi como herramienta del modelo.
+                        self._needs_opening_research = False
+                        self._research_task = asyncio.create_task(
+                            self._research_opening_brief(self.provider)
+                        )
                 except CallError as error:
                     await self.store.publish(
                         self.call_id, {"type": "call.error", "message": str(error)}
@@ -418,7 +482,18 @@ class _CallVoiceBridge:
                 "city_name": poi.city.name if poi is not None and poi.city else "",
                 "wikidata_id": poi.wikidata_id if poi is not None else "",
                 "wikipedia_title": poi.wikipedia_title if poi is not None else "",
+                # Para la ficha de apertura: el nombre puede repetirse en otra
+                # ciudad, las coordenadas no.
+                "lat": str(poi.lat) if poi is not None and poi.lat is not None else "",
+                "lng": str(poi.lng) if poi is not None and poi.lng is not None else "",
             }
+            # La ficha ya escrita entra en el prompt; la que falta se pide despues
+            # de conectar, para que la llamada no espere por ella.
+            self._poi_id = poi.id if poi is not None else None
+            cached_brief = _cached_brief(poi, self.settings.call_opening_research_ttl_days)
+            self._needs_opening_research = _should_research(
+                poi, cached_brief, enabled=self.settings.call_opening_research_enabled
+            )
             # Vocabulario para el transcriptor: los nombres propios son lo que
             # peor sale, y aqui ya tenemos cargado el sitio y su ciudad. Se
             # resuelve una vez por sesion, no por turno.
@@ -474,6 +549,10 @@ class _CallVoiceBridge:
             location_block = _poi_location_block(self.tool_context)
             if location_block:
                 prompt = f"{prompt}\n\n{location_block}"
+            # Si ya la teniamos escrita entra de arranque, que es mejor que
+            # inyectarla a mitad: el guia la tiene antes de abrir la boca.
+            if cached_brief:
+                prompt = f"{prompt}\n\n{BRIEF_BLOCK.format(brief=cached_brief)}"
             if traveler_context:
                 prompt = f"{prompt}\n\n{traveler_context}"
             # Primary first, then the profile's fallback if it has one. A call that
@@ -895,6 +974,74 @@ class _CallVoiceBridge:
             tool=event.tool_name,
             elapsed_ms=round((perf_counter() - started_at) * 1000, 1),
         )
+
+    async def _research_opening_brief(self, provider: LiveProvider) -> None:
+        """Documenta el lugar mientras la llamada ya esta en marcha.
+
+        Corre suelta, sin que nadie la espere, y por eso se traga cualquier
+        error: si falla, expira o llega tarde, la llamada sigue exactamente como
+        estaba. La leccion del 1007 es que nada accesorio puede tumbar una
+        conversacion en curso.
+        """
+        started_at = perf_counter()
+        try:
+            result = await self.tool_dispatcher.research_opening_brief(
+                self.tool_context, self.locale
+            )
+        except Exception as error:  # noqa: BLE001 - un extra no puede matar la llamada
+            logger.warning(
+                "call_voice_bridge_opening_research_failed",
+                call_id=self.call_id, error=str(error),
+            )
+            return
+
+        brief = str(result.get("answer") or "").strip()
+        usage = self.tool_dispatcher.last_usage
+        if usage is not None and usage.billable:
+            await self._persist_tool_usage("opening_brief", "catalog.document_poi", usage)
+        if not brief:
+            # gpt-5-mini ya devolvio 0 caracteres alguna vez gastandose el
+            # presupuesto en razonar (ver voice/tools.py). Cobrado esta, pero no
+            # se guarda ni se inyecta un vacio.
+            logger.warning("call_voice_bridge_opening_research_empty", call_id=self.call_id)
+            return
+
+        await self._store_brief(brief, str(result.get("model") or ""))
+        # La sesion puede haber muerto o reconectado mientras esto corria.
+        if provider is not self.provider:
+            logger.info("call_voice_bridge_opening_brief_stale", call_id=self.call_id)
+            return
+        try:
+            await provider.seed_context([("assistant", BRIEF_BLOCK.format(brief=brief))])
+        except Exception:  # noqa: BLE001 - idem: la llamada manda
+            logger.exception("call_voice_bridge_opening_brief_inject_failed", call_id=self.call_id)
+            return
+        logger.info(
+            "call_voice_bridge_opening_brief_injected",
+            call_id=self.call_id,
+            chars=len(brief),
+            elapsed_ms=round((perf_counter() - started_at) * 1000, 1),
+        )
+
+    async def _store_brief(self, brief: str, model: str) -> None:
+        """Guarda la ficha en el POI para que la proxima llamada no la pague."""
+        if self._poi_id is None:
+            return
+        try:
+            async with self.database.sessions() as session:
+                poi = await session.get(Poi, self._poi_id)
+                if poi is None:
+                    return
+                metadata = dict(poi.metadata_json or {})
+                metadata[BRIEF_METADATA_KEY] = {
+                    "text": brief,
+                    "model": model,
+                    "created_at": utc_now().isoformat(),
+                }
+                poi.metadata_json = metadata
+                await session.commit()
+        except Exception:  # noqa: BLE001 - no poder cachearla no invalida la ficha
+            logger.exception("call_voice_bridge_opening_brief_not_saved", call_id=self.call_id)
 
     @property
     def _transcription_enabled(self) -> bool:

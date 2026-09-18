@@ -72,6 +72,7 @@ class VoiceGateway:
         self.audio_started = False
         self.tools = VoiceToolDispatcher(settings)
         self.persistence_lock = asyncio.Lock()
+        self.document_tool_task: asyncio.Task | None = None
         self.started_at = perf_counter()
 
     async def run(self) -> None:
@@ -167,6 +168,11 @@ class VoiceGateway:
                     {"message": str(error), "retryable": False, "code": "gateway_error"},
                 )
         finally:
+            if self.document_tool_task is not None:
+                self.document_tool_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await self.document_tool_task
+                self.document_tool_task = None
             if self.provider is not None:
                 with suppress(Exception):
                     await self.provider.close()
@@ -402,6 +408,22 @@ class VoiceGateway:
                 },
             )
             return
+        if event.tool_name == "document_poi":
+            if self.document_tool_task is not None and not self.document_tool_task.done():
+                await self.provider.submit_tool_result(
+                    event.tool_call_id,
+                    {
+                        "_tool_name": event.tool_name,
+                        "_scheduling": "SILENT",
+                        "answer": "Ya hay una investigacion de este lugar en curso.",
+                    },
+                )
+                return
+            provider = self.provider
+            self.document_tool_task = asyncio.create_task(
+                self._execute_tool(event, definition, provider=provider)
+            )
+            return
         await self._execute_tool(event, definition)
 
     async def _handle_approval(self, approval: ToolApproval) -> None:
@@ -419,9 +441,17 @@ class VoiceGateway:
             return
         await self._execute_tool(event, definition)
 
-    async def _execute_tool(self, event: ProviderEvent, definition: dict) -> None:
+    async def _execute_tool(
+        self,
+        event: ProviderEvent,
+        definition: dict,
+        *,
+        provider: LiveProvider | None = None,
+    ) -> None:
         assert self.provider is not None
         assert self.configuration is not None
+        target_provider = provider or self.provider
+        dispatcher = VoiceToolDispatcher(self.settings)
         await self._send(
             "tool.started",
             {"call_id": event.tool_call_id, "name": event.tool_name},
@@ -435,7 +465,7 @@ class VoiceGateway:
             handler=definition["handler_code"],
         )
         try:
-            result = await self.tools.execute(
+            result = await dispatcher.execute(
                 definition["handler_code"],
                 event.arguments or {},
                 self.configuration.context,
@@ -458,15 +488,20 @@ class VoiceGateway:
                 },
             )
             raise
-        await self._persist_tool_usage(event.tool_name, definition["handler_code"])
+        await self._persist_tool_usage(
+            event.tool_name, definition["handler_code"], dispatcher.last_usage
+        )
         result["_tool_name"] = event.tool_name
+        if event.tool_name == "document_poi":
+            result["_scheduling"] = "WHEN_IDLE"
         await self._persist_turn(
             VoiceTurnRole.TOOL,
             result.get("answer", ""),
             tool_name=event.tool_name,
             payload={"arguments": event.arguments or {}, "result": result},
         )
-        await self.provider.submit_tool_result(event.tool_call_id, result)
+        if target_provider is self.provider:
+            await target_provider.submit_tool_result(event.tool_call_id, result)
         logger.info(
             "voice_gateway_tool_submitted",
             trace_id=self.trace_id,
@@ -582,7 +617,7 @@ class VoiceGateway:
             },
         )
 
-    async def _persist_tool_usage(self, tool_name: str, handler_code: str) -> None:
+    async def _persist_tool_usage(self, tool_name: str, handler_code: str, usage=None) -> None:
         """Bill the plain OpenAI call a voice tool just made on its own.
 
         VoiceToolDispatcher.execute() (voice/tools.py) calls the OpenAI Responses
@@ -590,7 +625,6 @@ class VoiceGateway:
         the LiveProvider abstraction, so _persist_usage() above never sees it.
         That cost was going completely unbilled until this existed.
         """
-        usage = self.tools.last_usage
         if usage is None or not usage.billable or self.voice_session is None:
             return
         async with self.database.sessions() as session:

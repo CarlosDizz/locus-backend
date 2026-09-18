@@ -152,11 +152,15 @@ class GeminiLive3Provider(LiveProvider):
     async def submit_tool_result(self, call_id: str, result: dict) -> None:
         self._require_session()
         payload = dict(result)
+        scheduling = payload.pop("_scheduling", None)
         await self._session.send_tool_response(
             function_responses=types.FunctionResponse(
                 id=call_id,
                 name=payload.pop("_tool_name", "locus_tool"),
                 response=payload,
+                scheduling=(
+                    types.FunctionResponseScheduling(scheduling) if scheduling else None
+                ),
             )
         )
 
@@ -412,16 +416,22 @@ def _gemini_tools(config: LiveSessionConfig) -> list[dict]:
     # busqueda, que es peor que antes pero infinitamente mejor que sin llamadas.
     herramientas: list[dict] = []
     if config.tools:
+        declarations = []
+        for tool in config.tools:
+            declaration = {
+                "name": tool["name"],
+                "description": tool.get("description", ""),
+                "parameters_json_schema": tool.get("parameters", {}),
+            }
+            # 3.8 puede seguir hablando y escuchando mientras document_poi
+            # trabaja. Se deja explicito aunque sea el modo por defecto del
+            # modelo para que la intencion no dependa de un default remoto.
+            if config.model == "gemini-3.8-live" and tool["name"] == "document_poi":
+                declaration["behavior"] = "NON_BLOCKING"
+            declarations.append(declaration)
         herramientas.append(
             {
-                "function_declarations": [
-                    {
-                        "name": tool["name"],
-                        "description": tool.get("description", ""),
-                        "parameters_json_schema": tool.get("parameters", {}),
-                    }
-                    for tool in config.tools
-                ]
+                "function_declarations": declarations
             }
         )
     return herramientas
@@ -500,7 +510,14 @@ def _gemini2_config(config: LiveSessionConfig) -> dict:
 def _gemini_turn_detection(value: dict) -> dict:
     detection_type = value.get("type", "provider_native")
     if detection_type == "manual":
-        return {"automatic_activity_detection": {"disabled": True}}
+        return {
+            "automatic_activity_detection": {"disabled": True},
+            # Do not rely on a model-family default here. In push-to-talk the
+            # activity_start sent on floor.request must cut the current answer
+            # immediately; otherwise Gemini can keep generating underneath the
+            # user's next turn.
+            "activity_handling": types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
+        }
     automatic: dict = {"disabled": False}
     if "prefix_padding_ms" in value:
         automatic["prefix_padding_ms"] = value["prefix_padding_ms"]

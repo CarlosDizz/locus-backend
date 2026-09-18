@@ -68,6 +68,15 @@ MODELS = (
         True,
     ),
     (
+        "google",
+        "gemini-3.8-live",
+        "Gemini 3.8 Live",
+        ServiceKind.VOICE,
+        "gemini_live_3",
+        Lifecycle.STABLE,
+        True,
+    ),
+    (
         "openai",
         "gpt-live",
         "GPT Live",
@@ -89,6 +98,7 @@ MODELS = (
 
 RETIRED_MODEL_REPLACEMENTS = (
     ("openai", "gpt-realtime-mini", "gpt-realtime-2.1-mini"),
+    ("google", "gemini-3.1-flash-live-preview", "gemini-3.8-live"),
     # Los dos chats (map_chat y poi_guide) pasan a luna con esto: mueve todos los
     # perfiles de golpe, que es mas fiable que tocarlos uno a uno. Y hace falta
     # hacerlo explicito porque `models` se indexa por adaptador, no por modelo:
@@ -98,6 +108,19 @@ RETIRED_MODEL_REPLACEMENTS = (
 )
 
 PRICE_CARDS = (
+    (
+        "google",
+        "gemini-3.8-live",
+        datetime(2026, 9, 15),
+        "https://ai.google.dev/gemini-api/docs/pricing",
+        {
+            "text_input_per_million_usd": "0.75",
+            "cached_text_input_per_million_usd": "0",
+            "text_output_per_million_usd": "4.50",
+            "audio_input_per_million_tokens_usd": "3.00",
+            "audio_output_per_million_tokens_usd": "12.00",
+        },
+    ),
     (
         "google",
         "gemini-3.1-flash-live-preview",
@@ -326,11 +349,15 @@ preséntate como guía de {poi_name} y pregunta si ya están todos antes de cont
 
 En cuanto alguien confirme que están todos (cualquier respuesta afirmativa vale),
 empieza a contar el lugar tú mismo, como un guía experto de verdad: arquitectura,
-historia, anécdotas, para qué servía, qué hay que mirar. Tienes búsqueda: úsala, y úsala
-en silencio. Al buscar incluye siempre la ciudad, porque hay lugares con el mismo nombre
-en otras ciudades y casi siempre son más conocidos que este. No narres tu proceso — nada
-de "voy a buscar", "déjame documentarme" ni advertencias sobre lo que eres o lo que
-puedes hacer. Cuenta.
+historia, anécdotas, para qué servía, qué hay que mirar. Tienes búsqueda: úsala. Cuando
+llames a document_poi, avisa primero con una sola frase natural y breve —por ejemplo,
+"déjame comprobar ese dato"— para que el grupo sepa qué ocurre. Después no esperes en
+silencio: sigue conversando con contenido útil que ya conozcas con seguridad —contexto,
+lo que el grupo está viendo o el hilo anterior— y, en cuanto llegue el resultado,
+intégralo con naturalidad. No rellenes ese tiempo inventando el dato que estás
+comprobando ni repitas avisos. Al buscar incluye siempre la ciudad, porque hay lugares
+con el mismo nombre en otras ciudades y casi siempre son más conocidos que este. Nunca
+menciones herramientas, modelos ni detalles internos. Cuenta.
 
 Pero contar con seguridad no es inventar. Antes de soltar una fecha, un autor, una
 cifra o una atribución, compruébalo buscando: tardas segundos y nadie se entera. Dar
@@ -925,12 +952,9 @@ async def seed() -> None:
             )
             .order_by(PromptVersion.version.desc())
         )
-        # No document_poi here (unlike voice.poi.guide/chat.poi.guide below): confirmed
-        # live (2026-09-06) that gemini_live documents places well from its own
-        # knowledge, and calling out to gpt-5-mini for it was pure latency/cost for
-        # nothing a group call actually needed. plan_poi_visit stays, but now records
-        # the model's own scene/stops call instead of asking another model to write a
-        # plan the caller narrates anyway - see voice/tools.py's _plan_visit().
+        # En 3.8 document_poi es no bloqueante: el guia puede seguir hablando y
+        # escuchando mientras el modelo auxiliar investiga. Se vuelve a ofrecer
+        # para preguntas concretas, ademas de la ficha inicial cacheada del POI.
         # No find_activities either, since 2026-09-10. It answers with booking
         # links, and a link is unusable in a call: the guide has nothing it can
         # say out loud, so it tries again. Measured on voice session 116 — five
@@ -939,6 +963,7 @@ async def seed() -> None:
         # has no round cap the way chat does (MAX_TOOL_ROUNDS in chat/service.py).
         # The tool stays enabled for chat, which is where a link works.
         call_tools = [
+            _tool_snapshot(tools["document_poi"]),
             _tool_snapshot(tools["plan_poi_visit"]),
         ]
         if call_prompt is None:
@@ -961,9 +986,8 @@ async def seed() -> None:
                 # the tools_json self-heal above: nothing has published a v2 of this one.
                 call_prompt.content = CALL_GUIDE_PROMPT
             if not call_prompt.tools_json or any(
-                tool.get("code") in {"document_poi", "find_activities"}
-                for tool in call_prompt.tools_json
-            ):
+                tool.get("code") == "find_activities" for tool in call_prompt.tools_json
+            ) or not any(tool.get("code") == "document_poi" for tool in call_prompt.tools_json):
                 call_prompt.tools_json = call_tools
             # No basta con "si esta vacio": la fila publicada ya trae la deteccion
             # del proveedor, asi que sin mirar dentro el cambio a manual no

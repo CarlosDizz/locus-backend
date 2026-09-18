@@ -289,6 +289,10 @@ class _CallVoiceBridge:
         self._poi_id: int | None = None
         self._needs_opening_research = False
         self._research_task: asyncio.Task | None = None
+        # document_poi de 3.8 es NON_BLOCKING: esta tarea no puede ocupar el
+        # bucle que recibe audio del proveedor. Solo admitimos una a la vez para
+        # que la libre discrecion del modelo no multiplique gasto y latencia.
+        self._document_tool_task: asyncio.Task | None = None
         # Did anyone actually take part during the current provider session?
         # Reset per session in run(); decides whether a reconnection counts as
         # "the room is still alive" or as another round of silence.
@@ -378,6 +382,11 @@ class _CallVoiceBridge:
             final_status = VoiceSessionStatus.FAILED
             raise
         finally:
+            if self._document_tool_task is not None:
+                self._document_tool_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await self._document_tool_task
+                self._document_tool_task = None
             if self._transcriber_task is not None:
                 self._transcriber_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -944,9 +953,31 @@ class _CallVoiceBridge:
                 "call_voice_bridge_unknown_tool", call_id=self.call_id, tool=event.tool_name
             )
             return
+        if event.tool_name == "document_poi":
+            if self._document_tool_task is not None and not self._document_tool_task.done():
+                await self.provider.submit_tool_result(
+                    event.tool_call_id,
+                    {
+                        "_tool_name": event.tool_name,
+                        "_scheduling": "SILENT",
+                        "answer": "Ya hay una investigacion de este lugar en curso.",
+                    },
+                )
+                return
+            provider = self.provider
+            self._document_tool_task = asyncio.create_task(
+                self._execute_model_tool(event, definition, provider)
+            )
+            return
+        await self._execute_model_tool(event, definition, self.provider)
+
+    async def _execute_model_tool(
+        self, event: ProviderEvent, definition: dict, provider: LiveProvider
+    ) -> None:
         started_at = perf_counter()
+        dispatcher = VoiceToolDispatcher(self.settings)
         try:
-            result = await self.tool_dispatcher.execute(
+            result = await dispatcher.execute(
                 definition["handler_code"], event.arguments or {}, self.tool_context, self.locale
             )
         except Exception as error:  # noqa: BLE001 - the call must not die from a bad tool run
@@ -957,17 +988,26 @@ class _CallVoiceBridge:
                 error=str(error),
             )
             with contextlib.suppress(Exception):
-                await self.provider.submit_tool_result(
-                    event.tool_call_id, {"_tool_name": event.tool_name, "error": str(error)}
-                )
+                if provider is self.provider:
+                    await provider.submit_tool_result(
+                        event.tool_call_id,
+                        {
+                            "_tool_name": event.tool_name,
+                            "_scheduling": "SILENT",
+                            "error": str(error),
+                        },
+                    )
             return
-        usage = self.tool_dispatcher.last_usage
+        usage = dispatcher.last_usage
         if usage is not None and usage.billable:
             await self._persist_tool_usage(
                 event.tool_name or "unknown", definition["handler_code"], usage
             )
         result["_tool_name"] = event.tool_name
-        await self.provider.submit_tool_result(event.tool_call_id, result)
+        if event.tool_name == "document_poi":
+            result["_scheduling"] = "WHEN_IDLE"
+        if provider is self.provider:
+            await provider.submit_tool_result(event.tool_call_id, result)
         logger.info(
             "call_voice_bridge_tool_completed",
             call_id=self.call_id,

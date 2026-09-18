@@ -185,6 +185,26 @@ MODEL_RUNTIME_DEFAULTS = {
     "mock_live": {"max_output_tokens": 1200},
 }
 
+# Las llamadas van por su lado: el guia en solitario se queda con la deteccion
+# del proveedor y aqui se marca el turno a mano.
+#
+# La app de llamadas es pulsar-para-hablar, asi que el usuario ya dice cuando
+# empieza y cuando acaba; pedirle al modelo que lo adivine del audio era trabajo
+# de mas. Y ademas hacia falta: la deteccion automatica de gemini-3.8-live esta
+# rota (medido 2026-09-18) — recibe el audio, lo transcribe y no responde nunca,
+# ni con la configuracion minima de la documentacion. En manual responden bien
+# los dos modelos, comprobado con una llamada de cuatro turnos.
+def _call_runtime_defaults() -> dict:
+    return {
+        **VOICE_RUNTIME_DEFAULTS,
+        "turn_detection": {
+            "type": "manual",
+            "interrupt_response": True,
+            "create_response": True,
+        },
+    }
+
+
 VOICE_RUNTIME_DEFAULTS = {
     "max_output_tokens": 1200,
     "temperature": 0.8,
@@ -929,7 +949,7 @@ async def seed() -> None:
                 content=CALL_GUIDE_PROMPT,
                 variables_json={"required": ["locale", "poi_name"]},
                 tools_json=call_tools,
-                runtime_config_json=VOICE_RUNTIME_DEFAULTS,
+                runtime_config_json=_call_runtime_defaults(),
                 published_at=utc_now(),
             )
             session.add(call_prompt)
@@ -945,8 +965,18 @@ async def seed() -> None:
                 for tool in call_prompt.tools_json
             ):
                 call_prompt.tools_json = call_tools
-            if not call_prompt.runtime_config_json:
-                call_prompt.runtime_config_json = VOICE_RUNTIME_DEFAULTS
+            # No basta con "si esta vacio": la fila publicada ya trae la deteccion
+            # del proveedor, asi que sin mirar dentro el cambio a manual no
+            # llegaria nunca. Se respeta cualquier otro retoque hecho desde el
+            # panel — solo se corrige el tipo de deteccion.
+            runtime = dict(call_prompt.runtime_config_json or {})
+            deteccion = dict(runtime.get("turn_detection") or {})
+            if not runtime:
+                call_prompt.runtime_config_json = _call_runtime_defaults()
+            elif deteccion.get("type") != "manual":
+                deteccion["type"] = "manual"
+                runtime["turn_detection"] = deteccion
+                call_prompt.runtime_config_json = runtime
 
         call_profile = await session.scalar(
             select(RoutingProfile).where(RoutingProfile.code == "voice.call.local")

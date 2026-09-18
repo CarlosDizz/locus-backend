@@ -52,6 +52,8 @@ class GeminiLive3Provider(LiveProvider):
         self._manager: Any = None
         self._session: Any = None
         self._config: LiveSessionConfig | None = None
+        # Turno del usuario abierto con activity_start y aun sin cerrar.
+        self._activity_open = False
 
     async def connect(self, config: LiveSessionConfig) -> None:
         self._config = config
@@ -61,15 +63,53 @@ class GeminiLive3Provider(LiveProvider):
         )
         self._session = await self._manager.__aenter__()
 
+    @property
+    def _manual_activity(self) -> bool:
+        options = self._config.provider_options if self._config else {}
+        return (options.get("turn_detection") or {}).get("type") == "manual"
+
+    async def _open_activity(self) -> None:
+        """Marca el principio del turno del usuario, si toca marcarlo.
+
+        Solo en modo manual: con la deteccion automatica encendida la API mata
+        la sesion en cuanto ve control explicito ("1007 Explicit activity
+        control is not supported when automatic activity detection is
+        enabled"). Idempotente porque llega un trozo de audio cada ~170 ms y
+        el principio se marca una sola vez.
+        """
+        if not self._manual_activity or self._activity_open:
+            return
+        self._activity_open = True
+        await self._session.send_realtime_input(activity_start=types.ActivityStart())
+
     async def send_audio(self, chunk: bytes) -> None:
         self._require_session()
+        await self._open_activity()
         rate = 16000 if self._config.audio_format == AudioFormat.PCM16_16KHZ else 24000
         await self._session.send_realtime_input(
             audio=types.Blob(data=chunk, mime_type=f"audio/pcm;rate={rate}")
         )
 
     async def commit_audio(self) -> None:
+        """Cierra el turno del usuario.
+
+        En manual va `activity_end` y no `audio_stream_end`: la documentacion es
+        explicita en que ese no se manda con la deteccion apagada, y la
+        interrupcion del flujo se marca con la actividad.
+
+        Esto existe porque la deteccion automatica de gemini-3.8-live esta rota
+        (medido 2026-09-18): recibe el audio, lo transcribe, y no responde nunca
+        — ni con la configuracion minima de la documentacion. En manual responde
+        bien, y 3.1 tambien. Ademas es lo que le corresponde a esta interfaz:
+        con pulsar-para-hablar el usuario ya dice cuando empieza y cuando acaba,
+        asi que pedirle al modelo que lo adivine del audio era trabajo de mas.
+        """
         self._require_session()
+        if self._manual_activity:
+            if self._activity_open:
+                self._activity_open = False
+                await self._session.send_realtime_input(activity_end=types.ActivityEnd())
+            return
         await self._session.send_realtime_input(audio_stream_end=True)
 
     async def send_text(self, text: str) -> None:
@@ -134,10 +174,10 @@ class GeminiLive3Provider(LiveProvider):
         """
         if self._session is None:
             return
-        options = self._config.provider_options if self._config else {}
-        detection = options.get("turn_detection") or {}
-        if detection.get("type") == "manual":
-            await self._session.send_realtime_input(activity_start={})
+        # Pasa por el mismo camino que el audio para no descuadrar el estado:
+        # interrumpir es el usuario empezando a hablar, y el turno que abre aqui
+        # lo cerrara el commit_audio de esa misma intervencion.
+        await self._open_activity()
 
     async def events(self) -> AsyncIterator[ProviderEvent]:
         self._require_session()
@@ -178,6 +218,8 @@ class GeminiLive2Provider(LiveProvider):
         self._manager: Any = None
         self._session: Any = None
         self._config: LiveSessionConfig | None = None
+        # Turno del usuario abierto con activity_start y aun sin cerrar.
+        self._activity_open = False
 
     async def connect(self, config: LiveSessionConfig) -> None:
         self._config = config
@@ -187,15 +229,53 @@ class GeminiLive2Provider(LiveProvider):
         )
         self._session = await self._manager.__aenter__()
 
+    @property
+    def _manual_activity(self) -> bool:
+        options = self._config.provider_options if self._config else {}
+        return (options.get("turn_detection") or {}).get("type") == "manual"
+
+    async def _open_activity(self) -> None:
+        """Marca el principio del turno del usuario, si toca marcarlo.
+
+        Solo en modo manual: con la deteccion automatica encendida la API mata
+        la sesion en cuanto ve control explicito ("1007 Explicit activity
+        control is not supported when automatic activity detection is
+        enabled"). Idempotente porque llega un trozo de audio cada ~170 ms y
+        el principio se marca una sola vez.
+        """
+        if not self._manual_activity or self._activity_open:
+            return
+        self._activity_open = True
+        await self._session.send_realtime_input(activity_start=types.ActivityStart())
+
     async def send_audio(self, chunk: bytes) -> None:
         self._require_session()
+        await self._open_activity()
         rate = 16000 if self._config.audio_format == AudioFormat.PCM16_16KHZ else 24000
         await self._session.send_realtime_input(
             audio=types.Blob(data=chunk, mime_type=f"audio/pcm;rate={rate}")
         )
 
     async def commit_audio(self) -> None:
+        """Cierra el turno del usuario.
+
+        En manual va `activity_end` y no `audio_stream_end`: la documentacion es
+        explicita en que ese no se manda con la deteccion apagada, y la
+        interrupcion del flujo se marca con la actividad.
+
+        Esto existe porque la deteccion automatica de gemini-3.8-live esta rota
+        (medido 2026-09-18): recibe el audio, lo transcribe, y no responde nunca
+        — ni con la configuracion minima de la documentacion. En manual responde
+        bien, y 3.1 tambien. Ademas es lo que le corresponde a esta interfaz:
+        con pulsar-para-hablar el usuario ya dice cuando empieza y cuando acaba,
+        asi que pedirle al modelo que lo adivine del audio era trabajo de mas.
+        """
         self._require_session()
+        if self._manual_activity:
+            if self._activity_open:
+                self._activity_open = False
+                await self._session.send_realtime_input(activity_end=types.ActivityEnd())
+            return
         await self._session.send_realtime_input(audio_stream_end=True)
 
     async def send_text(self, text: str) -> None:
@@ -260,10 +340,10 @@ class GeminiLive2Provider(LiveProvider):
         """
         if self._session is None:
             return
-        options = self._config.provider_options if self._config else {}
-        detection = options.get("turn_detection") or {}
-        if detection.get("type") == "manual":
-            await self._session.send_realtime_input(activity_start={})
+        # Pasa por el mismo camino que el audio para no descuadrar el estado:
+        # interrumpir es el usuario empezando a hablar, y el turno que abre aqui
+        # lo cerrara el commit_audio de esa misma intervencion.
+        await self._open_activity()
 
     async def events(self) -> AsyncIterator[ProviderEvent]:
         self._require_session()

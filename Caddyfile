@@ -47,12 +47,12 @@ app.locusguide.es {
 	# "/" va explícito: el matcher se evalúa sobre la ruta pedida, no sobre la
 	# que resuelve try_files, así que sin él la portada — la que carga todo el
 	# mundo — se quedaba sin cabecera de caché.
-	@revalidate path / /index.html /ngsw.json /ngsw-worker.js /safety-worker.js /manifest.webmanifest
+	@revalidate path / /index.html /ngsw.json /locus-sw.js /ngsw-worker.js /safety-worker.js /manifest.webmanifest
 	header @revalidate Cache-Control "no-cache, must-revalidate"
 
 	@immutable {
 		path *.js *.css *.woff2
-		not path /ngsw-worker.js /safety-worker.js
+		not path /locus-sw.js /ngsw-worker.js /safety-worker.js
 	}
 	header @immutable Cache-Control "public, max-age=31536000, immutable"
 

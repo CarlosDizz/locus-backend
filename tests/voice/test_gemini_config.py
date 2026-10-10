@@ -1,13 +1,10 @@
-"""The Gemini session config decides what a call costs and whether tools block it.
+"""The Gemini session config decides what a call remembers and whether tools block it.
 
-A live session bills the whole prompt on every response, and the prompt carries
-every second of audio said so far, so without a sliding window the cost of a
-call grows with the square of its length — measured on voice session 116
-(2026-09-10): 81333 audio tokens billed across 22 turns for a context that never
-held more than 7567.
-
-Losing this field would not break anything visibly. It would just make calls
-expensive again, and quietly cap them at 15 minutes. Hence the test.
+There is deliberately no context window compression. With a 6000/3500 sliding
+window and a system prompt past 3400 tokens, every trim left room for about 50
+tokens of conversation: on 2026-10-06 the guide forgot the whole visit four
+times in 25 minutes. Bringing the field back — even from a stale value saved in
+a prompt's runtime config — would do that again, silently. Hence the test.
 """
 
 import pytest
@@ -16,7 +13,6 @@ from google.genai import types
 from locus_v2.voice.protocol import AudioFormat
 from locus_v2.voice.providers.base import LiveSessionConfig
 from locus_v2.voice.providers.gemini_live import (
-    CONTEXT_WINDOW_COMPRESSION,
     GeminiLive3Provider,
     _gemini2_config,
     _gemini3_config,
@@ -36,32 +32,12 @@ def config(**overrides) -> LiveSessionConfig:
     return LiveSessionConfig(**base)
 
 
-def test_both_families_ask_for_a_sliding_window() -> None:
+def test_neither_family_compresses_the_context() -> None:
+    stale = {"trigger_tokens": 6000, "sliding_window": {"target_tokens": 3500}}
     for build in (_gemini3_config, _gemini2_config):
-        compression = build(config())["context_window_compression"]
-
-        assert compression["trigger_tokens"] == 6000
-        assert compression["sliding_window"]["target_tokens"] == 3500
-
-
-def test_the_panel_can_retune_the_trigger_without_a_deploy() -> None:
-    # What the trigger should be is something only a live call tells us — 8000
-    # turned out never to fire — and the answer should not need a deploy:
-    # runtime_config_json reaches here as provider_options.
-    tuned = {"trigger_tokens": 16000, "sliding_window": {"target_tokens": 8000}}
-
-    built = _gemini3_config(config(provider_options={"context_window_compression": tuned}))
-
-    assert built["context_window_compression"] == tuned
-
-
-def test_the_default_is_not_shared_between_sessions() -> None:
-    # The constant is a module-level dict: handing the same object to every
-    # session would let one session's mutation follow every later call.
-    built = _gemini3_config(config())
-    built["context_window_compression"]["trigger_tokens"] = 1
-
-    assert CONTEXT_WINDOW_COMPRESSION["trigger_tokens"] == 6000
+        assert "context_window_compression" not in build(config())
+        built = build(config(provider_options={"context_window_compression": stale}))
+        assert "context_window_compression" not in built
 
 
 def test_manual_turns_explicitly_interrupt_the_current_answer() -> None:

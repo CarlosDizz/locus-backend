@@ -12,7 +12,12 @@ from locus_v2.config import Settings
 from locus_v2.identity.models import User
 from locus_v2.shared.mobile_ids import mobile_id
 
-MAX_IMAGE_BYTES = 2 * 1024 * 1024
+# 8 MB y no 2: con 2, 6 de 7 fotos de iPhone se rechazaron en una visita real
+# (2026-10-06). La app ya las convierte a JPEG de 2048 px (~1 MB), asi que esto
+# es solo el techo para lo que llegue sin convertir. No se quita del todo
+# porque las fotos viven en Redis (hasta MAX_RETAINED_PHOTOS por llamada) y la
+# maquina de produccion va justa de memoria.
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_AUDIO_BYTES = 24000 * 2 * 120
 # How many shared photos stay viewable (and stored) in one call. Room.log already
 # self-trims to 80 entries, but photo payloads live in their own Redis keys and
@@ -283,7 +288,12 @@ class CallService:
 
         def change(room, commands, events):
             if room.status != "ended" and text:
-                room.append_log("user-voice", text, room.speaker_id)
+                # turn_user_id de respaldo: el puente escribe la linea al acabar
+                # el turno, y para entonces el turno ya puede estar cerrado y
+                # speaker_id vacio.
+                room.append_log(
+                    "user-voice", text, room.speaker_id or room.turn_user_id
+                )
 
         return await self.store.change(call_id, change)
 

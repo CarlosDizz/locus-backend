@@ -370,28 +370,18 @@ class GeminiLive2Provider(LiveProvider):
             raise RuntimeError("GeminiLive2Provider is not connected")
 
 
-# Live sessions bill the whole prompt on every response, and the prompt carries
-# every second of audio said so far — the user's and the guide's. So the cost of
-# a turn grows with the call: measured live on 2026-09-10 (voice session 116, 22
-# turns over 7 minutes), the audio in context went from 230 tokens on the first
-# turn to 7567 on the last, and 81333 audio tokens were billed for a context that
-# never held more than 7567. A call's cost grows with the square of its length.
+# Sin compresion de contexto, a proposito (2026-10-10). La tuvimos con un
+# disparo en 6000 tokens y objetivo 3500, para que el coste de un turno no
+# creciera con la llamada. Pero el objetivo se calculo con un prompt de sistema
+# de ~1800 tokens y hoy pasa de 3400: cada recorte dejaba sitio para unos 50
+# tokens de conversacion, y el guia olvidaba todo cada 4-6 minutos — cuatro
+# veces en una visita de 25 minutos el 2026-10-06, ficha del lugar incluida.
+# El contexto crece entero. Si el coste aprieta se buscara otra forma de
+# ahorrar; esta borraba justo lo que hace bueno al guia.
 #
-# A sliding window caps that. The trigger is set explicitly and low on purpose:
-# the documented example passes an empty SlidingWindow(), which inherits the
-# model's own default trigger — far above the 11400 tokens that call reached — so
-# it would lift the 15-minute cap on audio-only sessions without saving anything.
-#
-# 6000/3500 rather than the 8000/4000 first tried: at 8000 the window never
-# engaged at all in three real calls (sessions 116-118), which peaked at 6864
-# tokens over three to four minutes. A trigger that only fires past the five
-# minute mark does nothing for the calls people actually make. What the target
-# has to leave room for is the system instruction and the tool schemas, roughly
-# 1800 tokens of the budget before a single word is spoken.
-CONTEXT_WINDOW_COMPRESSION = {
-    "trigger_tokens": 6000,
-    "sliding_window": {"target_tokens": 3500},
-}
+# Contrapartida: sin compresion Google limita las sesiones de solo audio (15
+# minutos segun su documentacion). Al llegar manda go_away y el puente
+# reconecta y vuelve a sembrar la conversacion desde el registro de la llamada.
 
 
 def _gemini_tools(config: LiveSessionConfig) -> list[dict]:
@@ -455,17 +445,12 @@ def _gemini3_config(config: LiveSessionConfig) -> dict:
         "input_audio_transcription": {},
         "output_audio_transcription": {},
         "realtime_input_config": _gemini_turn_detection(turn_detection),
-        "context_window_compression": dict(CONTEXT_WINDOW_COMPRESSION),
     }
-    # context_window_compression is in the list so the trigger can be retuned
-    # from the panel's Prompt workshop (runtime_config_json) without a deploy:
-    # whether 8000 is too tight is exactly what a live call will tell us.
     for key in (
         "temperature",
         "top_p",
         "top_k",
         "max_output_tokens",
-        "context_window_compression",
     ):
         if key in options:
             live_config[key] = options[key]
@@ -490,17 +475,12 @@ def _gemini2_config(config: LiveSessionConfig) -> dict:
         "input_audio_transcription": {},
         "output_audio_transcription": {},
         "realtime_input_config": _gemini_turn_detection(turn_detection),
-        "context_window_compression": dict(CONTEXT_WINDOW_COMPRESSION),
     }
-    # context_window_compression is in the list so the trigger can be retuned
-    # from the panel's Prompt workshop (runtime_config_json) without a deploy:
-    # whether 8000 is too tight is exactly what a live call will tell us.
     for key in (
         "temperature",
         "top_p",
         "top_k",
         "max_output_tokens",
-        "context_window_compression",
     ):
         if key in options:
             live_config[key] = options[key]

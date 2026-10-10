@@ -266,6 +266,10 @@ class _CallVoiceBridge:
         self.service = CallService(store, settings, consume=_ignore_consume)
         self.provider: LiveProvider | None = None
         self._assistant_text = ""
+        # Lo que va diciendo el grupo segun lo transcribe el propio modelo de
+        # voz. Gemini lo manda a trozos a lo largo del turno; se junta aqui y se
+        # escribe como una sola linea antes de la respuesta del guia.
+        self._user_voice_text = ""
         self.trace_id = uuid4().hex
         self.host_id: int | None = None
         self.model_id: int | None = None
@@ -880,21 +884,21 @@ class _CallVoiceBridge:
                     self.call_id, {"type": "assistant.transcript_delta", "text": event.text or ""}
                 )
             elif event.type == ProviderEventType.TEXT_DONE:
+                await self._flush_user_voice()
                 text = event.text or self._assistant_text
                 self._assistant_text = ""
                 await self._on_assistant_turn_done(text)
             elif event.type == ProviderEventType.AUDIO_DONE:
+                await self._flush_user_voice()
                 if self._assistant_text:
                     text = self._assistant_text
                     self._assistant_text = ""
                     await self._on_assistant_turn_done(text)
             elif event.type == ProviderEventType.INPUT_TRANSCRIPT_DONE:
-                if event.text:
-                    # Solo se escribe si la sesion de transcripcion no esta en
-                    # pie. Con las dos activas saldrian dos lineas por turno, y
-                    # esta es la peor de las dos.
-                    if self.transcriber is None:
-                        await self.service.log_user_voice(self.call_id, event.text)
+                # Solo si no hay transcriptor externo en pie: con los dos
+                # saldrian dos lineas por turno.
+                if event.text and self.transcriber is None:
+                    self._user_voice_text += event.text
             elif event.type == ProviderEventType.USAGE and event.usage is not None:
                 await self._persist_usage(event.usage)
             elif event.type == ProviderEventType.TOOL_CALL:
@@ -917,6 +921,13 @@ class _CallVoiceBridge:
                 )
                 if not event.retryable:
                     return
+
+    async def _flush_user_voice(self) -> None:
+        """Escribe en el registro lo que dijo el grupo en este turno, entero."""
+        text = " ".join(self._user_voice_text.split())
+        self._user_voice_text = ""
+        if text:
+            await self.service.log_user_voice(self.call_id, text)
 
     async def _on_assistant_turn_done(self, text: str) -> None:
         assert self.provider is not None

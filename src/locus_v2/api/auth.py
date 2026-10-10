@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from locus_v2.config import Settings, get_settings
+from locus_v2.identity.application.account_deletion import delete_account
 from locus_v2.identity.application.mobile_auth import (
     MobileAuthError,
     MobileAuthService,
@@ -155,6 +156,16 @@ async def google_auth(
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: CurrentUserDep) -> UserResponse:
     return _view(_me_view(current_user))
+
+
+@router.delete("/me", status_code=204)
+async def delete_my_account(current_user: CurrentUserDep, session: SessionDep) -> None:
+    """Borra la cuenta (Apple y Google Play exigen poder hacerlo desde la app).
+
+    Ver identity/application/account_deletion.py: se borra lo personal y se
+    anonimiza el usuario; los apuntes contables se conservan.
+    """
+    await delete_account(session, current_user)
 
 
 @router.put("/me/profile", response_model=UserResponse)

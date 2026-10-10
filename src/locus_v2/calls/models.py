@@ -27,6 +27,10 @@ class CreateCall(BaseModel):
     poi_id: int | str | None = None
     poi_name: str = Field(default="", max_length=300)
     language: str = Field(default="es", min_length=2, max_length=16)
+    # «itinerary»: la llamada va contigo mientras te mueves y el guía cuenta lo
+    # que aparece (calls/itinerary.py). Sin sitio fijo: se ancla al más cercano.
+    mode: Literal["poi", "itinerary"] = "poi"
+    travel_mode: Literal["walk", "bus", "car"] = "walk"
 
 
 class Member(BaseModel):
@@ -59,6 +63,8 @@ class Room(BaseModel):
     poi_name: str
     language: str
     routing_profile: str
+    mode: Literal["poi", "itinerary"] = "poi"
+    travel_mode: str = ""
     status: Literal["idle", "user_speaking", "assistant_speaking", "paused", "ended"] = "idle"
     speaker_id: int | None = None
     turn_user_id: int | None = None
@@ -94,6 +100,8 @@ class Room(BaseModel):
             "poi_id": self.poi_id,
             "poi_name": self.poi_name,
             "language": self.language,
+            "mode": self.mode,
+            "travel_mode": self.travel_mode,
             "status": self.status,
             "speaker_user_id": self.wire_id(self.speaker_id),
             "max_members": self.max_members,

@@ -26,6 +26,14 @@ class PoiTypeResponse(BaseModel):
     description: str
 
 
+class PoiPopularity(BaseModel):
+    """Visitas con Locus, ratio de «me gusta» y escalón del marcador (0-3)."""
+
+    visits: int = 0
+    like_ratio: float | None = None
+    tier: int = 1
+
+
 class PoiResponse(BaseModel):
     id: int
     city_id: int | None = None
@@ -49,6 +57,7 @@ class PoiResponse(BaseModel):
     metadata: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+    popularity: PoiPopularity | None = None
 
 
 class PoiDocumentationResponse(BaseModel):

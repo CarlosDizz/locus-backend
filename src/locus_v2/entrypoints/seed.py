@@ -177,6 +177,21 @@ PRICE_CARDS = (
             "tool_call_usd": "0.01",
         },
     ),
+    # La búsqueda web de OpenAI cuesta 0,01 $ por llamada y la tarifa de luna
+    # (2026-09-13) se quedó sin ella al migrar desde gpt-5-mini, que sí la tenía:
+    # las búsquedas del chat del mapa y de GetYourGuide no se cobraban.
+    (
+        "openai",
+        "gpt-5.6-luna",
+        datetime(2026, 10, 10),
+        "https://developers.openai.com/api/docs/pricing#web-search",
+        {
+            "text_input_per_million_usd": "0.20",
+            "cached_text_input_per_million_usd": "0.02",
+            "text_output_per_million_usd": "1.20",
+            "tool_call_usd": "0.01",
+        },
+    ),
     (
         "openai",
         "gpt-5.6-luna",
@@ -356,6 +371,70 @@ Responde en {locale} sobre {poi_name}. Documenta los hechos con las herramientas
 disponibles, evita relleno genérico y ofrece enlaces útiles solo cuando encajen
 de forma natural."""
 
+ITINERARY_GUIDE_PROMPT = """Eres Locus, el guía que acompaña a este grupo mientras se mueve
+por la ciudad ({city_name}). Hablas en {locale}. Vais juntos —en bus turístico, a pie
+o en coche— y tú vas contando lo que aparece, como el guía de un autobús que señala
+por la ventanilla, pero con quien se puede hablar.
+
+Cómo sabes lo que tenéis delante: te llegan notas internas que dicen qué sitio está
+pasando, a qué lado y cuánto tiempo hay antes de que quede atrás. Nunca las leas ni
+digas que te han avisado, ni hables de GPS, ubicaciones o sistemas: lo cuentas como
+quien lo está viendo. Cuando llegue una, empieza a contarlo enseguida y di hacia
+dónde mirar («a vuestra derecha, ese edificio de ladrillo…»). Ajusta lo que cuentas
+al tiempo que tienes: si son treinta segundos, lo que de verdad merece la pena; si
+el grupo pregunta, sigue aunque el sitio quede atrás.
+
+Entre un sitio y otro no te quedes callado mucho rato: cuenta cosas del barrio por
+el que pasáis, de la ciudad, de su historia o de cómo se vive allí, en tramos
+cortos. Si el grupo te habla, atiéndelo primero: lo que preguntan manda sobre lo
+que ibas a contar. No inventes: si no estás seguro de un dato, búscalo o no lo
+digas. Cada intervención te llega con el nombre de quien habla: dirígete a cada uno
+por su nombre.
+
+Al empezar, saluda en una frase, di que irás contando lo que vaya apareciendo y que
+pueden interrumpirte cuando quieran. Si hablas en español, trata al grupo de
+vosotros, como en España."""
+TRIP_PLANNER_PROMPT = """Eres Locus, el planificador de viajes de esta persona. Hablas en {locale}.
+Ayudas a preparar un viaje a una ciudad conversando, sin formularios: la persona te lo
+cuenta como se lo contaría a un amigo y tú vas montando el plan.
+
+Lo que necesitas saber, y solo lo que falte: a qué ciudad va, cuándo llega y cuándo se
+va (día y hora aproximada), con quién va (edades y si alguien tiene poca movilidad o
+necesita descansos), qué tiene ya reservado (entradas, visitas, cenas con hora fija) y
+qué le apetece. Pregunta de una en una o de dos en dos, nunca un cuestionario. En
+cuanto te cuente algo, apúntalo con las herramientas en ese mismo turno, aunque
+falten datos: la ciudad, las fechas y quién va con set_trip_details, y cada cosa ya
+reservada con add_items como «booked». No esperes a tenerlo todo para apuntar lo
+que ya sabes. Lo reservado no se mueve: organizas el resto alrededor.
+
+Cómo planificas:
+- Ritmo realista para quien viaja. Con gente mayor o niños, menos cosas al día, sin
+  encadenar paseos largos, con pausas y comidas a su hora. Ten en cuenta los
+  traslados entre sitios y dilos («12 min a pie», «10 min en taxi»).
+- Horarios y cierres, siempre comprobados buscando en la web, nunca de memoria: hay
+  museos que cierran un día a la semana y monumentos con horario de invierno.
+- Agrupa por zonas para no cruzar la ciudad dos veces el mismo día.
+- El primer y el último día son medios días: cuenta con la llegada y la salida.
+
+Propuestas y reservas:
+- Para ofrecer opciones usa suggest_items: salen como tarjetas que la persona añade al
+  plan con un toque. Si la persona ya te ha dicho que sí, o te pide que lo apuntes,
+  usa add_items como «proposed».
+- Cada vez que propongas un día, busca con find_bookable al menos una experiencia
+  reservable que encaje con este grupo y ofrécela como una de las tarjetas: entradas
+  sin colas para lo que aún no tienen, una visita guiada que merezca la pena, un
+  paseo gastronómico, un tour cómodo para gente mayor, una excursión. Es lo que
+  hace que el viaje salga redondo sin que tengan que buscarlo ellos. Adjunta solo
+  enlaces que te devuelva find_bookable; nunca inventes enlaces, precios ni
+  valoraciones. Si no encuentras nada que encaje de verdad, no lo fuerces.
+- Mezcla lo gratuito con lo reservable: un plan que es todo pagar no inspira
+  confianza. No vendas lo que ya tienen reservado.
+- No vuelvas a proponer lo que ya está en el plan: lo tienes en el estado del viaje.
+
+En el chat sé breve: di qué has apuntado o qué propones y por qué encaja con ellos, y
+deja los detalles para el plan, que la persona ve aparte. No repitas el plan entero
+en el chat. Si la persona quiere cambiar algo, cámbialo con update_item o
+remove_item y confirma en una frase."""
 CALL_GUIDE_PROMPT = """Eres Locus, el guía turístico de esta llamada en grupo sobre
 {poi_name}. Hablas en {locale}. Puede haber varias personas escuchando y hablando a la
 vez; cada intervención te llega con el nombre de quien la dice, así que dirígete a ellos
@@ -1190,6 +1269,94 @@ async def seed() -> None:
                 map_prompt.content = MAP_CHAT_PROMPT
                 map_prompt.variables_json = map_variables
                 map_prompt.tools_json = map_tools
+
+        # Guía de itinerario (2026-10-10): la llamada que va contigo mientras te
+        # mueves. Mismo modelo que el guía de grupo; lo que cambia es el prompt y
+        # que el puente le avisa de lo que aparece (calls/itinerary.py).
+        itinerary_definition = await session.scalar(
+            select(PromptDefinition).where(PromptDefinition.code == "voice.itinerary.guide")
+        )
+        if itinerary_definition is None:
+            itinerary_definition = PromptDefinition(
+                code="voice.itinerary.guide",
+                name="Guía de voz en itinerario",
+                description="Cuenta lo que aparece mientras el grupo se mueve (bus, a pie, coche).",
+                service_kind=ServiceKind.VOICE,
+            )
+            session.add(itinerary_definition)
+            await session.flush()
+            itinerary_prompt = PromptVersion(
+                definition_id=itinerary_definition.id, version=1,
+                status=PublicationStatus.PUBLISHED,
+                content=ITINERARY_GUIDE_PROMPT,
+                variables_json={"required": ["locale", "city_name"]},
+                tools_json=[], runtime_config_json=VOICE_RUNTIME_DEFAULTS,
+                published_at=utc_now(),
+            )
+            session.add(itinerary_prompt)
+            await session.flush()
+            session.add(RoutingProfile(
+                code=f"voice.itinerary.{settings.env}", name="Guía de itinerario",
+                experience_code="itinerary_guide", service_kind=ServiceKind.VOICE,
+                environment=settings.env, status=PublicationStatus.PUBLISHED,
+                voice_mode=VoiceMode.PUSH_TO_TALK,
+                primary_model_id=models["gemini_live_3"].id,
+                fallback_model_id=models["openai_realtime"].id,
+                prompt_version_id=itinerary_prompt.id,
+                config_json={"audio_persistence": False}, published_at=utc_now(),
+            ))
+        else:
+            itinerary_prompt = await session.scalar(
+                select(PromptVersion).where(
+                    PromptVersion.definition_id == itinerary_definition.id,
+                    PromptVersion.version == 1,
+                )
+            )
+            if itinerary_prompt is not None:
+                itinerary_prompt.content = ITINERARY_GUIDE_PROMPT
+                _heal_voice_runtime(itinerary_prompt)
+
+        # Planificador de viajes (2026-10-10). Sus herramientas no viven en
+        # tools_json: escriben en el plan del viaje y las ejecuta trips/service.py.
+        # El prompt y el modelo sí, para poder retocarlos desde el panel.
+        trip_definition = await session.scalar(
+            select(PromptDefinition).where(PromptDefinition.code == "chat.trip.planner")
+        )
+        if trip_definition is None:
+            trip_definition = PromptDefinition(
+                code="chat.trip.planner", name="Planificador de viajes",
+                description="Chat que monta el plan de un viaje sin formularios.",
+                service_kind=ServiceKind.CHAT,
+            )
+            session.add(trip_definition)
+            await session.flush()
+            trip_prompt = PromptVersion(
+                definition_id=trip_definition.id, version=1,
+                status=PublicationStatus.PUBLISHED,
+                content=TRIP_PLANNER_PROMPT,
+                variables_json={"required": ["locale"]},
+                tools_json=[], runtime_config_json=CHAT_RUNTIME_DEFAULTS,
+                published_at=utc_now(),
+            )
+            session.add(trip_prompt)
+            await session.flush()
+            session.add(RoutingProfile(
+                code=f"chat.trip.{settings.env}", name="Planificador de viajes",
+                experience_code="trip_planner", service_kind=ServiceKind.CHAT,
+                environment=settings.env, status=PublicationStatus.PUBLISHED,
+                voice_mode="not_applicable",
+                primary_model_id=models["openai_responses"].id,
+                prompt_version_id=trip_prompt.id, config_json={}, published_at=utc_now(),
+            ))
+        else:
+            trip_prompt = await session.scalar(
+                select(PromptVersion).where(
+                    PromptVersion.definition_id == trip_definition.id,
+                    PromptVersion.version == 1,
+                )
+            )
+            if trip_prompt is not None:
+                trip_prompt.content = TRIP_PLANNER_PROMPT
 
         await session.commit()
 

@@ -1,5 +1,8 @@
 # Locus Backend V2 - Hoja de ruta
 
+> La migración V1 → V2 está cerrada. El trabajo de producto desde octubre de 2026
+> está en [plan-producto-2026-10.md](plan-producto-2026-10.md).
+
 ## 0. Contexto de negocio y estrategia de corte
 
 Locus V1 fue una prueba de viabilidad: demostrar que el producto funcionaba, no un backend

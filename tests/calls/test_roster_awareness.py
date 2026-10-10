@@ -57,6 +57,8 @@ class _Store:
 
 def _puente() -> _CallVoiceBridge:
     puente = object.__new__(_CallVoiceBridge)
+    puente._mode = "poi"
+    puente._itinerary = None
     puente.call_id = "CALL-TEST"
     puente.provider = _Provider()
     puente._roster = None
@@ -141,3 +143,13 @@ async def test_the_note_waits_while_someone_is_speaking() -> None:
 def test_names_read_naturally() -> None:
     assert bridge_module._y(["Marta"]) == "Marta"
     assert bridge_module._y(["Marta", "Luis", "Ana"]) == "Marta, Luis y Ana"
+
+
+async def test_the_host_is_never_welcomed_to_their_own_call() -> None:
+    puente = _puente()
+    sala = _sala({1: "Carlos"})
+    sala.members["1"].connection = None  # el puente arranca antes que su móvil
+    await puente._track_roster(sala, now=0)
+    sala.members["1"].connection = "c"
+    await puente._track_roster(sala, now=2)
+    assert _notas(puente) == []

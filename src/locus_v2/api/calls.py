@@ -30,7 +30,11 @@ from pydantic import BaseModel
 from locus_v2.api.auth import CurrentUserDep, SessionDep, SettingsDep
 from locus_v2.calls.bridge import ensure_bridge
 from locus_v2.calls.models import CallError, CreateCall
-from locus_v2.calls.policy import ensure_host_can_consume, resolve_context
+from locus_v2.calls.policy import (
+    ensure_host_can_consume,
+    resolve_context,
+    resolve_itinerary_anchor,
+)
 from locus_v2.calls.service import CallService, decode_image
 from locus_v2.calls.store import RoomStore
 from locus_v2.config import Settings, get_settings
@@ -65,9 +69,14 @@ async def create_call(
     payload: CreateCall, session: SessionDep, settings: SettingsDep, current_user: CurrentUserDep
 ) -> CallResponse:
     try:
-        poi = await resolve_context(session, current_user, payload)
+        if payload.mode == "itinerary":
+            poi = await resolve_itinerary_anchor(session, current_user, payload)
+            routing_profile = "itinerary_guide"
+        else:
+            poi = await resolve_context(session, current_user, payload)
+            routing_profile = "poi_guide"
         service = _service(settings)
-        room = await service.create(current_user, payload, poi, routing_profile="poi_guide")
+        room = await service.create(current_user, payload, poi, routing_profile=routing_profile)
     except CallError as error:
         raise HTTPException(error.status, str(error)) from error
     ensure_bridge(room.call_id, service.store, get_database(), settings)

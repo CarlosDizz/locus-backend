@@ -8,6 +8,7 @@ import { AdminOverview, ModelSummary } from './core/admin-overview.model';
 import { AuditConsoleComponent } from './shared/audit/audit-console.component';
 import { BillingDashboardComponent } from './shared/billing/billing-dashboard.component';
 import { TopUpsDashboardComponent } from './shared/topups/topups-dashboard.component';
+import { ReviewsConsoleComponent } from './shared/reviews/reviews-console.component';
 import { OperationsCalendarComponent } from './shared/calendar/operations-calendar.component';
 import { CatalogExplorerComponent } from './shared/catalog/catalog-explorer.component';
 import { LogConsoleComponent } from './shared/logs/log-console.component';
@@ -18,7 +19,8 @@ import { UserDirectoryComponent } from './shared/users/user-directory.component'
 @Component({
   selector: 'locus-root',
   standalone: true,
-  imports: [AuditConsoleComponent, BillingDashboardComponent, CatalogExplorerComponent, CommonModule, ControlPlaneComponent, LoginComponent, LogConsoleComponent, OperationsCalendarComponent, TopUpsDashboardComponent, UsageChartComponent, UserDirectoryComponent],
+  imports: [AuditConsoleComponent, BillingDashboardComponent, CatalogExplorerComponent, CommonModule, ControlPlaneComponent, LoginComponent, LogConsoleComponent, OperationsCalendarComponent, TopUpsDashboardComponent,
+    ReviewsConsoleComponent, UsageChartComponent, UserDirectoryComponent],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
 })
@@ -44,6 +46,7 @@ export class AppComponent {
     { label: 'Usuarios', glyph: 'users' },
     { label: 'Consumos', glyph: 'wallet' },
     { label: 'Recargas', glyph: 'wallet' },
+    { label: 'Valoraciones', glyph: 'voice' },
     { label: 'Registros', glyph: 'logs' },
     { label: 'Auditoría', glyph: 'audit' },
   ];

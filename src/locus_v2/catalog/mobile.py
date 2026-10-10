@@ -17,11 +17,13 @@ from locus_v2.catalog.mobile_schemas import (
     CityResponse,
     PoiAccessLinksResponse,
     PoiDocumentationResponse,
+    PoiPopularity,
     PoiResponse,
     PoiTypeResponse,
 )
 from locus_v2.catalog.models import City, Poi, PoiType
 from locus_v2.config import Settings
+from locus_v2.reviews.service import ReviewService
 from locus_v2.shared.mobile_ids import mobile_id, mobile_id_clause
 
 
@@ -48,7 +50,8 @@ def city_response(city: City, language: str = "es") -> CityResponse:
 
 
 def poi_response(
-    poi: Poi, city: City | None, poi_type: PoiType | None, language: str = "es"
+    poi: Poi, city: City | None, poi_type: PoiType | None, language: str = "es",
+    popularity: PoiPopularity | None = None,
 ) -> PoiResponse:
     names = normalize_names(poi.name, poi.names_json)
     descriptions = normalize_short_descriptions(
@@ -70,6 +73,7 @@ def poi_response(
         wikipedia_title=poi.wikipedia_title, google_place_id=poi.google_place_id,
         is_active=poi.is_active, metadata=poi.metadata_json or {},
         created_at=poi.created_at, updated_at=poi.updated_at,
+        popularity=popularity,
     )
 
 
@@ -120,7 +124,13 @@ class MobileCatalogService:
                 Poi.name.ilike(token), Poi.slug.ilike(token), Poi.short_description.ilike(token)
             ))
         rows = (await self.session.execute(stmt)).all()
-        return [poi_response(poi, city, poi_type, self.language) for poi, city, poi_type in rows]
+        # El escalón es relativo a los demás sitios de la lista (la ciudad, en
+        # el mapa): por eso se calcula aquí, con todos a la vez.
+        popularidad = await self._popularity([poi for poi, _, _ in rows])
+        return [
+            poi_response(poi, city, poi_type, self.language, popularidad.get(poi.id))
+            for poi, city, poi_type in rows
+        ]
 
     async def get_poi(self, poi_id: int) -> PoiResponse:
         row = (
@@ -128,7 +138,13 @@ class MobileCatalogService:
         ).one_or_none()
         if row is None:
             raise CatalogNotFoundError("POI no encontrado")
-        return poi_response(*row, language=self.language)
+        poi, city, poi_type = row
+        popularidad = await self._popularity([poi])
+        return poi_response(poi, city, poi_type, self.language, popularidad.get(poi.id))
+
+    async def _popularity(self, pois: list[Poi]) -> dict[int, PoiPopularity]:
+        datos = await ReviewService(self.session).popularity_for(pois)
+        return {poi_id: PoiPopularity(**dato.model_dump()) for poi_id, dato in datos.items()}
 
     async def documentation(self, poi_id: int) -> PoiDocumentationResponse:
         poi = await self.get_poi(poi_id)

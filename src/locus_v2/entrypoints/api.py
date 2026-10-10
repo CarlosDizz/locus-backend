@@ -21,7 +21,9 @@ from locus_v2.api.catalog import router as catalog_router
 from locus_v2.api.chat import router as chat_router
 from locus_v2.api.health import router as health_router
 from locus_v2.api.legal import router as legal_router
+from locus_v2.api.reviews import router as reviews_router
 from locus_v2.api.sessions import router as sessions_router
+from locus_v2.api.trips import router as trips_router
 from locus_v2.config import get_settings
 from locus_v2.infrastructure.database import get_database
 from locus_v2.logging import configure_logging
@@ -66,5 +68,7 @@ app.include_router(mobile_billing_router)
 app.include_router(calls_router)
 app.include_router(calls_ws_router)
 app.include_router(catalog_router)
+app.include_router(reviews_router)
 app.include_router(chat_router)
 app.include_router(sessions_router)
+app.include_router(trips_router)

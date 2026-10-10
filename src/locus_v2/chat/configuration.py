@@ -200,6 +200,10 @@ class ChatConfigurationResolver:
                 "nearby_pois": [p.model_dump() for p in state.nearby_pois],
                 "ephemeral_map_pois": [p.model_dump() for p in state.ephemeral_map_pois],
             }
+        if request.context_type == "trip":
+            # El planificador trae su propio contexto (el plan del viaje) y lo
+            # añade él a las instrucciones; aquí no hay sitio ni mapa.
+            return {"name": "", "description": "", "city_name": ""}
         if request.context_type != "poi" or request.context_id is None:
             raise ChatConfigurationError("A map session or POI context is required")
         poi = await self.session.scalar(

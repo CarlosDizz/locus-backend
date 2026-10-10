@@ -134,6 +134,16 @@ class RoomStore:
     async def refresh(self, call_id: str) -> Room:
         return await self.change(call_id, lambda *_: None)
 
+    async def push_command(self, call_id: str, command: dict) -> None:
+        """Encola un comando para el puente sin tocar el estado de la sala.
+
+        Para lo que no cambia nada visible, como la ubicación en una llamada en
+        itinerario: pasar por change() reescribiría la sala cada pocos
+        segundos sin motivo.
+        """
+        key = self.key(call_id, "commands")
+        await self.redis.xadd(key, {"data": json.dumps(command)}, maxlen=256, approximate=True)
+
     async def publish(self, call_id: str, event: dict) -> None:
         await self.redis.publish(self.key(call_id, "events"), json.dumps(event))
 

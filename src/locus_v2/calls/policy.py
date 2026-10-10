@@ -2,6 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from locus_v2.billing.models import Wallet
+from locus_v2.calls.itinerary import distance_m
 from locus_v2.calls.models import CallError, CreateCall
 from locus_v2.catalog.models import Poi
 from locus_v2.config import Settings
@@ -42,3 +43,34 @@ async def resolve_context(session: AsyncSession, user: User, request: CreateCall
     if poi is None:
         raise CallError("Active catalog POI not found", 404)
     return poi
+
+
+async def resolve_itinerary_anchor(session: AsyncSession, user: User, request: CreateCall) -> Poi:
+    """El sitio al que se ancla una llamada en itinerario: el más cercano a ti.
+
+    La llamada no va de un sitio, pero el puente, la sesión de voz y el prompt
+    necesitan uno de referencia (la ciudad sale de él). Se toma el del catálogo
+    más cercano a la posición de la sesión del mapa, dentro de unos 5 km.
+    """
+    map_session = await session.get(MapSession, request.session_id.upper())
+    if map_session is None or map_session.user_id != user.id:
+        raise CallError("An owned map session is required", 403)
+    if map_session.lat is None or map_session.lng is None:
+        raise CallError("Necesitamos tu ubicación para empezar el itinerario", 422)
+    lat, lng = float(map_session.lat), float(map_session.lng)
+    margen = 0.05  # unos 5 km
+    candidatos = (
+        await session.scalars(
+            select(Poi).where(
+                Poi.is_active.is_(True),
+                Poi.lat.between(lat - margen, lat + margen),
+                Poi.lng.between(lng - margen, lng + margen),
+            )
+        )
+    ).all()
+    if not candidatos:
+        raise CallError("No tenemos sitios cerca de ti para el itinerario", 422)
+    return min(
+        candidatos,
+        key=lambda poi: distance_m(lat, lng, float(poi.lat), float(poi.lng)),
+    )

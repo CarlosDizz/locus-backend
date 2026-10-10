@@ -154,6 +154,8 @@ class CallService:
                 poi_name=poi.name,
                 language=request.language,
                 routing_profile=routing_profile,
+                mode=request.mode,
+                travel_mode=request.travel_mode if request.mode == "itinerary" else "",
                 members={str(user.id): Member.from_user(user)},
             )
             if await self.store.create(room):
@@ -324,11 +326,40 @@ class CallService:
 
         return await self.store.change(call_id, change)
 
+    async def _location(
+        self, call_id: str, user_id: int, connection: str, event: dict
+    ) -> Room:
+        """Ubicación del anfitrión en una llamada en itinerario, para el puente.
+
+        Solo la del anfitrión: en un bus todos van al mismo sitio, y mezclar
+        varias haría saltar el rumbo de un lado a otro.
+        """
+        room = await self.store.get(call_id)
+        self.connected(room, user_id, connection)
+        if room.mode != "itinerary" or user_id != room.host_id:
+            return room
+        try:
+            lat = float(event["lat"])
+            lng = float(event["lng"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise CallError("invalid_location") from error
+        if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+            raise CallError("invalid_location")
+        command: dict = {"type": "location.update", "lat": lat, "lng": lng, "t": now()}
+        for campo in ("heading", "speed"):
+            valor = event.get(campo)
+            if isinstance(valor, (int, float)) and valor >= 0:
+                command[campo] = float(valor)
+        await self.store.push_command(call_id, command)
+        return room
+
     async def event(self, call_id: str, user_id: int, connection: str, event: dict) -> Room:
         kind = event.get("type")
         if kind == "call.leave":
             self.connected(await self.store.get(call_id), user_id, connection)
             return await self.leave(call_id, user_id)
+        if kind == "location.update":
+            return await self._location(call_id, user_id, connection, event)
         if kind not in {
             "floor.request",
             "floor.release",

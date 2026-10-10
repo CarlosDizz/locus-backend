@@ -52,6 +52,8 @@ class _Provider:
 
 def _puente(eventos: list[ProviderEvent], registro: list) -> _CallVoiceBridge:
     puente = object.__new__(_CallVoiceBridge)
+    puente._mode = "poi"
+    puente._itinerary = None
     puente.call_id = "CALL-TEST"
     puente.service = _Service(registro)
     puente.store = _Store()

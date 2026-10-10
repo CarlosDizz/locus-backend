@@ -19,7 +19,9 @@ from locus_v2.identity.models import (
 )
 from locus_v2.migrations.models import DataImportRun, LegacyAppSession
 from locus_v2.observability.models import LocusLog
+from locus_v2.reviews.models import CallReview
 from locus_v2.sessions.models import MapSession
+from locus_v2.trips.models import Trip, TripItem
 from locus_v2.voice.models import VoiceSession, VoiceTurn
 
 __all__ = [
@@ -28,6 +30,7 @@ __all__ = [
     "AITool",
     "AdminAuditEvent",
     "AdminSession",
+    "CallReview",
     "City",
     "DataImportRun",
     "LedgerEntry",
@@ -38,6 +41,8 @@ __all__ = [
     "PoiType",
     "PromptDefinition",
     "PromptVersion",
+    "Trip",
+    "TripItem",
     "ProviderPriceSnapshot",
     "Role",
     "RoutingProfile",

@@ -54,6 +54,8 @@ class _Provider:
 
 def _puente(*, turnos: int = ROLLOVER_TURNS, sala: str = "idle") -> _CallVoiceBridge:
     puente = object.__new__(_CallVoiceBridge)
+    puente._mode = "poi"
+    puente._itinerary = None
     puente.call_id = "CALL-TEST"
     puente.store = _Store(sala)
     puente.service = _Service()
@@ -138,6 +140,8 @@ class _Sesion:
 def _bucle(resultados: list[tuple[bool, bool]]) -> tuple[_CallVoiceBridge, list[str]]:
     """Un puente cuyo run() recorre sesiones: (se perdio, fue paso a texto)."""
     puente = object.__new__(_CallVoiceBridge)
+    puente._mode = "poi"
+    puente._itinerary = None
     puente.call_id = "CALL-TEST"
     puente.provider = None
     puente.voice_session_id = None

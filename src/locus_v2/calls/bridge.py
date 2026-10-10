@@ -60,6 +60,7 @@ from locus_v2.ai.enums import PublicationStatus, ServiceKind
 from locus_v2.ai.models import AIModel, AIProvider, RoutingProfile
 from locus_v2.billing.models import UsageEvent, UsageStatus
 from locus_v2.billing.pricing import NormalizedUsage
+from locus_v2.calls.itinerary import Fix, ItineraryTracker, Place, narration_prompt
 from locus_v2.calls.models import CallError, Room
 from locus_v2.calls.service import CallService, decode_image
 from locus_v2.calls.store import RoomStore
@@ -67,6 +68,7 @@ from locus_v2.catalog.models import Poi
 from locus_v2.config import Settings
 from locus_v2.identity.models import User
 from locus_v2.infrastructure.database.session import Database
+from locus_v2.reviews.service import ReviewService
 from locus_v2.shared.clock import utc_now
 from locus_v2.shared.openai_usage import ToolUsage
 from locus_v2.shared.prompting import PromptRenderingError, localized_field, render_prompt
@@ -127,10 +129,13 @@ def _y(nombres: list[str]) -> str:
 
 
 def _connected(room: Room) -> dict[int, str]:
+    # El anfitrión cuenta siempre: el puente arranca al crear la llamada, antes
+    # de que su móvil conecte, y sin esto el guía le daba la bienvenida como si
+    # acabara de llegar a su propia llamada.
     return {
         member.native_id: member.display_name
         for member in room.members.values()
-        if member.connection
+        if member.connection or member.native_id == room.host_id
     }
 
 
@@ -348,6 +353,11 @@ class _CallVoiceBridge:
         self._silence_task: asyncio.Task | None = None
         # Quien esta conectado segun el guia, salidas aun sin confirmar, el aviso
         # pendiente de dejarle y el turno de voz en curso (para decirle quien habla).
+        # Llamada en itinerario: el modo de la sala y el seguimiento del recorrido
+        # (se crea una vez y sobrevive a las reconexiones: lo ya contado no se repite).
+        self._mode = "poi"
+        self._travel_mode = ""
+        self._itinerary: ItineraryTracker | None = None
         self._roster: dict[int, str] | None = None
         self._gone_since: dict[int, float] = {}
         self._pending_roster_note: str | None = None
@@ -536,6 +546,8 @@ class _CallVoiceBridge:
     async def _connect(self, *, resume: bool = False) -> LiveProvider:
         room = await self.store.get(self.call_id)
         self.locale = room.language
+        self._mode = room.mode
+        self._travel_mode = room.travel_mode or "walk"
         async with self.database.sessions() as session:
             profile = await session.scalar(
                 select(RoutingProfile)
@@ -552,7 +564,8 @@ class _CallVoiceBridge:
                     RoutingProfile.environment == self.settings.env,
                     RoutingProfile.service_kind == ServiceKind.VOICE,
                     RoutingProfile.status == PublicationStatus.PUBLISHED,
-                    RoutingProfile.experience_code == "group_call_guide",
+                    RoutingProfile.experience_code
+                    == ("itinerary_guide" if room.mode == "itinerary" else "group_call_guide"),
                 )
             )
             if profile is None:
@@ -592,6 +605,8 @@ class _CallVoiceBridge:
                 poi, cached_brief, enabled=self.settings.call_opening_research_enabled
             )
             traveler_context = await self._traveler_context(session, room)
+            if room.mode == "itinerary" and self._itinerary is None and poi is not None:
+                self._itinerary = await self._itinerary_tracker(session, poi, self._travel_mode)
 
             try:
                 prompt = render_prompt(
@@ -652,7 +667,9 @@ class _CallVoiceBridge:
                     active_model_id=model.id,
                     status=VoiceSessionStatus.ACTIVE,
                     locale=room.language,
-                    context_type="poi",
+                    # «itinerary» no cuenta como visita al sitio de partida
+                    # (reviews/service.py cuenta solo context_type «poi»).
+                    context_type="itinerary" if room.mode == "itinerary" else "poi",
                     context_public_id=room.poi_public_id,
                     config_snapshot_json={"call_id": self.call_id},
                     started_at=utc_now(),
@@ -696,6 +713,15 @@ class _CallVoiceBridge:
         # room log). CALL_GUIDE_PROMPT's opening instruction is "greet and ask if everyone
         # is there"; this line is what actually makes the model say it unprompted.
         self._roster = _connected(room)
+        if room.mode == "itinerary":
+            await provider.send_text(
+                "[instruccion de sistema, no la leas en voz alta: la llamada acaba de "
+                "conectar. En la llamada estan "
+                f"{_roster_line(room, self._roster)}. Saluda en una frase, di que iras "
+                "contando lo que vaya apareciendo y que pueden interrumpirte cuando "
+                "quieran. No cuentes nada todavia: espera a la primera nota.]"
+            )
+            return provider
         await provider.send_text(
             "[instruccion de sistema, no la leas en voz alta: la llamada acaba de "
             "conectar y nadie ha hablado todavia. En la llamada estan "
@@ -802,7 +828,8 @@ class _CallVoiceBridge:
                 f"{_roster_line(room, self._roster)}.]",
             )
         )
-        entries.append(("user", TURN_REMINDER))
+        if self._mode != "itinerary":
+            entries.append(("user", TURN_REMINDER))
         if not provider.capabilities.context_seeding:
             logger.warning(
                 "call_voice_bridge_reseed_unsupported",
@@ -885,7 +912,12 @@ class _CallVoiceBridge:
                 # El grupo ha dicho algo: ya no hace falta darle pie al guia.
                 self._cancel_silence_nudge()
             try:
-                if kind == "reset":
+                if kind == "location.update":
+                    # En itinerario, que llegue ubicacion es que hay alguien: un
+                    # trayecto largo en el que solo habla el guia no es una sala vacia.
+                    self._heard_from_group = True
+                    await self._on_location(command)
+                elif kind == "reset":
                     await self.provider.cancel_response()
                 elif kind == "audio.chunk":
                     pcm = base64.b64decode(command["audio"])
@@ -1015,11 +1047,14 @@ class _CallVoiceBridge:
             room = await self.store.get(self.call_id)
             if room.status != "idle":
                 return
-            entries = [("user", TURN_REMINDER)]
+            # En itinerario manda el tiempo que tarda el sitio en quedar atras,
+            # no la nota de narrar en largo.
+            entries = [] if self._mode == "itinerary" else [("user", TURN_REMINDER)]
             if self._pending_roster_note:
                 entries.insert(0, ("user", self._pending_roster_note))
                 self._pending_roster_note = None
-            await provider.seed_context(entries)
+            if entries:
+                await provider.seed_context(entries)
         except Exception:  # noqa: BLE001 - la nota es un extra, nunca tumba la llamada
             logger.warning("call_voice_bridge_reminder_failed", call_id=self.call_id)
 
@@ -1044,6 +1079,77 @@ class _CallVoiceBridge:
         if self._silence_task is not None and not self._silence_task.done():
             self._silence_task.cancel()
         self._silence_task = None
+
+    async def _itinerary_tracker(
+        self, session: Any, anchor: Poi, travel_mode: str
+    ) -> ItineraryTracker:
+        """Los sitios de la ciudad con coordenadas, con su popularidad, para seguir el recorrido."""
+        rows = (
+            await session.scalars(
+                select(Poi).where(
+                    Poi.city_id == anchor.city_id,
+                    Poi.is_active.is_(True),
+                    Poi.lat.is_not(None),
+                    Poi.lng.is_not(None),
+                )
+            )
+        ).all()
+        popularidad = await ReviewService(session).popularity_for(list(rows))
+        places = [
+            Place(
+                id=poi.public_id,
+                name=poi.name,
+                lat=float(poi.lat),
+                lng=float(poi.lng),
+                tier=popularidad[poi.id].tier if poi.id in popularidad else 1,
+            )
+            for poi in rows
+        ]
+        logger.info("call_voice_bridge_itinerary_ready", call_id=self.call_id, places=len(places))
+        return ItineraryTracker(mode=travel_mode, places=places)
+
+    async def _on_location(self, command: dict) -> None:
+        """Una posicion nueva: actualiza el recorrido, avisa a la app y, si toca, al guia."""
+        tracker = self._itinerary
+        if tracker is None:
+            return
+        fix = Fix(
+            lat=float(command["lat"]),
+            lng=float(command["lng"]),
+            t=float(command.get("t") or perf_counter()),
+            heading=command.get("heading"),
+            speed=command.get("speed"),
+        )
+        tracker.update(fix)
+        ahora = tracker.now()
+        await self.store.publish(
+            self.call_id,
+            {
+                "type": "itinerary.update",
+                "now": ahora.as_dict() if ahora else None,
+                "next": [s.as_dict() for s in tracker.upcoming()],
+            },
+        )
+        provider = self.provider
+        if provider is None:
+            return
+        try:
+            room = await self.store.get(self.call_id)
+        except CallError:
+            return
+        # Solo con la sala en calma: si alguien habla o el guia esta contando
+        # algo, el sitio espera (y si queda atras, se pierde, que es lo natural).
+        if room.status != "idle":
+            return
+        contar = tracker.due(fix.t)
+        if contar is None:
+            return
+        logger.info(
+            "call_voice_bridge_itinerary_narration",
+            call_id=self.call_id, place=contar.place.name,
+            side=contar.side, distance_m=round(contar.distance_m),
+        )
+        await provider.send_text(narration_prompt(contar, self._travel_mode))
 
     async def _should_roll_over(self) -> bool:
         """Si toca pasar la memoria de la conversacion de audio a texto.

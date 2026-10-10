@@ -1,0 +1,82 @@
+<p class="eyebrow">LO QUE OPINA LA GENTE AL COLGAR</p>
+<div class="billing-toolbar">
+  <strong>Valoraciones</strong>
+  <button type="button" class="reload" (click)="load()">Recargar</button>
+</div>
+
+@if (loading()) {
+  <div class="state"><i></i>Leyendo valoraciones…</div>
+} @else if (error()) {
+  <div class="state error">{{ error() }} <button type="button" (click)="load()">Reintentar</button></div>
+} @else {
+  <div class="money-strip">
+    <article>
+      <span>Valoraciones</span>
+      <strong>{{ reviews().length }}</strong>
+      <small>las últimas 100</small>
+    </article>
+    <article class="charged">
+      <span>Nota del guía</span>
+      <strong>{{ averageStars() !== null ? (averageStars()! | number: '1.1-1') : '—' }}</strong>
+      <small>media sobre 5</small>
+    </article>
+    <article class="margin">
+      <span>Sitios que gustan</span>
+      <strong>{{ likeRatio() !== null ? (likeRatio()! * 100 | number: '1.0-0') + ' %' : '—' }}</strong>
+      <small>de los votos al sitio</small>
+    </article>
+    <article class="cost">
+      <span>Sin publicar</span>
+      <strong>{{ unpublished() }}</strong>
+      <small>comentarios pendientes o rechazados por la moderación</small>
+    </article>
+  </div>
+
+  <section class="panel">
+    <div class="title"><h2>Qué dicen del guía</h2><span>etiquetas marcadas</span></div>
+    @for (item of tagCounts(); track item.tag) {
+      <div class="tag-row">
+        <span>{{ item.label }}</span>
+        <div class="model-bar"><i [style.width.%]="item.count / maxTag() * 100"></i></div>
+        <b>{{ item.count }}</b>
+      </div>
+    }
+  </section>
+
+  <section class="panel list">
+    <div class="title"><h2>Una a una</h2><span>de la más reciente a la más antigua</span></div>
+    @if (!reviews().length) {
+      <p class="empty">Todavía no hay valoraciones.</p>
+    }
+    @for (review of reviews(); track review.id) {
+      <article class="review">
+        <header>
+          <strong>{{ review.poi_name }}</strong>
+          <small>{{ review.user_name }} · {{ review.user_email }} · {{ review.created_at | date: 'd MMM, HH:mm' }}</small>
+        </header>
+        <div class="review-body">
+          <div>
+            <span class="label">El guía</span>
+            <p class="stars">{{ stars(review.guide_stars) }}</p>
+            @if (review.guide_tags.length) {
+              <p class="tags">
+                @for (tag of review.guide_tags; track tag) { <i>{{ tagLabel(tag) }}</i> }
+              </p>
+            }
+            @if (review.guide_comment) { <p class="comment">«{{ review.guide_comment }}»</p> }
+          </div>
+          <div>
+            <span class="label">El sitio</span>
+            <p class="vote" [attr.data-vote]="review.place_vote">
+              {{ review.place_vote === null ? '—' : (review.place_vote ? '👍 Merece la pena' : '👎 No tanto') }}
+            </p>
+            @if (review.place_comment) {
+              <p class="comment">«{{ review.place_comment }}»</p>
+              <span class="status" [attr.data-status]="review.place_comment_status">{{ statusLabel(review.place_comment_status) }}</span>
+            }
+          </div>
+        </div>
+      </article>
+    }
+  </section>
+}

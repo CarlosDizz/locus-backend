@@ -6,7 +6,6 @@ from locus_v2.voice.providers.gemini_live import (
 )
 from locus_v2.voice.providers.mock import MockLiveProvider
 from locus_v2.voice.providers.openai_realtime import OpenAIRealtimeProvider
-from locus_v2.voice.providers.openai_transcribe import OpenAITranscribeProvider
 from locus_v2.voice.providers.registry import ProviderRegistry
 
 
@@ -23,10 +22,6 @@ def build_provider_registry(settings: Settings) -> ProviderRegistry:
         registry.register(
             OpenAIRealtimeProvider.code,
             lambda: OpenAIRealtimeProvider(openai_key),
-        )
-        registry.register(
-            OpenAITranscribeProvider.code,
-            lambda: OpenAITranscribeProvider(openai_key),
         )
     gemini_key = (
         settings.gemini_api_key.get_secret_value().strip()

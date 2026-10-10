@@ -424,7 +424,16 @@ class CallService:
                     if room.audio_bytes + len(audio) > MAX_AUDIO_BYTES:
                         raise CallError("Audio turn exceeds 120 seconds", 413)
                     room.audio_bytes += len(audio)
-                    commands.append({"type": kind, "audio": event["audio"], "turn": room.turn_id})
+                    commands.append(
+                        {
+                            "type": kind,
+                            "audio": event["audio"],
+                            "turn": room.turn_id,
+                            # Como en text.submit: sin esto el guia oye una voz y
+                            # no sabe de quien es.
+                            "author": room.member(user_id).display_name,
+                        }
+                    )
                     events.append(
                         {
                             "type": "peer_audio.chunk",

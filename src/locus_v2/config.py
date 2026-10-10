@@ -74,13 +74,6 @@ class Settings(BaseSettings):
     # conocerla y llenó 3.700 caracteres describiendo farolas y papeleras — y es
     # la plaza central de la ciudad.
     tool_model: str = "gpt-5.6-luna"
-    # Transcriptor externo para el registro compartido de la llamada. Vacio a
-    # proposito: se usa la transcripcion del propio modelo de voz. El externo
-    # (gpt-live-transcribe) llevaba semanas fallando con invalid_model en cada
-    # turno —369 errores solo el 2026-10-06— y mientras se creia en pie
-    # bloqueaba la transcripcion del modelo, asi que el registro se quedaba sin
-    # lo que decia la gente y una reconexion arrancaba sin historia.
-    transcription_model: str = ""
     # gpt-5-mini's reasoning tokens count against wall-clock time, not just the token
     # budget: a real document_poi call at the 8000-token ceiling (see voice/tools.py)
     # timed out at exactly 60s (2026-09-06, live), got killed mid-reasoning, and the
@@ -88,11 +81,12 @@ class Settings(BaseSettings):
     # ceiling doesn't just trade "empty answer" for "no answer at all".
     tool_timeout_seconds: float = Field(default=120.0, gt=0)
     # Documentar el POI con tool_model nada mas arrancar una llamada, en paralelo
-    # y sin que la llamada espere. Es un puente: gemini documenta de memoria, y de
-    # memoria "Calle Feria" es la de Sevilla y no la de Albacete. Su busqueda
-    # nativa lo arreglaria, pero hoy tumba la sesion entera (bug abierto de Google,
-    # 1007 invalid argument). Cuando eso se cierre, esto se apaga con este flag.
-    call_opening_research_enabled: bool = True
+    # y sin que la llamada espere. Era un puente: gemini documentaba de memoria, y
+    # de memoria "Calle Feria" es la de Sevilla y no la de Albacete, y su busqueda
+    # nativa tumbaba la sesion. Apagado el 2026-10-10: la busqueda ya funciona (el
+    # 1007 lo provocaba la compresion de contexto, que ya no usamos) y el guia
+    # busca el sitio con su ciudad dentro de la propia sesion.
+    call_opening_research_enabled: bool = False
     # La ficha se guarda en el POI, asi que se paga una vez por sitio y no por
     # llamada. Se rehace pasado este plazo por si el lugar cambia.
     call_opening_research_ttl_days: int = Field(default=90, ge=1)

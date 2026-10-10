@@ -53,6 +53,26 @@ def test_manual_turns_explicitly_interrupt_the_current_answer() -> None:
     )
 
 
+def _declarations(live_config: dict) -> list[dict]:
+    return next(
+        tool["function_declarations"]
+        for tool in live_config["tools"]
+        if "function_declarations" in tool
+    )
+
+
+def test_the_guide_can_search_with_or_without_our_tools() -> None:
+    # Sin compresion, google_search ya no tumba la sesion (era la combinacion
+    # de las dos lo que daba 1007). Se declara siempre: un guia sin forma de
+    # comprobar un dato es justamente el que se lo inventa.
+    tools = [{"name": "plan_poi_visit", "description": "Planea", "parameters": {}}]
+    for build in (_gemini3_config, _gemini2_config):
+        assert {"google_search": {}} in build(config())["tools"]
+        built = build(config(tools=tools))
+        assert {"google_search": {}} in built["tools"]
+        assert _declarations(built)[0]["name"] == "plan_poi_visit"
+
+
 def test_document_poi_is_non_blocking_only_on_gemini_38() -> None:
     tools = [
         {"name": "document_poi", "description": "Investiga", "parameters": {}},
@@ -62,8 +82,8 @@ def test_document_poi_is_non_blocking_only_on_gemini_38() -> None:
     live_38 = _gemini3_config(config(model="gemini-3.8-live", tools=tools))
     live_31 = _gemini3_config(config(tools=tools))
 
-    declarations_38 = live_38["tools"][0]["function_declarations"]
-    declarations_31 = live_31["tools"][0]["function_declarations"]
+    declarations_38 = _declarations(live_38)
+    declarations_31 = _declarations(live_31)
     assert declarations_38[0]["behavior"] == "NON_BLOCKING"
     assert "behavior" not in declarations_38[1]
     assert all("behavior" not in declaration for declaration in declarations_31)

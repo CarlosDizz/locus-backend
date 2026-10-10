@@ -72,8 +72,8 @@ class SqlAlchemyUsageProcessor:
             raise MissingBillingConfiguration(event.id, f"User {event.user_id} has no wallet")
 
         aggregate = event.interaction_type == "realtime_call" and event.voice_session_id is not None
-        previous_cost, previous_charge = (
-            await self._previous_call_totals(event) if aggregate else (0, 0)
+        previous_cost, previous_charge, previous_tool_calls = (
+            await self._previous_call_totals(event) if aggregate else (0, 0, 0)
         )
         decision = self.decision_engine.decide(
             usage=NormalizedUsage(
@@ -94,6 +94,7 @@ class SqlAlchemyUsageProcessor:
             wallet_balance_cents=wallet.balance_cents,
             previous_provider_cost_microusd=previous_cost,
             previous_charged_cents=previous_charge,
+            previous_tool_calls=previous_tool_calls,
             aggregate_by_call=aggregate,
         )
 
@@ -175,12 +176,13 @@ class SqlAlchemyUsageProcessor:
             ),
         )
 
-    async def _previous_call_totals(self, event: UsageEvent) -> tuple[int, int]:
+    async def _previous_call_totals(self, event: UsageEvent) -> tuple[int, int, int]:
         values = (
             await self.session.execute(
                 select(
                     func.coalesce(func.sum(UsageEvent.provider_cost_microusd), 0),
                     func.coalesce(func.sum(UsageEvent.charged_amount_cents), 0),
+                    func.coalesce(func.sum(UsageEvent.tool_calls), 0),
                 ).where(
                     UsageEvent.voice_session_id == event.voice_session_id,
                     UsageEvent.id != event.id,
@@ -188,4 +190,4 @@ class SqlAlchemyUsageProcessor:
                 )
             )
         ).one()
-        return int(values[0]), int(values[1])
+        return int(values[0]), int(values[1]), int(values[2])

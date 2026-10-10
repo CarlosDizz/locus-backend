@@ -15,6 +15,8 @@ from locus_v2.voice.providers.base import (
     ProviderEventType,
 )
 
+OPENAI_REALTIME_MAX_OUTPUT_TOKENS = 4096
+
 
 class OpenAIRealtimeProvider(LiveProvider):
     code = "openai_realtime"
@@ -153,6 +155,13 @@ def _openai_session(config: LiveSessionConfig) -> dict:
     for key in ("max_output_tokens", "parallel_tool_calls", "reasoning", "truncation"):
         if key in options:
             session[key] = options[key]
+    # Realtime admite como mucho 4096 (o "inf"). La configuracion de voz es la
+    # misma para todos los proveedores y Gemini lleva 8192, asi que si la
+    # llamada cae a OpenAI de respaldo el valor se recorta aqui en vez de
+    # tumbar la conexion.
+    techo = session.get("max_output_tokens")
+    if isinstance(techo, int) and techo > OPENAI_REALTIME_MAX_OUTPUT_TOKENS:
+        session["max_output_tokens"] = OPENAI_REALTIME_MAX_OUTPUT_TOKENS
     return session
 
 

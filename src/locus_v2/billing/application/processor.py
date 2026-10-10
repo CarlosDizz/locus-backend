@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 
 from locus_v2.billing.pricing import (
     BillingPolicy,
@@ -45,16 +45,31 @@ class BillingDecisionEngine:
         wallet_balance_cents: int,
         previous_provider_cost_microusd: int = 0,
         previous_charged_cents: int = 0,
+        previous_tool_calls: int = 0,
         aggregate_by_call: bool = False,
     ) -> BillingDecision:
         event_cost = self.costs.calculate_microusd(usage, price)
         previous_cost = previous_provider_cost_microusd if aggregate_by_call else 0
         previous_charge = previous_charged_cents if aggregate_by_call else 0
+        previous_calls = previous_tool_calls if aggregate_by_call else 0
         total_cost = previous_cost + event_cost
 
         total_quote = self.policy.quote(total_cost, self.usd_to_eur, self.margin_multiplier)
         previous_quote = self.policy.quote(previous_cost, self.usd_to_eur, self.margin_multiplier)
         total_charge = total_quote.charged_amount_cents
+        if price.tool_call_charge_eur_cents is not None:
+            # Las herramientas con precio fijo salen del margen: el resto de la
+            # llamada se cobra a coste x margen y cada llamada a herramienta a
+            # su precio, sobre el total de la llamada como todo lo demas.
+            total_calls = previous_calls + usage.tool_calls
+            rest_cost = total_cost - self.costs.tool_calls_microusd(total_calls, price)
+            rest_quote = self.policy.quote(
+                max(rest_cost, 0), self.usd_to_eur, self.margin_multiplier
+            )
+            fixed = (Decimal(total_calls) * price.tool_call_charge_eur_cents).quantize(
+                Decimal("1"), rounding=ROUND_CEILING
+            )
+            total_charge = rest_quote.charged_amount_cents + int(fixed)
         if aggregate_by_call and total_cost > 0:
             total_charge = max(total_charge, self.minimum_realtime_call_charge_cents)
 

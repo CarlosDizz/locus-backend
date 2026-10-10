@@ -7,6 +7,8 @@ el grupo y lo que se le vuelve a dar al guía en cada reconexión, así que tien
 que llegar una línea por turno, entera, y antes de la respuesta del guía.
 """
 
+from types import SimpleNamespace
+
 from locus_v2.calls.bridge import _CallVoiceBridge
 from locus_v2.voice.providers.base import ProviderEvent, ProviderEventType
 
@@ -22,14 +24,26 @@ class _Service:
         self.registro.append(("ai", text))
 
 
+class _Room:
+    status = "idle"
+
+
 class _Store:
     async def publish(self, call_id: str, event: dict) -> None:
         pass
 
+    async def get(self, call_id: str) -> _Room:
+        return _Room()
+
 
 class _Provider:
+    capabilities = SimpleNamespace(context_seeding=True)
+
     def __init__(self, eventos: list[ProviderEvent]) -> None:
         self.eventos = eventos
+
+    async def seed_context(self, entries: list) -> None:
+        pass
 
     async def events(self):
         for evento in self.eventos:
@@ -45,6 +59,11 @@ def _puente(eventos: list[ProviderEvent], registro: list) -> _CallVoiceBridge:
     puente.transcriber = None
     puente._assistant_text = ""
     puente._user_voice_text = ""
+    puente._turns_in_session = 0
+    puente._rolling_over = False
+    puente._tool_turn_pending = False
+    puente._silence_task = None
+    puente._assistant_turn_count = 0
 
     async def turno_terminado(text: str) -> None:
         await puente.service.assistant_finished(puente.call_id, text)

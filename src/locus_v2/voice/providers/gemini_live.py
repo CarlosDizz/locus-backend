@@ -186,8 +186,12 @@ class GeminiLive3Provider(LiveProvider):
     async def events(self) -> AsyncIterator[ProviderEvent]:
         self._require_session()
         yield ProviderEvent(type=ProviderEventType.READY)
+        vistas: set[str] = set()
         while self._session is not None:
             async for message in self._session.receive():
+                busquedas = _search_usage(message, vistas)
+                if busquedas is not None:
+                    yield busquedas
                 for event in _map_gemini_message(message):
                     yield event
             await asyncio.sleep(0)
@@ -352,8 +356,12 @@ class GeminiLive2Provider(LiveProvider):
     async def events(self) -> AsyncIterator[ProviderEvent]:
         self._require_session()
         yield ProviderEvent(type=ProviderEventType.READY)
+        vistas: set[str] = set()
         while self._session is not None:
             async for message in self._session.receive():
+                busquedas = _search_usage(message, vistas)
+                if busquedas is not None:
+                    yield busquedas
                 for event in _map_gemini_message(message):
                     yield event
             await asyncio.sleep(0)
@@ -398,13 +406,13 @@ def _gemini_tools(config: LiveSessionConfig) -> list[dict]:
     Se declara siempre, tambien cuando no hay herramientas nuestras: un guia sin
     forma de comprobar un dato es justamente el que se lo inventa.
     """
-    # DESACTIVADO 2026-09-13. Declarar {"google_search": {}} aqui hizo que Gemini
-    # rechazara la sesion entera con "1007 Request contains an invalid argument"
-    # y ninguna llamada llegaba a conectar. Queda pendiente averiguar si es el
-    # nombre del campo, el modelo (Gemini 3.1 Flash Live) o que no se pueda
-    # combinar con function_declarations; hasta saberlo, el guia se queda sin
-    # busqueda, que es peor que antes pero infinitamente mejor que sin llamadas.
-    herramientas: list[dict] = []
+    # Reactivada el 2026-10-10. Se apago el 2026-09-13 porque tumbaba la sesion
+    # con "1007 invalid argument"; la causa resulto ser combinarla con la
+    # compresion de contexto, que ya no usamos. Probada en 3.8 con nuestras
+    # herramientas, turnos manuales y tres turnos seguidos: busca (la
+    # programacion del Teatro Circo, el tiempo de manana) y la sesion aguanta.
+    # Coste: 5.000 busquedas gratis al mes y despues 14 $ por cada 1.000.
+    herramientas: list[dict] = [{"google_search": {}}]
     if config.tools:
         declarations = []
         for tool in config.tools:
@@ -504,6 +512,34 @@ def _gemini_turn_detection(value: dict) -> dict:
     if "silence_duration_ms" in value:
         automatic["silence_duration_ms"] = value["silence_duration_ms"]
     return {"automatic_activity_detection": automatic}
+
+
+def _search_usage(message: types.LiveServerMessage, vistas: set[str]) -> ProviderEvent | None:
+    """Las busquedas de Google que ha hecho el modelo en este mensaje, para cobrarlas.
+
+    Con Gemini 3, Google cobra cada consulta, no cada pregunta, y el modelo
+    decide cuantas lanza (en las pruebas, dos por pregunta). Llegan en
+    grounding_metadata y pueden repetirse en varios mensajes del mismo turno,
+    asi que se cuentan una vez por turno: `vistas` se vacia al cerrarlo.
+    """
+    content = message.server_content
+    if content is None:
+        return None
+    metadata = getattr(content, "grounding_metadata", None)
+    nuevas = [
+        consulta
+        for consulta in (getattr(metadata, "web_search_queries", None) or [])
+        if consulta and consulta not in vistas
+    ]
+    vistas.update(nuevas)
+    if content.turn_complete:
+        vistas.clear()
+    if not nuevas:
+        return None
+    return ProviderEvent(
+        type=ProviderEventType.USAGE,
+        usage=NormalizedUsage(tool_calls=len(nuevas), raw={"web_search_queries": nuevas}),
+    )
 
 
 def _map_gemini_message(message: types.LiveServerMessage) -> list[ProviderEvent]:

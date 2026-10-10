@@ -30,6 +30,11 @@ class PriceCard(BaseModel):
     audio_input_per_minute_usd: Decimal = Decimal(0)
     audio_output_per_minute_usd: Decimal = Decimal(0)
     tool_call_usd: Decimal = Decimal(0)
+    # Precio fijo al cliente por llamada a herramienta, en centimos de euro, sin
+    # el multiplicador de margen. Se usa para la busqueda de Gemini: cuesta
+    # 1,4 centimos de dolar pasadas las 5.000 gratis del mes, y a coste x2,2
+    # saldria a ~2,7 centimos de euro. Vacio = va por el margen como todo.
+    tool_call_charge_eur_cents: Decimal | None = None
 
     @classmethod
     def from_json(cls, value: dict[str, object]) -> "PriceCard":
@@ -72,6 +77,11 @@ class PriceCard(BaseModel):
             audio_input_per_minute_usd=rate("audio_input_per_minute_usd"),
             audio_output_per_minute_usd=rate("audio_output_per_minute_usd"),
             tool_call_usd=rate("tool_call_usd"),
+            tool_call_charge_eur_cents=(
+                Decimal(str(value["tool_call_charge_eur_cents"]))
+                if value.get("tool_call_charge_eur_cents") not in (None, "")
+                else None
+            ),
         )
 
 
@@ -130,6 +140,10 @@ class ProviderCostCalculator:
         )
         total += Decimal(usage.tool_calls) * price.tool_call_usd
         return int((total * self.MICRO_USD).quantize(Decimal("1"), rounding=ROUND_CEILING))
+
+    def tool_calls_microusd(self, tool_calls: int, price: PriceCard) -> int:
+        total = Decimal(tool_calls) * price.tool_call_usd * self.MICRO_USD
+        return int(total.quantize(Decimal("1"), rounding=ROUND_CEILING))
 
 
 class CustomerCharge(BaseModel):

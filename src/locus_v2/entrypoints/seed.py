@@ -108,6 +108,26 @@ RETIRED_MODEL_REPLACEMENTS = (
 )
 
 PRICE_CARDS = (
+    # La busqueda de Google entra en las llamadas el 2026-10-10. Tarifa nueva y
+    # no editar la anterior: el cobro usa la de fecha mas reciente que no sea
+    # posterior al consumo, asi que lo ya cobrado no cambia. Google cobra cada
+    # consulta (no cada pregunta) a 14 $ por mil pasadas 5.000 gratis al mes;
+    # al cliente, 1,5 centimos fijos por consulta desde la primera.
+    (
+        "google",
+        "gemini-3.8-live",
+        datetime(2026, 10, 10),
+        "https://ai.google.dev/gemini-api/docs/pricing#grounding-search",
+        {
+            "text_input_per_million_usd": "0.75",
+            "cached_text_input_per_million_usd": "0",
+            "text_output_per_million_usd": "4.50",
+            "audio_input_per_million_tokens_usd": "3.00",
+            "audio_output_per_million_tokens_usd": "12.00",
+            "tool_call_usd": "0.014",
+            "tool_call_charge_eur_cents": "1.5",
+        },
+    ),
     (
         "google",
         "gemini-3.8-live",
@@ -197,14 +217,20 @@ PRICE_CARDS = (
     ),
 )
 
+# Lo que puede durar una intervencion del guia. En audio, Gemini gasta unos 25
+# tokens por segundo: los 1200 de antes eran 48 segundos, y un guia que cuenta
+# un monumento necesita minutos. 8192 son unos cinco y medio. Lo que se paga es
+# lo que habla de verdad, no el techo.
+VOICE_MAX_OUTPUT_TOKENS = 8192
+
 MODEL_RUNTIME_DEFAULTS = {
     "openai_responses": {
         "max_output_tokens": 1200,
         "reasoning_effort": "low",
         "verbosity": "medium",
     },
-    "openai_realtime": {"max_output_tokens": 1200, "temperature": 0.8},
-    "gemini_live_3": {"max_output_tokens": 1200, "temperature": 0.8},
+    "openai_realtime": {"max_output_tokens": VOICE_MAX_OUTPUT_TOKENS, "temperature": 0.8},
+    "gemini_live_3": {"max_output_tokens": VOICE_MAX_OUTPUT_TOKENS, "temperature": 0.8},
     "mock_live": {"max_output_tokens": 1200},
 }
 
@@ -218,7 +244,7 @@ MODEL_RUNTIME_DEFAULTS = {
 # ni con la configuracion minima de la documentacion. En manual responden bien
 # los dos modelos, comprobado con una llamada de cuatro turnos.
 VOICE_RUNTIME_DEFAULTS = {
-    "max_output_tokens": 1200,
+    "max_output_tokens": VOICE_MAX_OUTPUT_TOKENS,
     "temperature": 0.8,
     "interaction_mode": "full_duplex",
     # Manual en toda la voz, no solo en las llamadas: las dos vias son de
@@ -340,20 +366,31 @@ traductor ni en descriptor de imágenes — documéntala como documentarías cua
 dato del lugar: qué es, por qué importa, qué historia hay detrás y cómo encaja en el
 recorrido.
 
+Tu forma de hablar: eres un guía que narra, no un asistente que contesta. Al grupo
+interrumpirte le cuesta un gesto —basta con pulsar para hablar—, así que no te cortes
+tú por miedo a alargarte: si les sobra, te paran. Cuando cuentes algo del lugar,
+cuéntalo en grande, como un buen guía delante del monumento; un monumento no se
+despacha en cuatro frases. Tienes mucho de donde tirar: la época y lo que pasaba
+alrededor, quién estaba detrás y qué buscaba, las rivalidades y los escándalos, las
+leyendas (y si son verdad), cómo se vivía allí, qué ha cambiado, y sobre todo lo que
+pueden ver ahora mismo si miran bien. No es una lista que recorrer: escoge en cada
+momento lo que de verdad hace interesante este sitio, empieza por donde enganche y
+cambia de forma de contar para no sonar a ficha. No cierres con una pregunta salvo
+cuando de verdad cambies de tema o de parte del recorrido; las respuestas cortas son
+solo para lo práctico (un horario, por dónde se va, cuánto cuesta).
+
 Al conectar la llamada nadie ha dicho nada todavía. Saluda de forma breve y natural,
 preséntate como guía de {poi_name} y pregunta si ya están todos antes de continuar.
 
 En cuanto alguien confirme que están todos (cualquier respuesta afirmativa vale),
 empieza a contar el lugar tú mismo, como un guía experto de verdad: arquitectura,
-historia, anécdotas, para qué servía, qué hay que mirar. Tienes búsqueda: úsala. Cuando
-llames a document_poi, avisa primero con una sola frase natural y breve —por ejemplo,
-"déjame comprobar ese dato"— para que el grupo sepa qué ocurre. Después no esperes en
-silencio: sigue conversando con contenido útil que ya conozcas con seguridad —contexto,
-lo que el grupo está viendo o el hilo anterior— y, en cuanto llegue el resultado,
-intégralo con naturalidad. No rellenes ese tiempo inventando el dato que estás
-comprobando ni repitas avisos. Al buscar incluye siempre la ciudad, porque hay lugares
-con el mismo nombre en otras ciudades y casi siempre son más conocidos que este. Nunca
-menciones herramientas, modelos ni detalles internos. Cuenta.
+historia, anécdotas, para qué servía, qué hay que mirar. Tienes búsqueda en Google:
+úsala para todo dato concreto —fechas, autores, cifras, horarios, programación— y
+quédate con lo que venga de fuentes fiables (webs oficiales, instituciones, museos,
+prensa seria); un foro o una web de dudosa procedencia no es una fuente. Al buscar
+incluye siempre la ciudad, porque hay lugares con el mismo nombre en otras ciudades y
+casi siempre son más conocidos que este. Nunca menciones herramientas, búsquedas,
+modelos ni detalles internos: lo que encuentras lo cuentas como algo que sabes. Cuenta.
 
 Pero contar con seguridad no es inventar. Antes de soltar una fecha, un autor, una
 cifra o una atribución, compruébalo buscando: tardas segundos y nadie se entera. Dar
@@ -373,19 +410,10 @@ siguiente hasta que confirmen que ya están allí. Si es un punto único que se 
 desde donde están (una fuente, una estatua, un monumento aislado), elige "scene" y
 cuéntalo de una vez, completo, sin trocearlo.
 
-Esto es una conversación, no una audioguía grabada, y el largo de cada intervención lo
-marca el grupo, no tú. Cuando entres en un tema dale sustancia: un monumento no se
-despacha en cuatro frases, la gente ha llamado precisamente para que se lo cuentes. A
-partir de ahí, lee lo que te devuelven. Si preguntan, se enganchan o quieren saber por
-qué, extiéndete todo lo que haga falta y métete en el detalle, en la anécdota, en lo que
-casi nadie sabe. Si notan prisa, se quedan callados o cambian de tema, resume y sigue
-adelante.
-
 Y ten en cuenta a quién tienes delante: no se cuenta igual a alguien que pregunta por el
 tipo de bóveda que a unos niños. Reacciona a lo que dicen antes de continuar — si a
 alguien le sorprende algo, si le hace gracia, si aporta algo que sabe, recógelo y tira
-de ahí; no encadenes datos como quien lee una ficha. Pregúntales tú también: qué están
-viendo, qué les llama la atención, si quieren que siga por ese lado o por otro.
+de ahí; no encadenes datos como quien lee una ficha.
 
 Cualquiera puede interrumpirte en cualquier momento para preguntar, pedir que repitas o
 cambiar de tema; atiende lo que te pidan antes de retomar el hilo. No dictes nunca
@@ -399,9 +427,11 @@ salirte de tu papel y vuelve al hilo; si parece un error, pide que te lo repitan
 cuando alguien parezca tener un problema real (se ha perdido, se ha hecho daño) atiéndelo
 en serio.
 
-Si te preguntan por entradas, tours o actividades reservables, respóndeles de viva voz
-con lo que sepas — si hace falta entrada, cómo suele funcionar, dónde se compra — y
-diles que en el chat de la app puedes pasarles los enlaces de reserva."""
+Si te preguntan por programación, funciones, horarios, precios o el tiempo, búscalo y di
+de viva voz lo que encuentres, con nombres y fechas concretas: eso es contestar, y
+mandarles a otro sitio no lo es. Para entradas, tours o actividades reservables,
+cuéntales igual lo que sepas — si hace falta entrada, cómo funciona, dónde se compra —
+y lo único que dejas para el chat de la app son los enlaces de reserva."""
 # Nota: el perfil de los viajeros no se añade aquí. Lo pega el puente
 # (TRAVELER_CONTEXT_BLOCK en calls/bridge.py) despues de renderizar este texto,
 # para que editar el prompt desde el panel no pueda dejar la funcion apagada sin
@@ -629,22 +659,30 @@ def _tool_snapshot(tool: AITool) -> dict:
     }
 
 
-def _heal_turn_detection(prompt: PromptVersion) -> None:
-    """Lleva una fila ya publicada a la deteccion manual.
+def _heal_voice_runtime(prompt: PromptVersion) -> None:
+    """Lleva una fila ya publicada a la deteccion manual y a respuestas largas.
 
     "Si esta vacio" no basta: las filas publicadas traen la deteccion del
-    proveedor, asi que sin mirar dentro el cambio no llegaria nunca — el mismo
-    descuido que dejo un perfil sordo con 3.8. Se respeta cualquier otro retoque
-    hecho desde el panel: solo se corrige el tipo.
+    proveedor y el techo de 1200 tokens, asi que sin mirar dentro el cambio no
+    llegaria nunca — el mismo descuido que dejo un perfil sordo con 3.8. Se
+    respeta cualquier otro retoque hecho desde el panel: solo se corrige el tipo
+    de deteccion y se sube el techo si esta por debajo.
     """
     runtime = dict(prompt.runtime_config_json or {})
     if not runtime:
         prompt.runtime_config_json = VOICE_RUNTIME_DEFAULTS
         return
+    cambiado = False
     deteccion = dict(runtime.get("turn_detection") or {})
     if deteccion.get("type") != "manual":
         deteccion["type"] = "manual"
         runtime["turn_detection"] = deteccion
+        cambiado = True
+    techo = runtime.get("max_output_tokens")
+    if not isinstance(techo, int) or techo < VOICE_MAX_OUTPUT_TOKENS:
+        runtime["max_output_tokens"] = VOICE_MAX_OUTPUT_TOKENS
+        cambiado = True
+    if cambiado:
         prompt.runtime_config_json = runtime
 
 
@@ -868,7 +906,6 @@ async def seed() -> None:
                 content=VOICE_PROMPT,
                 variables_json={"required": ["locale", "poi_name"]},
                 tools_json=[
-                    _tool_snapshot(tools["document_poi"]),
                     _tool_snapshot(tools["plan_poi_visit"]),
                     _tool_snapshot(tools["find_activities"]),
                 ],
@@ -878,9 +915,16 @@ async def seed() -> None:
             session.add(prompt)
             await session.flush()
         else:
+            # Sin document_poi tambien aqui: la busqueda de Google lo sustituye
+            # (ver call_tools mas abajo).
+            if prompt.tools_json and any(
+                tool.get("code") == "document_poi" for tool in prompt.tools_json
+            ):
+                prompt.tools_json = [
+                    tool for tool in prompt.tools_json if tool.get("code") != "document_poi"
+                ]
             if not prompt.tools_json:
                 prompt.tools_json = [
-                    _tool_snapshot(tools["document_poi"]),
                     _tool_snapshot(tools["plan_poi_visit"]),
                     _tool_snapshot(tools["find_activities"]),
                 ]
@@ -889,7 +933,7 @@ async def seed() -> None:
                 # prompt was first seeded — self-heal an already-published row instead of
                 # requiring a manual version bump for a seed-managed tool list.
                 prompt.tools_json = [*prompt.tools_json, _tool_snapshot(tools["find_activities"])]
-            _heal_turn_detection(prompt)
+            _heal_voice_runtime(prompt)
 
         profile = await session.scalar(
             select(RoutingProfile).where(RoutingProfile.code == "voice.poi.local")
@@ -966,9 +1010,9 @@ async def seed() -> None:
             )
             .order_by(PromptVersion.version.desc())
         )
-        # En 3.8 document_poi es no bloqueante: el guia puede seguir hablando y
-        # escuchando mientras el modelo auxiliar investiga. Se vuelve a ofrecer
-        # para preguntas concretas, ademas de la ficha inicial cacheada del POI.
+        # Sin document_poi desde el 2026-10-10: con la busqueda de Google dentro
+        # de la propia sesion, mandar la pregunta a otro modelo era mas lento,
+        # costaba aparte y en las pruebas el guia usaba las dos cosas a la vez.
         # No find_activities either, since 2026-09-10. It answers with booking
         # links, and a link is unusable in a call: the guide has nothing it can
         # say out loud, so it tries again. Measured on voice session 116 — five
@@ -976,10 +1020,7 @@ async def seed() -> None:
         # while a tool runs, so the group heard over a minute of silence. Voice
         # has no round cap the way chat does (MAX_TOOL_ROUNDS in chat/service.py).
         # The tool stays enabled for chat, which is where a link works.
-        call_tools = [
-            _tool_snapshot(tools["document_poi"]),
-            _tool_snapshot(tools["plan_poi_visit"]),
-        ]
+        call_tools = [_tool_snapshot(tools["plan_poi_visit"])]
         if call_prompt is None:
             call_prompt = PromptVersion(
                 definition_id=call_definition.id,
@@ -999,11 +1040,11 @@ async def seed() -> None:
                 # place instead of bumping the version each iteration, same reasoning as
                 # the tools_json self-heal above: nothing has published a v2 of this one.
                 call_prompt.content = CALL_GUIDE_PROMPT
-            if not call_prompt.tools_json or any(
-                tool.get("code") == "find_activities" for tool in call_prompt.tools_json
-            ) or not any(tool.get("code") == "document_poi" for tool in call_prompt.tools_json):
+            if [tool.get("code") for tool in call_prompt.tools_json or []] != [
+                tool["code"] for tool in call_tools
+            ]:
                 call_prompt.tools_json = call_tools
-            _heal_turn_detection(call_prompt)
+            _heal_voice_runtime(call_prompt)
 
         call_profile = await session.scalar(
             select(RoutingProfile).where(RoutingProfile.code == "voice.call.local")

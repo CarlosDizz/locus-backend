@@ -79,9 +79,7 @@ from locus_v2.voice.providers.base import (
     ProviderEventType,
 )
 from locus_v2.voice.providers.factory import build_provider_registry
-from locus_v2.voice.providers.openai_transcribe import OpenAITranscribeProvider
 from locus_v2.voice.tools import VoiceToolDispatcher
-from locus_v2.voice.transcription import SAMPLE_RATE_HZ, build_vocabulary_prompt
 
 logger = structlog.get_logger()
 
@@ -93,14 +91,84 @@ _ACTIVE: dict[str, asyncio.Task[None]] = {}
 # keep an empty call alive. After this many silent rounds the call hangs up,
 # and any real interaction resets the count (see run()).
 MAX_SILENT_RECONNECTS = 3
-# How much of the shared log to replay into a new session. The log itself holds
-# 80 entries; the last stretch is what keeps the guide on thread without paying
-# to re-read the whole visit on every reconnection.
-RESEED_ENTRIES = 24
-# Cuantos nombres de la ciudad se le dan al transcriptor como vocabulario.
-# Suficientes para cubrir lo que se menciona en una visita sin convertir la
-# pista en una lista tan larga que deje de orientar.
-VOCABULARY_POIS = 40
+# How much of the shared log to replay into a new session: all of it (the log
+# holds 80 entries). Replayed as text it is cheap — about 0,75 $ per million
+# tokens against 3 $ for the audio it replaces — so there is no reason to make
+# the guide forget the start of the visit to save on it.
+RESEED_ENTRIES = 80
+# Cada cuantos turnos se pasa la memoria de audio a texto (ver _should_roll_over).
+ROLLOVER_TURNS = 5
+# Explicaciones largas de saque. Gemini 3.8 contesta en 20-25 segundos por
+# mucho que lo pida el prompt de sistema — medido con varias versiones el
+# 2026-10-10 — porque en una sesion en vivo ese texto le queda lejos. Lo que si
+# funciona es una nota pegada a cada turno: con ella, explicaciones de un tiron
+# de 50-70 segundos que se quedan en el punto en que esta el grupo. Va como
+# contexto silencioso (no provoca respuesta) despues de cada turno del guia,
+# asi que acompana a lo siguiente que llegue, sea voz, texto o foto.
+TURN_REMINDER = (
+    "[nota interna, no la leas ni la menciones: contesta como el guia que narra. Si te "
+    "preguntan por el lugar, su historia, su arte o sus personajes, haz una sola "
+    "explicacion larga, de dos minutos o mas, de un tiron. Quedate en este punto y ve "
+    "bajando capas: lo que se ve, la historia que hay detras, las personas y sus motivos, "
+    "lo que casi nadie sabe. Cuando creas que ya has terminado, anade todavia otra capa. "
+    "No repitas nada de lo que ya has contado en la llamada. No pases a otra parte del "
+    "recorrido y no cierres con una pregunta. Si es algo practico, contesta corto.]"
+)
+# Quien esta en la llamada, por debajo. El guia no ve la sala: sin esto no sabe
+# cuantos son ni como se llaman hasta que alguien escribe. Una salida solo cuenta
+# si dura este rato: bloquear el movil corta el socket un momento, y avisar de
+# cada corte haria al guia despedirse y saludar a la misma persona sin parar.
+ROSTER_CHECK_SECONDS = 2.0
+DEPARTURE_GRACE_SECONDS = 15.0
+
+
+def _y(nombres: list[str]) -> str:
+    return nombres[0] if len(nombres) == 1 else ", ".join(nombres[:-1]) + " y " + nombres[-1]
+
+
+def _connected(room: Room) -> dict[int, str]:
+    return {
+        member.native_id: member.display_name
+        for member in room.members.values()
+        if member.connection
+    }
+
+
+def _roster_line(room: Room, roster: dict[int, str]) -> str:
+    nombres = [
+        f"{nombre} (quien organiza la llamada)" if user_id == room.host_id else nombre
+        for user_id, nombre in roster.items()
+    ]
+    return ", ".join(nombres) if nombres else "nadie"
+
+
+def _roster_note(room: Room, roster: dict[int, str], llegan: list[str], salen: list[str]) -> str:
+    cambios = []
+    if llegan:
+        cambios.append(f"acaba de unirse {_y(llegan)}")
+    if salen:
+        cambios.append(f"se ha ido {_y(salen)}")
+    saludo = (
+        " Si encaja, saluda por su nombre a quien acaba de llegar la proxima vez que "
+        "hables, sin cortar lo que estes contando."
+        if llegan
+        else ""
+    )
+    return (
+        "[nota interna, no la leas en voz alta ni digas que te han avisado: "
+        f"{'; '.join(cambios)}. Ahora en la llamada: {_roster_line(room, roster)}.{saludo}]"
+    )
+
+
+# Tras una herramienta, Gemini a veces cierra el turno sin decir nada y se queda
+# esperando: el 2026-10-06 en Roma y otra vez en local el 2026-10-10, el grupo
+# tuvo que repetir lo que habia dicho. Si pasado este rato no ha hablado nadie,
+# el puente le da pie.
+TOOL_SILENCE_SECONDS = 2.5
+TOOL_SILENCE_PROMPT = (
+    "[instruccion de sistema, no la leas en voz alta ni la menciones: ya tienes lo que "
+    "necesitabas de la herramienta. Contesta ahora al grupo a lo ultimo que te dijeron.]"
+)
 
 # Deliberately here and not in the editable prompt. What the travellers wrote
 # about themselves is useless without a line saying whose it is and what to do
@@ -270,6 +338,21 @@ class _CallVoiceBridge:
         # voz. Gemini lo manda a trozos a lo largo del turno; se junta aqui y se
         # escribe como una sola linea antes de la respuesta del guia.
         self._user_voice_text = ""
+        # Turnos completos en la sesion actual, y si la sesion se ha cerrado a
+        # proposito para pasar la memoria a texto (no porque se cayera).
+        self._turns_in_session = 0
+        self._rolling_over = False
+        # Si el ultimo turno del guia fue solo una llamada a herramienta, y la
+        # espera en curso antes de darle pie si se queda callado.
+        self._tool_turn_pending = False
+        self._silence_task: asyncio.Task | None = None
+        # Quien esta conectado segun el guia, salidas aun sin confirmar, el aviso
+        # pendiente de dejarle y el turno de voz en curso (para decirle quien habla).
+        self._roster: dict[int, str] | None = None
+        self._gone_since: dict[int, float] = {}
+        self._pending_roster_note: str | None = None
+        self._voice_turn = ""
+        self._last_audio_at = 0.0
         self.trace_id = uuid4().hex
         self.host_id: int | None = None
         self.model_id: int | None = None
@@ -301,15 +384,6 @@ class _CallVoiceBridge:
         # Reset per session in run(); decides whether a reconnection counts as
         # "the room is still alive" or as another round of silence.
         self._heard_from_group = False
-        # Cuanto audio se ha mandado en el turno en curso, para facturarlo al
-        # cerrarlo. Ya no se guarda el audio: lo consume la sesion en vivo.
-        self._turn_audio_bytes = 0
-        # Sesion de transcripcion, con vida propia (ver _run_transcriber).
-        self.transcriber: LiveProvider | None = None
-        self._vocabulary: list[str] = []
-        self._transcriber_task: asyncio.Task | None = None
-        # Lo que transcribio el propio proveedor, por si el nuestro falla.
-        self._transcription_prompt = ""
 
     async def run(self) -> None:
         """Keep a live provider attached to this call for as long as it lasts.
@@ -322,10 +396,11 @@ class _CallVoiceBridge:
         """
         final_status = VoiceSessionStatus.COMPLETED
         attempt = 0
+        resume = False
         try:
             while True:
                 try:
-                    self.provider = await self._connect(resume=attempt > 0)
+                    self.provider = await self._connect(resume=resume or attempt > 0)
                     if self._needs_opening_research and attempt == 0:
                         # Aqui y no dentro de _connect: la tarea compara contra
                         # self.provider para saber si su sesion sigue viva, y ahi
@@ -350,15 +425,29 @@ class _CallVoiceBridge:
                     return
 
                 self._heard_from_group = False
+                self._turns_in_session = 0
+                self._rolling_over = False
                 provider_lost = await self._serve_session()
+                self._cancel_silence_nudge()
                 with contextlib.suppress(Exception):
                     await self.provider.close()
-                with contextlib.suppress(Exception):
-                    await self._finish(final_status)
-                self.voice_session_id = None
+                if not self._rolling_over:
+                    with contextlib.suppress(Exception):
+                        await self._finish(final_status)
+                    self.voice_session_id = None
 
                 if not provider_lost or not await self._call_still_running():
                     return
+                if self._rolling_over:
+                    # Cambio buscado, no una caida: ni "reconectando" en la app,
+                    # ni espera, ni cuenta como ronda en silencio. Lo que diga el
+                    # grupo mientras tanto espera en la cola de comandos.
+                    logger.info(
+                        "call_voice_bridge_rolled_over",
+                        call_id=self.call_id, turns=self._turns_in_session,
+                    )
+                    resume = True
+                    continue
                 # What the budget counts is silence, not reconnections. Sessions
                 # end on their own at the provider's duration cap, so a long
                 # visit needs many of them and counting those would hang up on a
@@ -391,11 +480,6 @@ class _CallVoiceBridge:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await self._document_tool_task
                 self._document_tool_task = None
-            if self._transcriber_task is not None:
-                self._transcriber_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await self._transcriber_task
-                self._transcriber_task = None
             if self.provider is not None:
                 with contextlib.suppress(Exception):
                     await self.provider.close()
@@ -507,38 +591,6 @@ class _CallVoiceBridge:
             self._needs_opening_research = _should_research(
                 poi, cached_brief, enabled=self.settings.call_opening_research_enabled
             )
-            # Vocabulario para el transcriptor: los nombres propios son lo que
-            # peor sale, y aqui ya tenemos cargado el sitio y su ciudad. Se
-            # resuelve una vez por sesion, no por turno.
-            vecinos: list[str] = []
-            if poi is not None and poi.city_id is not None:
-                filas = await session.scalars(
-                    select(Poi)
-                    .where(Poi.city_id == poi.city_id, Poi.is_active.is_(True))
-                    .limit(VOCABULARY_POIS)
-                )
-                vecinos = [
-                    (localized_field(otro.names_json, room.language, language) or otro.name)
-                    for otro in filas
-                ]
-            self._vocabulary = [
-                nombre
-                for nombre in [
-                    self.tool_context["name"],
-                    self.tool_context["city_name"],
-                    *vecinos,
-                ]
-                if nombre
-            ]
-            self._transcription_prompt = build_vocabulary_prompt(
-                self.tool_context["name"], self.tool_context["city_name"], vecinos
-            )
-            # Se arranca una sola vez y sobrevive a las reconexiones de la
-            # conversacion: abrir y cerrar la sesion de transcripcion en cada una
-            # solo añadiria cortes donde no hacen falta.
-            if self._transcription_enabled and self._transcriber_task is None:
-                self._transcriber_task = asyncio.create_task(self._run_transcriber())
-
             traveler_context = await self._traveler_context(session, room)
 
             try:
@@ -585,24 +637,29 @@ class _CallVoiceBridge:
             # as usage_call_id (falling back to the session's own public_id otherwise) - this is
             # how the wallet page groups every charge from one call under a single card instead
             # of listing each turn separately.
-            voice_session = VoiceSession(
-                user_id=self.host_id,
-                routing_profile_id=profile.id,
-                prompt_version_id=profile.prompt_version_id,
-                primary_model_id=profile.primary_model_id,
-                # Which model actually answered — not necessarily the primary one,
-                # since the loop below falls back when the primary will not connect.
-                active_model_id=model.id,
-                status=VoiceSessionStatus.ACTIVE,
-                locale=room.language,
-                context_type="poi",
-                context_public_id=room.poi_public_id,
-                config_snapshot_json={"call_id": self.call_id},
-                started_at=utc_now(),
-            )
-            session.add(voice_session)
-            await session.commit()
-            self.voice_session_id = voice_session.id
+            # Tras pasar la memoria a texto se sigue en la misma sesion de voz:
+            # el cobro de una llamada se agrupa por sesion (minimo y redondeo
+            # incluidos), y abrir una nueva en cada paso a texto cobraba otra vez
+            # el minimo cada pocos minutos. Solo una caida real abre sesion nueva.
+            if self.voice_session_id is None:
+                voice_session = VoiceSession(
+                    user_id=self.host_id,
+                    routing_profile_id=profile.id,
+                    prompt_version_id=profile.prompt_version_id,
+                    primary_model_id=profile.primary_model_id,
+                    # Which model actually answered — not necessarily the primary one,
+                    # since the loop below falls back when the primary will not connect.
+                    active_model_id=model.id,
+                    status=VoiceSessionStatus.ACTIVE,
+                    locale=room.language,
+                    context_type="poi",
+                    context_public_id=room.poi_public_id,
+                    config_snapshot_json={"call_id": self.call_id},
+                    started_at=utc_now(),
+                )
+                session.add(voice_session)
+                await session.commit()
+                self.voice_session_id = voice_session.id
         tools = [
             {
                 "type": "function",
@@ -638,9 +695,11 @@ class _CallVoiceBridge:
         # RealtimeBridge.handle_session_updated() used (request a response with an empty
         # room log). CALL_GUIDE_PROMPT's opening instruction is "greet and ask if everyone
         # is there"; this line is what actually makes the model say it unprompted.
+        self._roster = _connected(room)
         await provider.send_text(
             "[instruccion de sistema, no la leas en voz alta: la llamada acaba de "
-            "conectar y nadie ha hablado todavia. Saluda y pregunta si ya estan todos, "
+            "conectar y nadie ha hablado todavia. En la llamada estan "
+            f"{_roster_line(room, self._roster)}. Saluda y pregunta si ya estan todos, "
             "como indica tu guion. No documentes ni expliques nada todavia.]"
         )
         return provider
@@ -733,6 +792,17 @@ class _CallVoiceBridge:
         entries = _recap_entries(room)
         if not entries:
             return
+        # La nota de narrar en largo va la ultima, pegada al proximo turno,
+        # igual que tras cada turno en una sesion que no se ha cortado.
+        self._roster = _connected(room)
+        entries.append(
+            (
+                "user",
+                "[nota interna, no la leas en voz alta: en la llamada estan "
+                f"{_roster_line(room, self._roster)}.]",
+            )
+        )
+        entries.append(("user", TURN_REMINDER))
         if not provider.capabilities.context_seeding:
             logger.warning(
                 "call_voice_bridge_reseed_unsupported",
@@ -801,6 +871,8 @@ class _CallVoiceBridge:
             audio_input_tokens=usage.audio_input_tokens,
             text_input_tokens=usage.text_input_tokens,
             audio_output_tokens=usage.audio_output_tokens,
+            # Las busquedas de Google llegan como eventos propios, sin tokens.
+            web_searches=usage.tool_calls,
         )
 
     async def _consume_commands(self) -> None:
@@ -809,20 +881,22 @@ class _CallVoiceBridge:
             kind = command.get("type")
             if kind in {"audio.chunk", "audio.commit", "text.submit", "image.submit"}:
                 self._heard_from_group = True
+            if kind in {"reset", "audio.chunk", "audio.commit", "text.submit", "image.submit"}:
+                # El grupo ha dicho algo: ya no hace falta darle pie al guia.
+                self._cancel_silence_nudge()
             try:
                 if kind == "reset":
                     await self.provider.cancel_response()
                 elif kind == "audio.chunk":
                     pcm = base64.b64decode(command["audio"])
-                    self._turn_audio_bytes += len(pcm)
-                    # A la sesion de transcripcion se le pasa una copia del mismo
-                    # audio. Nunca desde otro lector del flujo de comandos: ese
-                    # borra lo que lee, y un segundo lector robaria comandos.
-                    await self._feed_transcriber(pcm)
+                    if command.get("turn") != self._voice_turn:
+                        # Primer trozo del turno: el nombre va antes del audio,
+                        # con el turno aun sin abrir en el proveedor.
+                        self._voice_turn = str(command.get("turn") or "")
+                        await self._say_who_speaks(str(command.get("author") or ""))
                     await self.provider.send_audio(pcm)
                 elif kind == "audio.commit":
                     await self.provider.commit_audio()
-                    await self._close_transcriber_turn()
                 elif kind == "text.submit":
                     author = command.get("author", "")
                     await self.provider.send_text(
@@ -868,6 +942,7 @@ class _CallVoiceBridge:
                 # this log showed. Worth keeping while that area of the design is still
                 # moving (e.g. mid-tool filler chatter, see the model notes below).
                 now = perf_counter()
+                self._last_audio_at = now
                 if now - last_audio_log > 1.0:
                     logger.info("call_voice_bridge_audio_burst", call_id=self.call_id)
                 last_audio_log = now
@@ -883,21 +958,27 @@ class _CallVoiceBridge:
                 await self.store.publish(
                     self.call_id, {"type": "assistant.transcript_delta", "text": event.text or ""}
                 )
-            elif event.type == ProviderEventType.TEXT_DONE:
+            elif event.type in (ProviderEventType.TEXT_DONE, ProviderEventType.AUDIO_DONE):
                 await self._flush_user_voice()
-                text = event.text or self._assistant_text
+                text = (event.text if event.type == ProviderEventType.TEXT_DONE else "") or (
+                    self._assistant_text
+                )
                 self._assistant_text = ""
-                await self._on_assistant_turn_done(text)
-            elif event.type == ProviderEventType.AUDIO_DONE:
-                await self._flush_user_voice()
-                if self._assistant_text:
-                    text = self._assistant_text
-                    self._assistant_text = ""
+                if text or event.type == ProviderEventType.TEXT_DONE:
                     await self._on_assistant_turn_done(text)
+                    self._turns_in_session += 1
+                    if not text.strip() and self._tool_turn_pending:
+                        self._silence_task = asyncio.create_task(
+                            self._nudge_if_silent(self.provider, perf_counter())
+                        )
+                    elif await self._should_roll_over():
+                        self._rolling_over = True
+                        return
+                    else:
+                        await self._remind_guide(self.provider)
+                    self._tool_turn_pending = False
             elif event.type == ProviderEventType.INPUT_TRANSCRIPT_DONE:
-                # Solo si no hay transcriptor externo en pie: con los dos
-                # saldrian dos lineas por turno.
-                if event.text and self.transcriber is None:
+                if event.text:
                     self._user_voice_text += event.text
             elif event.type == ProviderEventType.USAGE and event.usage is not None:
                 await self._persist_usage(event.usage)
@@ -922,6 +1003,73 @@ class _CallVoiceBridge:
                 if not event.retryable:
                     return
 
+    async def _remind_guide(self, provider: LiveProvider) -> None:
+        """Deja la nota de narrar en largo pegada al proximo turno del grupo.
+
+        Solo con la sala en calma: si alguien ya ha empezado a hablar, su turno
+        esta abierto en el proveedor y meter texto en medio lo desordenaria.
+        """
+        if provider is not self.provider or not provider.capabilities.context_seeding:
+            return
+        try:
+            room = await self.store.get(self.call_id)
+            if room.status != "idle":
+                return
+            entries = [("user", TURN_REMINDER)]
+            if self._pending_roster_note:
+                entries.insert(0, ("user", self._pending_roster_note))
+                self._pending_roster_note = None
+            await provider.seed_context(entries)
+        except Exception:  # noqa: BLE001 - la nota es un extra, nunca tumba la llamada
+            logger.warning("call_voice_bridge_reminder_failed", call_id=self.call_id)
+
+    async def _nudge_if_silent(self, provider: LiveProvider, since: float) -> None:
+        """Da pie al guia si tras una herramienta se ha quedado callado."""
+        await asyncio.sleep(TOOL_SILENCE_SECONDS)
+        if provider is not self.provider or self._last_audio_at > since:
+            return
+        try:
+            room = await self.store.get(self.call_id)
+        except CallError:
+            return
+        if room.status != "idle":
+            return
+        try:
+            await provider.send_text(TOOL_SILENCE_PROMPT)
+            logger.info("call_voice_bridge_tool_silence_nudged", call_id=self.call_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("call_voice_bridge_tool_silence_nudge_failed", call_id=self.call_id)
+
+    def _cancel_silence_nudge(self) -> None:
+        if self._silence_task is not None and not self._silence_task.done():
+            self._silence_task.cancel()
+        self._silence_task = None
+
+    async def _should_roll_over(self) -> bool:
+        """Si toca pasar la memoria de la conversacion de audio a texto.
+
+        Gemini guarda cada turno como audio — la voz del guia incluida — y lo
+        vuelve a cobrar entero en cada turno siguiente, a 3 $ por millon. La
+        misma conversacion como texto ocupa unas cuatro veces menos y se paga a
+        0,75 $: el guia recuerda lo mismo por mucho menos. Con los numeros de la
+        visita de Roma del 2026-10-06 (55 turnos), ~0,55 $ frente a ~1,85 $
+        dejando crecer el audio.
+
+        Solo cuando es seguro cortar: nadie con la palabra (su audio ya enviado
+        se perderia con la sesion) y nada en vuelo que tenga que volver a esta
+        misma sesion — una busqueda de document_poi o la ficha de apertura.
+        """
+        if self._turns_in_session < ROLLOVER_TURNS:
+            return False
+        for task in (self._document_tool_task, self._research_task, self._silence_task):
+            if task is not None and not task.done():
+                return False
+        try:
+            room = await self.store.get(self.call_id)
+        except CallError:
+            return False
+        return room.status == "idle"
+
     async def _flush_user_voice(self) -> None:
         """Escribe en el registro lo que dijo el grupo en este turno, entero."""
         text = " ".join(self._user_voice_text.split())
@@ -943,8 +1091,8 @@ class _CallVoiceBridge:
         if self._assistant_turn_count == 2 and not self._research_kicked_off:
             self._research_kicked_off = True
             await self.provider.send_text(
-                "[instruccion de sistema, no la leas en voz alta: ahora si, documenta a "
-                "fondo el lugar y decide el plan de la visita, como tienes indicado]"
+                "[instruccion de sistema, no la leas en voz alta: ahora si, busca lo que "
+                "necesites del lugar y decide el plan de la visita, como tienes indicado]"
             )
 
     async def _handle_tool_call(self, event: ProviderEvent) -> None:
@@ -956,6 +1104,10 @@ class _CallVoiceBridge:
         """
         assert self.provider is not None
         self._research_kicked_off = True
+        if event.tool_name != "document_poi":
+            # document_poi no bloquea: el guia sigue hablando mientras busca.
+            # Las demas si, y tras ellas a veces se queda callado.
+            self._tool_turn_pending = True
         definition = next(
             (tool for tool in self.tool_definitions if tool.get("code") == event.tool_name), None
         )
@@ -1064,6 +1216,12 @@ class _CallVoiceBridge:
             return
         try:
             await provider.seed_context([("assistant", BRIEF_BLOCK.format(brief=brief))])
+        except RuntimeError:
+            # La sesion se cerro mientras se documentaba (la llamada colgo o se
+            # reconecto). No es un fallo: la ficha ya esta guardada en el POI y
+            # entra en el prompt de la siguiente sesion.
+            logger.info("call_voice_bridge_opening_brief_stale", call_id=self.call_id)
+            return
         except Exception:  # noqa: BLE001 - idem: la llamada manda
             logger.exception("call_voice_bridge_opening_brief_inject_failed", call_id=self.call_id)
             return
@@ -1093,138 +1251,6 @@ class _CallVoiceBridge:
                 await session.commit()
         except Exception:  # noqa: BLE001 - no poder cachearla no invalida la ficha
             logger.exception("call_voice_bridge_opening_brief_not_saved", call_id=self.call_id)
-
-    @property
-    def _transcription_enabled(self) -> bool:
-        return bool(self.settings.transcription_model)
-
-    async def _feed_transcriber(self, pcm: bytes) -> None:
-        """Pasa el audio a la sesion de transcripcion, si la hay.
-
-        Nunca deja que su fallo salpique a la llamada: es un extra para la
-        bitacora, y una llamada muda por culpa de un transcriptor caido seria un
-        intercambio pesimo.
-        """
-        transcriber = self.transcriber
-        if transcriber is None:
-            return
-        try:
-            await transcriber.send_audio(pcm)
-        except Exception as error:  # noqa: BLE001 - ver docstring
-            logger.warning(
-                "call_voice_bridge_transcriber_send_failed",
-                call_id=self.call_id,
-                error=str(error)[:120],
-            )
-            self.transcriber = None
-
-    async def _close_transcriber_turn(self) -> None:
-        """Cierra el turno en la sesion de transcripcion y lo factura."""
-        bytes_enviados = self._turn_audio_bytes
-        self._turn_audio_bytes = 0
-        transcriber = self.transcriber
-        if transcriber is not None:
-            try:
-                await transcriber.commit_audio()
-            except Exception as error:  # noqa: BLE001 - igual que arriba
-                logger.warning(
-                    "call_voice_bridge_transcriber_commit_failed",
-                    call_id=self.call_id,
-                    error=str(error)[:120],
-                )
-                self.transcriber = None
-            else:
-                # Se factura el audio que se ha mandado, no el texto que vuelva:
-                # el proveedor cobra por duracion y ya lo ha recibido, llegue o
-                # no la transcripcion.
-                await self._persist_transcription_usage(
-                    bytes_enviados / (SAMPLE_RATE_HZ * 2)
-                )
-
-    async def _run_transcriber(self) -> None:
-        """Mantiene viva la sesion de transcripcion, aparte de la conversacion.
-
-        Vive fuera del conjunto de tareas de _serve_session a proposito: alli
-        cualquier tarea que termine se interpreta como "se ha perdido el
-        proveedor" y reconecta la llamada entera. Que se caiga la transcripcion
-        no puede tirar una conversacion que va bien, asi que se reintenta aqui
-        dentro y en silencio.
-        """
-        intento = 0
-        while True:
-            provider: LiveProvider | None = None
-            try:
-                registry = build_provider_registry(self.settings)
-                provider = registry.create(OpenAITranscribeProvider.code)
-                await provider.connect(
-                    LiveSessionConfig(
-                        model=self.settings.transcription_model,
-                        prompt=self._transcription_prompt,
-                        locale=self.locale,
-                        audio_format=AudioFormat.PCM16_24KHZ,
-                        tools=[],
-                        provider_options={"keywords": self._vocabulary},
-                    )
-                )
-                self.transcriber = provider
-                intento = 0
-                logger.info("call_voice_bridge_transcriber_connected", call_id=self.call_id)
-                async for event in provider.events():
-                    if event.type == ProviderEventType.INPUT_TRANSCRIPT_DONE and event.text:
-                        await self.service.log_user_voice(self.call_id, event.text)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:  # noqa: BLE001 - se reintenta, no se propaga
-                logger.warning(
-                    "call_voice_bridge_transcriber_lost",
-                    call_id=self.call_id,
-                    error=str(error)[:200],
-                )
-            finally:
-                self.transcriber = None
-                if provider is not None:
-                    with contextlib.suppress(Exception):
-                        await provider.close()
-            intento += 1
-            await asyncio.sleep(min(2 ** min(intento, 4), 16))
-
-    async def _persist_transcription_usage(self, seconds: float) -> None:
-        if self.voice_session_id is None or self.host_id is None or seconds <= 0:
-            return
-        async with self.database.sessions() as session:
-            model = await session.scalar(
-                select(AIModel)
-                .join(AIProvider, AIProvider.id == AIModel.provider_id)
-                .where(
-                    AIProvider.code == "openai",
-                    AIModel.external_id == self.settings.transcription_model,
-                )
-            )
-            if model is None:
-                logger.warning(
-                    "call_voice_bridge_transcription_unpriced",
-                    call_id=self.call_id,
-                    transcription_model=self.settings.transcription_model,
-                )
-                return
-            session.add(
-                UsageEvent(
-                    user_id=self.host_id,
-                    voice_session_id=self.voice_session_id,
-                    provider_id=model.provider_id,
-                    model_id=model.id,
-                    dedupe_key=f"{self.trace_id}:transcription:{uuid4().hex}",
-                    interaction_type="transcription",
-                    # En la columna tipada, no solo en el JSON: el procesador de
-                    # precios lee columnas y nunca mira raw_usage_json para los
-                    # numeros, asi que la duracion guardada solo ahi valia cero.
-                    audio_input_milliseconds=int(round(seconds * 1000)),
-                    raw_usage_json={"audio_seconds": round(seconds, 2)},
-                    status=UsageStatus.PENDING,
-                    trace_id=self.trace_id,
-                )
-            )
-            await session.commit()
 
     async def _persist_tool_usage(
         self, tool_name: str, handler_code: str, usage: ToolUsage
@@ -1265,13 +1291,60 @@ class _CallVoiceBridge:
 
     async def _watch_room_ended(self) -> None:
         while True:
-            await asyncio.sleep(5)
+            await asyncio.sleep(ROSTER_CHECK_SECONDS)
             try:
                 room = await self.store.get(self.call_id)
             except CallError:
                 return
             if room.status == "ended":
                 return
+            await self._track_roster(room, perf_counter())
+
+    async def _track_roster(self, room: Room, now: float) -> None:
+        """Avisa al guia de quien entra y sale, cuando nadie esta hablando."""
+        if self._roster is None:
+            self._roster = _connected(room)
+            return
+        conectados = _connected(room)
+        llegan = [nombre for uid, nombre in conectados.items() if uid not in self._roster]
+        for uid in conectados:
+            self._gone_since.pop(uid, None)
+        salen: list[str] = []
+        for uid, nombre in list(self._roster.items()):
+            if uid in conectados:
+                continue
+            desde = self._gone_since.setdefault(uid, now)
+            if now - desde >= DEPARTURE_GRACE_SECONDS:
+                salen.append(nombre)
+                self._gone_since.pop(uid, None)
+                del self._roster[uid]
+        for uid, nombre in conectados.items():
+            self._roster[uid] = nombre
+        if llegan or salen:
+            self._pending_roster_note = _roster_note(room, conectados, llegan, salen)
+        if self._pending_roster_note and room.status == "idle":
+            await self._flush_roster_note(self.provider)
+
+    async def _flush_roster_note(self, provider: LiveProvider | None) -> None:
+        nota = self._pending_roster_note
+        if not nota or provider is None or provider is not self.provider:
+            return
+        if not provider.capabilities.context_seeding:
+            return
+        self._pending_roster_note = None
+        try:
+            await provider.seed_context([("user", nota)])
+        except Exception:  # noqa: BLE001 - un aviso no tumba la llamada
+            logger.warning("call_voice_bridge_roster_note_failed", call_id=self.call_id)
+
+    async def _say_who_speaks(self, author: str) -> None:
+        provider = self.provider
+        if not author or provider is None or not provider.capabilities.context_seeding:
+            return
+        try:
+            await provider.seed_context([("user", f"[habla ahora {author}]")])
+        except Exception:  # noqa: BLE001
+            logger.warning("call_voice_bridge_speaker_note_failed", call_id=self.call_id)
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

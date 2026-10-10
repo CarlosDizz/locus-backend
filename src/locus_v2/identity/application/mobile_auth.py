@@ -116,6 +116,11 @@ class MobileAuthService:
             return None
         if now - auth_session.last_seen_at > timedelta(minutes=5):
             auth_session.last_seen_at = now
+            # La sesion se renueva con el uso: caduca a los MOBILE_SESSION_DAYS
+            # sin abrir la app, no a los MOBILE_SESSION_DAYS desde el login. Antes
+            # quien la usaba a diario tenia que volver a entrar con Google cada
+            # mes, y Google le mandaba un correo de aviso cada vez.
+            auth_session.expires_at = now + timedelta(days=MOBILE_SESSION_DAYS)
             await self.session.commit()
         return user
 

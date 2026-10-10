@@ -71,6 +71,9 @@ class Room(BaseModel):
     turn_id: str = ""
     audio_bytes: int = 0
     members: dict[str, Member]
+    # Todos los que han entrado alguna vez. `members` pierde a quien sale antes
+    # de que acabe la llamada, y aun así puede valorarla.
+    participants: list[str] = Field(default_factory=list)
     max_members: int = 10
     expires_at: float = Field(default_factory=lambda: now() + 7200)
     host_grace_deadline: float | None = None

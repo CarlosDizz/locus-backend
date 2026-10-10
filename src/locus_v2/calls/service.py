@@ -157,6 +157,7 @@ class CallService:
                 mode=request.mode,
                 travel_mode=request.travel_mode if request.mode == "itinerary" else "",
                 members={str(user.id): Member.from_user(user)},
+                participants=[str(user.id)],
             )
             if await self.store.create(room):
                 return room
@@ -169,6 +170,8 @@ class CallService:
                 if len(room.members) >= room.max_members:
                     raise CallError("Call is full", 409)
                 room.members[str(user.id)] = Member.from_user(user)
+            if str(user.id) not in room.participants:
+                room.participants.append(str(user.id))
             room.member(user.id).reservation_until = now() + 600
             # Token issuance must not resume the host's disconnected call.
 

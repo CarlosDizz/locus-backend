@@ -157,7 +157,7 @@ class ReviewService:
         self.moderator = moderator
 
     async def submit(self, user: User, room: Room, payload: ReviewInput) -> CallReview:
-        if str(user.id) not in room.members:
+        if str(user.id) not in room.members and str(user.id) not in room.participants:
             raise ReviewError("No estuviste en esta llamada", 403)
         if (
             payload.place_vote is None

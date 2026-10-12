@@ -62,8 +62,20 @@ app.locusguide.es {
 		Strict-Transport-Security "max-age=31536000"
 	}
 
+	# Enlaces universales: los enlaces para unirse a un viaje abren la app de
+	# iPhone si está instalada, y si no esta PWA. iOS lo pide tal cual, sin
+	# redirecciones y como JSON.
+	handle /.well-known/apple-app-site-association {
+		header Content-Type application/json
+		respond `{"applinks":{"details":[{"appIDs":["SAW7J38C9M.com.carlos.locusia"],"components":[{"/":"/trips/join/*"}]}]}}` 200
+	}
+
 	# Angular enruta en el cliente: cualquier ruta desconocida devuelve el índice
 	# o /call, /poi/3 y demás darían 404 al recargar o al abrir un enlace.
-	try_files {path} /index.html
-	file_server
+	# Dentro de su propio handle: try_files se aplica antes que cualquier handle
+	# y, fuera, también reescribiría el fichero de los enlaces universales.
+	handle {
+		try_files {path} /index.html
+		file_server
+	}
 }

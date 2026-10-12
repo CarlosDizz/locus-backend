@@ -245,3 +245,34 @@ Lo que se arregló tras la prueba de Roma, ya en producción (`bf622f9`):
 - Si se queda callado tras una herramienta, el puente le da pie.
 - Sesiones de login renovadas con el uso; limpieza de logs y sesiones en el worker.
 - Mensaje de ubicación denegada específico para iPhone (Safari y Chrome).
+
+## Publicar en la App Store (plan del 2026-10-12)
+
+Estado: la app de iPhone funciona en TestFlight (versión 12) contra producción.
+Ficha creada en App Store Connect: «Locus», id 6821354015, `com.carlos.locusia`.
+
+### Pagos: compras de Apple en el iPhone, Paddle en la web
+
+- Los minutos de guía son contenido digital: en la app de iPhone hay que
+  venderlos con las compras de Apple (StoreKit). El enlace a la PWA para pagar
+  con Paddle no pasa la revisión en la UE.
+- Encaja con cobrar como particular hasta que la app funcione y entonces montar
+  la sociedad: Apple vende en nombre de Carlos como hace Paddle (cobra, gestiona
+  el IVA, ingresa lo que queda). Con el Small Business Program se queda un 15 %
+  sobre el neto: en 4,99 € llegan ~3,50 € frente a 3,44 € con Paddle.
+- Un solo saldo: lo recargado en el iPhone vale en la web y al revés.
+- Descartado el permiso de enlace externo de la UE: comisiones propias y más
+  papeleo para ganar lo mismo o menos.
+
+### Fases
+
+| Fase | Qué | Quién | Tiempo |
+|---|---|---|---|
+| 0 | Acuerdo de apps de pago (banco + W-8BEN), Small Business Program, condición de comerciante UE (dirección pública; se puede usar una de domiciliación), cuenta Google de prueba con saldo | Carlos | ½ día |
+| 1 | Compras de Apple: productos 4,99/9,99/19,99 €, compra en la app, verificación en servidor, abono en el saldo, pruebas sandbox | Claude | 2 días |
+| 2 | Iniciar sesión con Apple (obligatorio si hay Google): botón, verificación en servidor, enlace por email con cuentas existentes | Claude | 1 día |
+| 3 | Normas: denunciar comentarios y fotos, condiciones de uso, PrivacyInfo.xcprivacy, solo iPhone, quitar «ubicación siempre», repasar botones con (click) | Claude | 1 día |
+| 4 | Ficha: capturas 6,9″, descripción es/en, palabras clave, Viajes, edades, privacidad, URL de soporte, notas al revisor | Claude prepara, Carlos revisa | ½ día |
+| 5 | TestFlight externo opcional, envío a revisión, correcciones | Los dos | 1–3 días por vuelta |
+
+Unas dos semanas hasta publicar, contando una ronda de rechazo.

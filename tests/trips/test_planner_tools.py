@@ -155,3 +155,25 @@ def test_the_plan_is_grouped_by_day_and_sorted_by_time() -> None:
     view = trip_view(trip)
     assert [day.date for day in view.days] == [date(2027, 10, 5), date(2027, 10, 6)]
     assert [item.title for item in view.days[1].items] == ["Coliseo", "Comida"]
+
+
+async def test_the_place_travels_from_the_card_to_the_plan() -> None:
+    """El sitio que sirve para abrirlo en Google Maps no se pierde al aceptar la tarjeta."""
+    servicio, session = _servicio()
+    trip = _viaje(session)
+    turn = _turno()
+
+    await servicio._tool(
+        trip,
+        "suggest_items",
+        {"items": [{
+            "date": "2027-10-05", "time": "10:00", "title": "Galería Borghese",
+            "kind": "visit", "place": "Galleria Borghese, Roma",
+        }]},
+        turn,
+    )
+    assert turn.proposals[0]["place"] == "Galleria Borghese, Roma"
+
+    item = servicio._add_item(trip, {**turn.proposals[0], "status": "proposed"})
+
+    assert item.place == "Galleria Borghese, Roma"

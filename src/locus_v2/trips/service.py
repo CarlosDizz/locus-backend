@@ -50,6 +50,13 @@ _ITEM_FIELDS: dict[str, Any] = {
         "type": "string",
         "description": "Cómo se llega desde lo anterior, solo si lo sabes: «10 min a pie».",
     },
+    "place": {
+        "type": "string",
+        "description": (
+            "El sitio tal como se buscaría en Google Maps, con la ciudad: «Coliseo, Roma», "
+            "«Trattoria Da Enzo al 29, Roma». Vacío si no es un sitio (un traslado, el check-in)."
+        ),
+    },
     "price": {"type": "string", "description": "Precio orientativo si lo sabes seguro."},
     "booking_url": {
         "type": "string",
@@ -142,6 +149,7 @@ TOOLS: list[dict[str, Any]] = [
                 "title": {"type": "string"},
                 "note": {"type": "string"},
                 "travel": {"type": "string"},
+                "place": {"type": "string"},
             },
             "required": ["item_id"],
         },
@@ -196,6 +204,7 @@ class ItemView(BaseModel):
     status: str
     note: str = ""
     travel: str = ""
+    place: str = ""
     price: str = ""
     booking: BookingView | None = None
 
@@ -213,6 +222,7 @@ class ProposalView(BaseModel):
     kind: str
     note: str = ""
     travel: str = ""
+    place: str = ""
     price: str = ""
     booking: BookingView | None = None
     accepted: bool = False
@@ -242,7 +252,8 @@ def trip_view(trip: Trip) -> TripView:
         dias.setdefault(item.day, []).append(
             ItemView(
                 id=item.public_id, time=item.time, title=item.title, kind=item.kind,
-                status=item.status, note=item.note, travel=item.travel, price=item.price,
+                status=item.status, note=item.note, travel=item.travel, place=item.place or "",
+                price=item.price,
                 booking=BookingView(**item.booking_json) if item.booking_json else None,
             )
         )
@@ -347,6 +358,7 @@ class TripPlannerService:
             status=status if status in ("booked", "proposed") else "proposed",
             note=str(data.get("note") or ""),
             travel=str(data.get("travel") or "")[:120],
+            place=str(data.get("place") or "").strip()[:255],
             price=str(data.get("price") or "")[:40],
             booking_json=booking,
             position=len(trip.items),
@@ -522,6 +534,7 @@ class TripPlannerService:
                     "kind": data.get("kind") if data.get("kind") in ITEM_KINDS else "visit",
                     "note": str(data.get("note") or ""),
                     "travel": str(data.get("travel") or ""),
+                    "place": str(data.get("place") or "").strip()[:255],
                     "price": str(data.get("price") or ""),
                     "booking": (
                         self._booking(
@@ -546,7 +559,7 @@ class TripPlannerService:
                 item.day = _parse_day(args["date"])
             if args.get("time"):
                 item.time = _parse_time(args["time"])
-            for field in ("title", "note", "travel"):
+            for field in ("title", "note", "travel", "place"):
                 if args.get(field):
                     setattr(item, field, str(args[field]))
             return {"ok": True}

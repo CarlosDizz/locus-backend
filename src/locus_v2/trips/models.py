@@ -55,6 +55,8 @@ class TripItem(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(20), default="proposed", nullable=False)
     note: Mapped[str] = mapped_column(Text, default="", nullable=False)
     travel: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    # El sitio tal como se busca en Google Maps («Coliseo, Roma»), para enlazarlo.
+    place: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     price: Mapped[str] = mapped_column(String(40), default="", nullable=False)
     poi_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("pois.id", ondelete="SET NULL")

@@ -126,3 +126,20 @@ async def accept_proposal(
     except TripError as error:
         raise _http(error) from error
     return trip_view(trip)
+
+
+@router.post("/{trip_id}/proposals/{proposal_id}/undo", response_model=TripView)
+async def undo_proposal(
+    trip_id: str,
+    proposal_id: str,
+    session: SessionDep,
+    settings: SettingsDep,
+    current_user: CurrentUserDep,
+) -> TripView:
+    try:
+        trip = await TripPlannerService(session, settings).undo_proposal(
+            current_user, trip_id, proposal_id
+        )
+    except TripError as error:
+        raise _http(error) from error
+    return trip_view(trip)

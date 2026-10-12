@@ -309,3 +309,26 @@ async def test_locating_fills_old_stops_once_and_centres_the_city(monkeypatch) -
 
 async def _noop() -> None:
     pass
+
+
+async def test_a_card_added_by_mistake_can_be_undone(monkeypatch) -> None:
+    servicio, session = _servicio()
+    session.commit = _noop
+    trip = _viaje(session)
+    trip.conversation_json = [{"role": "assistant", "text": "", "proposals": [{
+        "id": "p1", "date": "2027-10-05", "time": "10:30", "title": "Paseo por la Judería",
+        "kind": "walk", "accepted": False,
+    }]}]
+
+    async def get(user, public_id):
+        return trip
+
+    monkeypatch.setattr(servicio, "get", get)
+
+    await servicio.accept_proposal(SimpleNamespace(id=1), "t", "p1")
+    assert len(trip.items) == 1
+
+    await servicio.undo_proposal(SimpleNamespace(id=1), "t", "p1")
+
+    assert trip.items == []
+    assert trip.conversation_json[0]["proposals"][0]["accepted"] is False

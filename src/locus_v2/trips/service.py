@@ -387,8 +387,49 @@ class TripPlannerService:
                 if proposal.get("id") != proposal_id:
                     continue
                 if not proposal.get("accepted"):
-                    self._add_item(trip, {**proposal, "status": "proposed"})
+                    item = self._add_item(trip, {**proposal, "status": "proposed"})
+                    await self.session.flush()
+                    # Para poder deshacerlo desde la misma tarjeta.
+                    proposal["item_id"] = item.public_id
                     proposal["accepted"] = True
+                message["proposals"] = proposals
+                trip.conversation_json = conversation
+                await self.session.commit()
+                return await self.get(user, public_id)
+        raise TripError("Propuesta no encontrada", 404)
+
+    async def undo_proposal(self, user: User, public_id: str, proposal_id: str) -> Trip:
+        """Saca del plan lo que se añadió desde una tarjeta, y la tarjeta vuelve a estar libre.
+
+        Añadir es un toque y se cuela sin querer (pasó en Toledo con el paseo
+        del domingo); deshacerlo no debería necesitar pedírselo al chat.
+        """
+        trip = await self.get(user, public_id)
+        conversation = [dict(m) for m in trip.conversation_json or []]
+        for message in conversation:
+            proposals = [dict(p) for p in message.get("proposals") or []]
+            for proposal in proposals:
+                if proposal.get("id") != proposal_id:
+                    continue
+                if proposal.get("accepted"):
+                    item = next(
+                        (
+                            i for i in trip.items
+                            if i.public_id == proposal.get("item_id")
+                            or (
+                                not proposal.get("item_id")
+                                and i.title == proposal.get("title")
+                                and i.day.isoformat() == proposal.get("date")
+                                and i.time == proposal.get("time")
+                            )
+                        ),
+                        None,
+                    )
+                    if item is not None:
+                        trip.items.remove(item)
+                        await self.session.delete(item)
+                    proposal["accepted"] = False
+                    proposal.pop("item_id", None)
                 message["proposals"] = proposals
                 trip.conversation_json = conversation
                 await self.session.commit()

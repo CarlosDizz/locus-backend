@@ -401,8 +401,14 @@ class TripPlannerService:
             place, None, None, limit=3, locale="es"
         )
         ciudad = slugify(trip.city)
+        # El país también: hay un Toledo en Ohio. La dirección viene en español
+        # (locale="es") y el planificador apunta el país en español.
+        pais = slugify(getattr(trip, "country", "") or "")
         for resultado in resultados:
-            if ciudad and ciudad not in slugify(resultado["description"]):
+            direccion = slugify(resultado["description"])
+            if ciudad and ciudad not in direccion:
+                continue
+            if pais and pais not in direccion:
                 continue
             if kind == "meal" and resultado.get("poi_type_code") not in _FOOD_TYPES:
                 continue

@@ -159,7 +159,9 @@ def test_the_plan_is_grouped_by_day_and_sorted_by_time() -> None:
 
 async def test_the_place_travels_from_the_card_to_the_plan(monkeypatch) -> None:
     """El sitio de Google Maps se resuelve en la tarjeta y pasa al plan al aceptarla."""
-    _places(monkeypatch, [_resultado("Galleria Borghese", "Piazzale Scipione Borghese, 5, Roma")])
+    _places(monkeypatch, [
+        _resultado("Galleria Borghese", "Piazzale Scipione Borghese, 5, Roma, Italia"),
+    ])
     servicio, session = _servicio()
     trip = _viaje(session)
     turn = _turno()
@@ -190,10 +192,20 @@ async def test_a_place_in_another_city_is_not_linked(monkeypatch) -> None:
     assert await servicio._locate(trip, "La Malquerida, Roma") is None
 
 
+async def test_the_same_city_name_in_another_country_is_not_linked(monkeypatch) -> None:
+    _places(monkeypatch, [
+        _resultado("Toledo Museum of Art", "2445 Monroe St, Toledo, OH, EE. UU."),
+    ])
+    servicio, session = _servicio()
+    trip = Trip(user_id=1, city="Toledo", country="España", conversation_json=[], items=[])
+
+    assert await servicio._locate(trip, "Museo, Toledo") is None
+
+
 async def test_a_meal_is_only_linked_to_somewhere_to_eat(monkeypatch) -> None:
     _places(monkeypatch, [
-        _resultado("CBD Flowers By La Mal Querida", "C. Ciriaco Esteban 6, Roma"),
-        _resultado("La Malquerida", "Via Roma 1, Roma", tipo="restaurant"),
+        _resultado("CBD Flowers By La Mal Querida", "C. Ciriaco Esteban 6, Roma, Italia"),
+        _resultado("La Malquerida", "Via Roma 1, Roma, Italia", tipo="restaurant"),
     ])
     servicio, session = _servicio()
     trip = _viaje(session)

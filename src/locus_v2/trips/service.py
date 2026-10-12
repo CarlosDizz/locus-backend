@@ -41,6 +41,28 @@ MAX_ROUNDS = 8
 # va aparte, como datos, así que no hace falta más historia que la reciente.
 HISTORY_MESSAGES = 16
 ITEM_KINDS = ("visit", "meal", "walk", "transport", "logistics")
+# Palabras que no distinguen un sitio de otro al comparar nombres.
+_GENERIC_WORDS = frozenset(
+    "el la los las de del y en al restaurante restaurant meson taberna bar cafe cafeteria "
+    "cerveceria casa hotel plaza calle museo iglesia the of".split()
+)
+
+
+def _same_name(query: str, name: str) -> bool:
+    """Si el resultado de Google es el sitio que se buscaba, por el nombre.
+
+    Places devuelve lo más parecido aunque no exista lo buscado: «Mesón
+    Beatriz, Toledo» daba «Restaurante La Romana». Se exige que compartan al
+    menos una palabra con significado del nombre (lo que va antes de la coma).
+    """
+    buscado = {w for w in slugify(query.split(",")[0]).split("-") if len(w) > 2}
+    buscado -= _GENERIC_WORDS
+    if not buscado:
+        return True
+    encontrado = set(slugify(name).split("-"))
+    return bool(buscado & encontrado)
+
+
 # Lo que Google Places clasifica como sitio de comer (ver places.client._place_type).
 _FOOD_TYPES = ("restaurant", "bar", "cafe")
 
@@ -423,6 +445,8 @@ class TripPlannerService:
             if pais and pais not in direccion:
                 continue
             if kind == "meal" and resultado.get("poi_type_code") not in _FOOD_TYPES:
+                continue
+            if not _same_name(place, resultado["name"]):
                 continue
             return {
                 "name": resultado["name"],

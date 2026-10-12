@@ -216,6 +216,17 @@ async def test_a_meal_is_only_linked_to_somewhere_to_eat(monkeypatch) -> None:
     assert mapa is not None and mapa["name"] == "La Malquerida"
 
 
+async def test_a_different_place_with_another_name_is_not_linked(monkeypatch) -> None:
+    """Google no tenía el Mesón Beatriz y devolvía otro restaurante cercano."""
+    _places(monkeypatch, [
+        _resultado("Restaurante La Romana", "Concilios de Toledo, Roma, Italia", "restaurant"),
+    ])
+    servicio, session = _servicio()
+    trip = _viaje(session)
+
+    assert await servicio._locate(trip, "Mesón Beatriz, Roma", "meal") is None
+
+
 async def test_without_a_place_nothing_is_searched(monkeypatch) -> None:
     llamadas = _places(monkeypatch, [])
     servicio, session = _servicio()
@@ -259,7 +270,10 @@ def _places(monkeypatch, resultados: list[dict]) -> list[str]:
 
 async def test_locating_fills_old_stops_once_and_centres_the_city(monkeypatch) -> None:
     """Las paradas de antes de `place` se ponen en el mapa una vez, y la ciudad también."""
-    _places(monkeypatch, [_resultado("Cervecería Lúpulo", "C. Ángel 9, Roma, Italia", "bar")])
+    _places(monkeypatch, [
+        _resultado("Cervecería Lúpulo", "C. Ángel 9, Roma, Italia", "bar"),
+        _resultado("Roma", "Roma, Italia"),
+    ])
     servicio, session = _servicio()
     session.commit = _noop
     servicio.settings.openai_api_key = "x"

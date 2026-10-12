@@ -1,5 +1,7 @@
 """Mis viajes y el planificador."""
 
+from datetime import date
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -7,6 +9,7 @@ from sqlalchemy import select
 from locus_v2.api.auth import CurrentUserDep, SessionDep, SettingsDep
 from locus_v2.billing.models import Wallet
 from locus_v2.chat.configuration import ChatConfigurationError
+from locus_v2.trips.routes import DayRoute, day_route
 from locus_v2.trips.service import TripError, TripPlannerService, TripView, trip_view
 
 router = APIRouter(prefix="/api/trips", tags=["trips"])
@@ -43,6 +46,22 @@ async def get_trip(
         return trip_view(await TripPlannerService(session, settings).get(current_user, trip_id))
     except TripError as error:
         raise _http(error) from error
+
+
+@router.get("/{trip_id}/days/{day}/route", response_model=DayRoute | None)
+async def get_day_route(
+    trip_id: str,
+    day: date,
+    session: SessionDep,
+    settings: SettingsDep,
+    current_user: CurrentUserDep,
+) -> DayRoute | None:
+    """El camino a pie del día, o null si no hay dos paradas con sitio en el mapa."""
+    try:
+        trip = await TripPlannerService(session, settings).get(current_user, trip_id)
+    except TripError as error:
+        raise _http(error) from error
+    return await day_route(session, settings, trip, day)
 
 
 @router.delete("/{trip_id}", status_code=204)

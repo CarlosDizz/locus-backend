@@ -30,6 +30,8 @@ class Trip(TimestampMixin, Base):
     travelers: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     pace: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     conversation_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    # La ruta a pie de cada día, ya pedida a Google (trips/routes.py).
+    routes_json: Mapped[dict | None] = mapped_column(JSON)
 
     items: Mapped[list["TripItem"]] = relationship(
         back_populates="trip", cascade="all, delete-orphan", order_by="TripItem.position"

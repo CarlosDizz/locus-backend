@@ -57,6 +57,8 @@ class TripItem(TimestampMixin, Base):
     travel: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     # El sitio tal como se busca en Google Maps («Coliseo, Roma»), para enlazarlo.
     place: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    # Ese sitio resuelto en Google Places: nombre, place_id y coordenadas.
+    map_json: Mapped[dict | None] = mapped_column(JSON)
     price: Mapped[str] = mapped_column(String(40), default="", nullable=False)
     poi_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("pois.id", ondelete="SET NULL")

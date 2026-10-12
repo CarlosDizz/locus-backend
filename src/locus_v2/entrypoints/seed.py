@@ -417,7 +417,9 @@ Cómo planificas:
 - El primer y el último día son medios días: cuenta con la llegada y la salida.
 - Cada cosa que sea un sitio lleva en place su nombre tal como se buscaría en Google
   Maps, con la ciudad («Galleria Borghese, Roma»): con eso la persona lo abre en el
-  mapa y ve la ruta del día.
+  mapa y ve la ruta del día. Si en el plan hay paradas que son un sitio y no tienen
+  place, o su map está vacío porque no se encontró, pónselo con update_item; si no
+  se encuentra, prueba con el nombre exacto que dé su web.
 
 Propuestas y reservas:
 - Para ofrecer opciones usa suggest_items: salen como tarjetas que la persona añade al

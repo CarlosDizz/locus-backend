@@ -157,8 +157,9 @@ def test_the_plan_is_grouped_by_day_and_sorted_by_time() -> None:
     assert [item.title for item in view.days[1].items] == ["Coliseo", "Comida"]
 
 
-async def test_the_place_travels_from_the_card_to_the_plan() -> None:
-    """El sitio que sirve para abrirlo en Google Maps no se pierde al aceptar la tarjeta."""
+async def test_the_place_travels_from_the_card_to_the_plan(monkeypatch) -> None:
+    """El sitio de Google Maps se resuelve en la tarjeta y pasa al plan al aceptarla."""
+    _places(monkeypatch, [_resultado("Galleria Borghese", "Piazzale Scipione Borghese, 5, Roma")])
     servicio, session = _servicio()
     trip = _viaje(session)
     turn = _turno()
@@ -172,8 +173,72 @@ async def test_the_place_travels_from_the_card_to_the_plan() -> None:
         }]},
         turn,
     )
-    assert turn.proposals[0]["place"] == "Galleria Borghese, Roma"
+    assert turn.proposals[0]["map"]["place_id"] == "id-Galleria Borghese"
 
     item = servicio._add_item(trip, {**turn.proposals[0], "status": "proposed"})
 
     assert item.place == "Galleria Borghese, Roma"
+    assert item.map_json["lat"] == 41.9
+
+
+async def test_a_place_in_another_city_is_not_linked(monkeypatch) -> None:
+    """Mejor sin enlace que mandar a la persona a la Malquerida de otra ciudad."""
+    _places(monkeypatch, [_resultado("La Malquerida", "Calle Mayor 3, Madrid")])
+    servicio, session = _servicio()
+    trip = _viaje(session)
+
+    assert await servicio._locate(trip, "La Malquerida, Roma") is None
+
+
+async def test_a_meal_is_only_linked_to_somewhere_to_eat(monkeypatch) -> None:
+    _places(monkeypatch, [
+        _resultado("CBD Flowers By La Mal Querida", "C. Ciriaco Esteban 6, Roma"),
+        _resultado("La Malquerida", "Via Roma 1, Roma", tipo="restaurant"),
+    ])
+    servicio, session = _servicio()
+    trip = _viaje(session)
+
+    mapa = await servicio._locate(trip, "La Malquerida, Roma", "meal")
+
+    assert mapa is not None and mapa["name"] == "La Malquerida"
+
+
+async def test_without_a_place_nothing_is_searched(monkeypatch) -> None:
+    llamadas = _places(monkeypatch, [])
+    servicio, session = _servicio()
+    trip = _viaje(session)
+
+    await servicio._tool(
+        trip,
+        "add_items",
+        {"items": [{
+            "date": "2027-10-06", "time": "21:00", "title": "Cena por la zona",
+            "kind": "meal", "status": "proposed",
+        }]},
+        _turno(),
+    )
+
+    assert llamadas == []
+    assert trip.items[0].map_json is None
+
+
+def _resultado(name: str, address: str, tipo: str = "place") -> dict:
+    return {
+        "name": name, "description": address, "lat": 41.9, "lng": 12.5,
+        "id": f"id-{name}", "google_place_id": f"id-{name}", "poi_type_code": tipo,
+    }
+
+
+def _places(monkeypatch, resultados: list[dict]) -> list[str]:
+    llamadas: list[str] = []
+
+    class _Places:
+        def __init__(self, settings) -> None:
+            pass
+
+        async def search_places(self, query, lat, lng, limit=5, locale=""):
+            llamadas.append(query)
+            return resultados
+
+    monkeypatch.setattr("locus_v2.trips.service.GooglePlacesClient", _Places)
+    return llamadas

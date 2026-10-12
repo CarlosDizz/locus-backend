@@ -28,8 +28,10 @@ from locus_v2.chat.configuration import ChatConfigurationResolver, ChatRequest
 from locus_v2.chat.providers.openai_responses import ChatFunctionCall, OpenAIResponsesAdapter
 from locus_v2.config import Settings
 from locus_v2.identity.models import User
+from locus_v2.places.client import GooglePlacesClient
 from locus_v2.shared.clock import utc_now
 from locus_v2.shared.openai_usage import ToolUsage
+from locus_v2.shared.text import slugify
 from locus_v2.trips.models import Trip, TripItem
 
 logger = structlog.get_logger()
@@ -39,6 +41,8 @@ MAX_ROUNDS = 8
 # va aparte, como datos, así que no hace falta más historia que la reciente.
 HISTORY_MESSAGES = 16
 ITEM_KINDS = ("visit", "meal", "walk", "transport", "logistics")
+# Lo que Google Places clasifica como sitio de comer (ver places.client._place_type).
+_FOOD_TYPES = ("restaurant", "bar", "cafe")
 
 _ITEM_FIELDS: dict[str, Any] = {
     "date": {"type": "string", "description": "Día, AAAA-MM-DD"},
@@ -53,8 +57,10 @@ _ITEM_FIELDS: dict[str, Any] = {
     "place": {
         "type": "string",
         "description": (
-            "El sitio tal como se buscaría en Google Maps, con la ciudad: «Coliseo, Roma», "
-            "«Trattoria Da Enzo al 29, Roma». Vacío si no es un sitio (un traslado, el check-in)."
+            "El sitio concreto tal como se buscaría en Google Maps, con la ciudad: «Coliseo, "
+            "Roma», «Trattoria Da Enzo al 29, Roma». Si es una zona y no un sitio, la zona "
+            "(«Judería, Córdoba»). Vacío si no hay sitio (un traslado, el check-in) o si aún no "
+            "sabes cuál será (una cena sin restaurante elegido)."
         ),
     },
     "price": {"type": "string", "description": "Precio orientativo si lo sabes seguro."},
@@ -196,6 +202,15 @@ class BookingView(BaseModel):
     price: str = ""
 
 
+class MapPlace(BaseModel):
+    """El sitio de Google Maps de una parada, resuelto una vez en Places."""
+
+    name: str
+    place_id: str
+    lat: float
+    lng: float
+
+
 class ItemView(BaseModel):
     id: str
     time: str
@@ -205,6 +220,7 @@ class ItemView(BaseModel):
     note: str = ""
     travel: str = ""
     place: str = ""
+    map: MapPlace | None = None
     price: str = ""
     booking: BookingView | None = None
 
@@ -223,6 +239,7 @@ class ProposalView(BaseModel):
     note: str = ""
     travel: str = ""
     place: str = ""
+    map: MapPlace | None = None
     price: str = ""
     booking: BookingView | None = None
     accepted: bool = False
@@ -253,7 +270,7 @@ def trip_view(trip: Trip) -> TripView:
             ItemView(
                 id=item.public_id, time=item.time, title=item.title, kind=item.kind,
                 status=item.status, note=item.note, travel=item.travel, place=item.place or "",
-                price=item.price,
+                map=MapPlace(**item.map_json) if item.map_json else None, price=item.price,
                 booking=BookingView(**item.booking_json) if item.booking_json else None,
             )
         )
@@ -359,12 +376,67 @@ class TripPlannerService:
             note=str(data.get("note") or ""),
             travel=str(data.get("travel") or "")[:120],
             place=str(data.get("place") or "").strip()[:255],
+            map_json=data.get("map") or None,
             price=str(data.get("price") or "")[:40],
             booking_json=booking,
             position=len(trip.items),
         )
         trip.items.append(item)
         return item
+
+    async def _locate(self, trip: Trip, place: str, kind: str = "") -> dict[str, Any] | None:
+        """El sitio exacto en Google Maps, o nada.
+
+        Se busca el texto de `place` en Google Places y solo se acepta un
+        resultado de la ciudad del viaje: sin esa comprobación, «La Malquerida»
+        podía acabar en otra ciudad. Si no aparece con seguridad, la parada se
+        queda sin enlace, que es mejor que mandar a la persona a un sitio
+        equivocado. Una comida solo se enlaza a un restaurante, bar o cafetería:
+        «La Malquerida, Sevilla» devolvía primero una tienda de CBD.
+        """
+        place = place.strip()
+        if not place:
+            return None
+        resultados = await GooglePlacesClient(self.settings).search_places(
+            place, None, None, limit=3, locale="es"
+        )
+        ciudad = slugify(trip.city)
+        for resultado in resultados:
+            if ciudad and ciudad not in slugify(resultado["description"]):
+                continue
+            if kind == "meal" and resultado.get("poi_type_code") not in _FOOD_TYPES:
+                continue
+            return {
+                "name": resultado["name"],
+                "place_id": resultado["google_place_id"],
+                "lat": resultado["lat"],
+                "lng": resultado["lng"],
+            }
+        logger.info("trip_place_not_found", place=place, city=trip.city)
+        return None
+
+    async def _locate_all(self, trip: Trip, targets: list[Any]) -> None:
+        """Resuelve a la vez las paradas o tarjetas que traen sitio y aún no mapa."""
+        pendientes = [
+            t for t in targets
+            if (t.get("place") if isinstance(t, dict) else t.place)
+            and not (t.get("map") if isinstance(t, dict) else t.map_json)
+        ]
+        if not pendientes:
+            return
+        mapas = await asyncio.gather(
+            *(
+                self._locate(trip, t["place"], str(t.get("kind") or ""))
+                if isinstance(t, dict)
+                else self._locate(trip, t.place, t.kind)
+                for t in pendientes
+            )
+        )
+        for target, mapa in zip(pendientes, mapas, strict=True):
+            if isinstance(target, dict):
+                target["map"] = mapa
+            else:
+                target.map_json = mapa
 
     def _booking(self, url: str, title: str) -> dict[str, str] | None:
         """Un enlace de reserva aceptable: de GetYourGuide y con nuestro partner_id.
@@ -520,9 +592,11 @@ class TripPlannerService:
             return {"ok": True}
         if name == "add_items":
             nuevos = [self._add_item(trip, dict(item)) for item in args.get("items") or []]
+            await self._locate_all(trip, nuevos)
             await self.session.flush()
             return {"ok": True, "added": [item.public_id for item in nuevos]}
         if name == "suggest_items":
+            desde = len(turn.proposals)
             for item in args.get("items") or []:
                 data = dict(item)
                 _parse_day(data.get("date"))
@@ -546,6 +620,7 @@ class TripPlannerService:
                     "accepted": False,
                 }
                 turn.proposals.append(propuesta)
+            await self._locate_all(trip, turn.proposals[desde:])
             return {"ok": True, "shown_as_cards": len(args.get("items") or [])}
         if name in ("update_item", "remove_item"):
             item = next((i for i in trip.items if i.public_id == args.get("item_id")), None)
@@ -562,7 +637,9 @@ class TripPlannerService:
             for field in ("title", "note", "travel", "place"):
                 if args.get(field):
                     setattr(item, field, str(args[field]))
-            return {"ok": True}
+            if args.get("place"):
+                item.map_json = await self._locate(trip, item.place, item.kind)
+            return {"ok": True, "located": item.map_json is not None}
         if name == "find_bookable":
             result = await ReferralService(self.settings).activity_referrals(
                 session_id="", query=str(args.get("query") or ""),

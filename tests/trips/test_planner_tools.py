@@ -292,7 +292,7 @@ async def test_locating_fills_old_stops_once_and_centres_the_city(monkeypatch) -
         preguntas.append([item.public_id for item in items])
         return {"cena": "Cervecería Lúpulo, Roma"}, NormalizedUsage(), None
 
-    async def get(user, public_id):
+    async def get(user, public_id, **_):
         return trip
 
     monkeypatch.setattr(servicio, "_guess_places", adivinar)
@@ -320,7 +320,7 @@ async def test_a_card_added_by_mistake_can_be_undone(monkeypatch) -> None:
         "kind": "walk", "accepted": False,
     }]}]
 
-    async def get(user, public_id):
+    async def get(user, public_id, **_):
         return trip
 
     monkeypatch.setattr(servicio, "get", get)
@@ -332,3 +332,46 @@ async def test_a_card_added_by_mistake_can_be_undone(monkeypatch) -> None:
 
     assert trip.items == []
     assert trip.conversation_json[0]["proposals"][0]["accepted"] is False
+
+
+async def test_a_guest_cannot_change_the_plan_through_the_planner() -> None:
+    """Los invitados opinan; el plan solo lo cambia quien organiza el viaje."""
+    servicio, session = _servicio()
+    trip = _viaje(session)
+    turn = _turno()
+    turn.readonly = True
+
+    resultado = await servicio._tool(
+        trip,
+        "add_items",
+        {"items": [{"date": "2027-10-06", "time": "11:00", "title": "Coliseo", "kind": "visit"}]},
+        turn,
+    )
+
+    assert resultado["ok"] is False
+    assert trip.items == []
+
+
+async def test_a_guest_can_still_propose_cards() -> None:
+    servicio, session = _servicio()
+    trip = _viaje(session)
+    turn = _turno()
+    turn.readonly = True
+
+    await servicio._tool(
+        trip,
+        "suggest_items",
+        {"items": [{"date": "2027-10-06", "time": "19:00", "title": "Navona", "kind": "walk"}]},
+        turn,
+    )
+
+    assert len(turn.proposals) == 1
+
+
+def test_the_viewer_sees_their_role() -> None:
+    trip = Trip(
+        user_id=1, public_id="t", city="Roma", country="Italia", travelers="", pace="",
+        conversation_json=[], items=[],
+    )
+    assert trip_view(trip, 1).my_role == "owner"
+    assert trip_view(trip, 2).my_role == "guest"

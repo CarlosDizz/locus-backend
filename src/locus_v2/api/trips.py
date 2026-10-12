@@ -35,7 +35,9 @@ async def list_trips(
 async def create_trip(
     session: SessionDep, settings: SettingsDep, current_user: CurrentUserDep
 ) -> TripView:
-    return trip_view(await TripPlannerService(session, settings).create(current_user))
+    return trip_view(
+        await TripPlannerService(session, settings).create(current_user), current_user.id
+    )
 
 
 @router.get("/{trip_id}", response_model=TripView)
@@ -43,7 +45,10 @@ async def get_trip(
     trip_id: str, session: SessionDep, settings: SettingsDep, current_user: CurrentUserDep
 ) -> TripView:
     try:
-        return trip_view(await TripPlannerService(session, settings).get(current_user, trip_id))
+        return trip_view(
+            await TripPlannerService(session, settings).get(current_user, trip_id),
+            current_user.id,
+        )
     except TripError as error:
         raise _http(error) from error
 
@@ -59,7 +64,7 @@ async def locate_trip(
         raise _http(error) from error
     except ChatConfigurationError as error:
         raise HTTPException(503, "El planificador no está disponible") from error
-    return trip_view(trip)
+    return trip_view(trip, current_user.id)
 
 
 @router.get("/{trip_id}/days/{day}/route", response_model=DayRoute | None)
@@ -108,7 +113,7 @@ async def planner_message(
         raise _http(error) from error
     except ChatConfigurationError as error:
         raise HTTPException(503, "El planificador no está disponible") from error
-    return trip_view(trip)
+    return trip_view(trip, current_user.id)
 
 
 @router.post("/{trip_id}/proposals/{proposal_id}/accept", response_model=TripView)
@@ -125,7 +130,7 @@ async def accept_proposal(
         )
     except TripError as error:
         raise _http(error) from error
-    return trip_view(trip)
+    return trip_view(trip, current_user.id)
 
 
 @router.post("/{trip_id}/proposals/{proposal_id}/undo", response_model=TripView)
@@ -142,4 +147,58 @@ async def undo_proposal(
         )
     except TripError as error:
         raise _http(error) from error
-    return trip_view(trip)
+    return trip_view(trip, current_user.id)
+
+
+class InviteResponse(BaseModel):
+    code: str
+
+
+@router.post("/{trip_id}/invite", response_model=InviteResponse)
+async def invite_to_trip(
+    trip_id: str, session: SessionDep, settings: SettingsDep, current_user: CurrentUserDep
+) -> InviteResponse:
+    """El código del enlace para sumarse al viaje (/trips/join/<código>)."""
+    try:
+        code = await TripPlannerService(session, settings).invite(current_user, trip_id)
+    except TripError as error:
+        raise _http(error) from error
+    return InviteResponse(code=code)
+
+
+@router.post("/join/{code}", response_model=TripView)
+async def join_trip(
+    code: str, session: SessionDep, settings: SettingsDep, current_user: CurrentUserDep
+) -> TripView:
+    try:
+        trip = await TripPlannerService(session, settings).join(current_user, code)
+    except TripError as error:
+        raise _http(error) from error
+    return trip_view(trip, current_user.id)
+
+
+@router.delete("/{trip_id}/members/me", status_code=204)
+async def leave_trip(
+    trip_id: str, session: SessionDep, settings: SettingsDep, current_user: CurrentUserDep
+) -> None:
+    try:
+        await TripPlannerService(session, settings).leave(current_user, trip_id)
+    except TripError as error:
+        raise _http(error) from error
+
+
+@router.delete("/{trip_id}/members/{member_id}", response_model=TripView)
+async def remove_trip_member(
+    trip_id: str,
+    member_id: int,
+    session: SessionDep,
+    settings: SettingsDep,
+    current_user: CurrentUserDep,
+) -> TripView:
+    try:
+        trip = await TripPlannerService(session, settings).remove_member(
+            current_user, trip_id, member_id
+        )
+    except TripError as error:
+        raise _http(error) from error
+    return trip_view(trip, current_user.id)

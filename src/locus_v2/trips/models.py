@@ -1,8 +1,19 @@
 from datetime import date, datetime
 
-from sqlalchemy import JSON, BigInteger, Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from locus_v2.identity.models import User
 from locus_v2.infrastructure.database.base import Base, TimestampMixin
 from locus_v2.shared.ids import new_public_id
 
@@ -35,6 +46,13 @@ class Trip(TimestampMixin, Base):
     # La ruta a pie de cada día, ya pedida a Google (trips/routes.py).
     routes_json: Mapped[dict | None] = mapped_column(JSON)
 
+    # El enlace para unirse al viaje (/trips/join/<código>); se crea al invitar.
+    invite_code: Mapped[str | None] = mapped_column(String(16), unique=True)
+
+    owner: Mapped[User] = relationship(foreign_keys=[user_id])
+    members: Mapped[list["TripMember"]] = relationship(
+        back_populates="trip", cascade="all, delete-orphan", order_by="TripMember.id"
+    )
     items: Mapped[list["TripItem"]] = relationship(
         back_populates="trip", cascade="all, delete-orphan", order_by="TripItem.position"
     )
@@ -71,3 +89,25 @@ class TripItem(TimestampMixin, Base):
     position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     trip: Mapped[Trip] = relationship(back_populates="items")
+
+
+class TripMember(TimestampMixin, Base):
+    """Alguien que va al viaje sin haberlo creado: lo ve entero y opina en el chat.
+
+    El creador (Trip.user_id) no está aquí; es el único que cambia el plan,
+    acepta tarjetas o borra el viaje.
+    """
+
+    __tablename__ = "trip_members"
+    __table_args__ = (UniqueConstraint("trip_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    trip_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("trips.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    trip: Mapped[Trip] = relationship(back_populates="members")
+    user: Mapped[User] = relationship()

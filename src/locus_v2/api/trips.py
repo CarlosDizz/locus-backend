@@ -48,6 +48,20 @@ async def get_trip(
         raise _http(error) from error
 
 
+@router.post("/{trip_id}/locate", response_model=TripView)
+async def locate_trip(
+    trip_id: str, session: SessionDep, settings: SettingsDep, current_user: CurrentUserDep
+) -> TripView:
+    """Pone en el mapa la ciudad y las paradas que aún no tienen sitio."""
+    try:
+        trip = await TripPlannerService(session, settings).locate_missing(current_user, trip_id)
+    except TripError as error:
+        raise _http(error) from error
+    except ChatConfigurationError as error:
+        raise HTTPException(503, "El planificador no está disponible") from error
+    return trip_view(trip)
+
+
 @router.get("/{trip_id}/days/{day}/route", response_model=DayRoute | None)
 async def get_day_route(
     trip_id: str,

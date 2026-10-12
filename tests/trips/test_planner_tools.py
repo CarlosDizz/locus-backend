@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from locus_v2.billing.pricing import NormalizedUsage
 from locus_v2.trips.models import Trip, TripItem
 from locus_v2.trips.service import (
     TripError,
@@ -254,3 +255,43 @@ def _places(monkeypatch, resultados: list[dict]) -> list[str]:
 
     monkeypatch.setattr("locus_v2.trips.service.GooglePlacesClient", _Places)
     return llamadas
+
+
+async def test_locating_fills_old_stops_once_and_centres_the_city(monkeypatch) -> None:
+    """Las paradas de antes de `place` se ponen en el mapa una vez, y la ciudad también."""
+    _places(monkeypatch, [_resultado("Cervecería Lúpulo", "C. Ángel 9, Roma, Italia", "bar")])
+    servicio, session = _servicio()
+    session.commit = _noop
+    servicio.settings.openai_api_key = "x"
+    trip = _viaje(session)
+    trip.center_json = None
+    cena = servicio._add_item(trip, {
+        "date": "2027-10-05", "time": "20:00", "title": "Cena por la Judería", "kind": "meal",
+    })
+    cena.public_id = "cena"
+    traslado = servicio._add_item(trip, {
+        "date": "2027-10-05", "time": "18:00", "title": "Tren", "kind": "transport",
+    })
+    preguntas: list[list[str]] = []
+
+    async def adivinar(trip, items, locale):
+        preguntas.append([item.public_id for item in items])
+        return {"cena": "Cervecería Lúpulo, Roma"}, NormalizedUsage(), None
+
+    async def get(user, public_id):
+        return trip
+
+    monkeypatch.setattr(servicio, "_guess_places", adivinar)
+    monkeypatch.setattr(servicio, "get", get)
+
+    await servicio.locate_missing(SimpleNamespace(id=1), "t")
+    await servicio.locate_missing(SimpleNamespace(id=1), "t")
+
+    assert preguntas == [["cena"]]
+    assert cena.map_json["name"] == "Cervecería Lúpulo"
+    assert traslado.map_json is None
+    assert trip.center_json is not None
+
+
+async def _noop() -> None:
+    pass

@@ -251,10 +251,17 @@ class MessageView(BaseModel):
     proposals: list[ProposalView] = []
 
 
+class MapCenter(BaseModel):
+    lat: float
+    lng: float
+
+
 class TripView(BaseModel):
     id: str
     city: str
     country: str
+    # Dónde centrar el mapa del viaje: la ciudad, o la primera parada con sitio.
+    center: MapCenter | None = None
     starts_at: datetime | None
     ends_at: datetime | None
     travelers: str
@@ -269,13 +276,18 @@ def trip_view(trip: Trip) -> TripView:
         dias.setdefault(item.day, []).append(
             ItemView(
                 id=item.public_id, time=item.time, title=item.title, kind=item.kind,
-                status=item.status, note=item.note, travel=item.travel, place=item.place or "",
+                status=item.status, note=item.note, travel=item.travel,
+                place="" if item.place in (None, "-") else item.place,
                 map=MapPlace(**item.map_json) if item.map_json else None, price=item.price,
                 booking=BookingView(**item.booking_json) if item.booking_json else None,
             )
         )
+    centro = trip.center_json or next(
+        (item.map_json for item in trip.items if item.map_json), None
+    )
     return TripView(
         id=trip.public_id, city=trip.city, country=trip.country,
+        center=MapCenter(lat=centro["lat"], lng=centro["lng"]) if centro else None,
         starts_at=trip.starts_at, ends_at=trip.ends_at,
         travelers=trip.travelers, pace=trip.pace,
         days=[DayView(date=day, items=items) for day, items in sorted(dias.items())],
@@ -539,6 +551,85 @@ class TripPlannerService:
             items=len(trip.items), elapsed_ms=round((perf_counter() - started_at) * 1000, 1),
         )
         return await self.get(user, public_id)
+
+    async def locate_missing(self, user: User, public_id: str, locale: str = "es") -> Trip:
+        """Pone en el mapa lo que aún no está: la ciudad y las paradas sin sitio.
+
+        Las paradas de antes de existir `place` (o las que el planificador dejó
+        sin él) no tienen nada que buscar en Google, y su título («Cena y
+        cerveza artesanal en la Judería») no sirve. Un modelo barato propone el
+        sitio de cada una a partir del título y la nota, y Places lo confirma
+        con los mismos filtros de siempre; lo que no se confirme se queda sin
+        mapa. Solo se le pregunta por paradas que nunca han tenido `place`, así
+        que repetir la llamada no vuelve a gastar.
+        """
+        trip = await self.get(user, public_id)
+        if trip.center_json is None and trip.city:
+            ciudad = await self._locate(trip, f"{trip.city}, {trip.country}".strip(", "))
+            if ciudad:
+                trip.center_json = {"lat": ciudad["lat"], "lng": ciudad["lng"]}
+        sin_sitio = [
+            item for item in trip.items
+            if not item.place and item.kind in ("visit", "meal", "walk")
+        ]
+        if sin_sitio and self.settings.openai_api_key is not None:
+            sitios, usage, primary = await self._guess_places(trip, sin_sitio, locale)
+            for item in sin_sitio:
+                # Sin propuesta se marca igual, para no volver a preguntar por ella.
+                item.place = sitios.get(item.public_id) or "-"
+            await self._locate_all(
+                trip, [item for item in sin_sitio if item.place != "-"]
+            )
+            if primary is not None:
+                await self._bill(user, primary, usage, [], uuid4().hex, 1)
+        await self.session.commit()
+        return await self.get(user, public_id)
+
+    async def _guess_places(
+        self, trip: Trip, items: list[TripItem], locale: str
+    ) -> tuple[dict[str, str], NormalizedUsage, Any]:
+        configuration = await ChatConfigurationResolver(self.session, self.settings).resolve(
+            ChatRequest(
+                routing_profile=f"chat.trip.{self.settings.env}",
+                locale=locale, context_type="trip", context_id=None, message="",
+            )
+        )
+        primary = configuration.primary
+        if primary.adapter_code != OpenAIResponsesAdapter.code:
+            return {}, NormalizedUsage(), None
+        lineas = "\n".join(
+            f"{item.public_id} | {item.kind} | {item.title} | {item.note[:300]}" for item in items
+        )
+        instrucciones = (
+            f"Viaje a {trip.city} ({trip.country}). Para cada parada, di el sitio concreto "
+            "tal como se buscaría en Google Maps, con la ciudad: «Cervecería Lúpulo, Toledo». "
+            "Si la nota nombra un sitio, ese. Si es una zona, la zona («Judería, Toledo»). "
+            "Si no hay un sitio claro, deja el sitio vacío; no inventes. Responde solo con "
+            "una línea por parada: id | sitio"
+        )
+        adapter = OpenAIResponsesAdapter(
+            self.settings.openai_api_key.get_secret_value().strip(), self.settings
+        )
+        try:
+            result = await adapter.respond(
+                model=primary.model,
+                instructions=instrucciones,
+                input_items=[{"role": "user", "content": lineas}],
+                options=primary.provider_options,
+                tools=[],
+                previous_response_id=None,
+            )
+        finally:
+            await adapter.close()
+        sitios: dict[str, str] = {}
+        for linea in result.text.splitlines():
+            if "|" not in linea:
+                continue
+            item_id, _, sitio = linea.partition("|")
+            sitio = sitio.strip()
+            if sitio and sitio.lower() not in ("vacío", "vacio", "-", "ninguno"):
+                sitios[item_id.strip()] = sitio[:255]
+        return sitios, _add_usage(NormalizedUsage(), result.usage, 0), primary
 
     def _instructions(self, prompt: str, trip: Trip) -> str:
         plan = trip_view(trip).model_dump(mode="json", exclude={"conversation"})

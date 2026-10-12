@@ -30,6 +30,8 @@ class Trip(TimestampMixin, Base):
     travelers: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     pace: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     conversation_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    # La ciudad en el mapa, para centrarlo aunque ninguna parada tenga sitio.
+    center_json: Mapped[dict | None] = mapped_column(JSON)
     # La ruta a pie de cada día, ya pedida a Google (trips/routes.py).
     routes_json: Mapped[dict | None] = mapped_column(JSON)
 

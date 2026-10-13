@@ -58,6 +58,7 @@ class UserResponse(BaseModel):
     is_active: bool
     profile_context: str = ""
     preferred_name: str = ""
+    purchase_account_token: str = ""
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -84,6 +85,7 @@ def _view(view: MobileUserView) -> UserResponse:
         is_active=view.is_active,
         profile_context=view.profile_context,
         preferred_name=view.preferred_name,
+        purchase_account_token=view.purchase_account_token,
     )
 
 
@@ -225,4 +227,5 @@ def _me_view(user: User) -> MobileUserView:
         is_active=user.status == "active",
         profile_context=user.profile_context or "",
         preferred_name=user.preferred_name or "",
+        purchase_account_token=user.public_id,
     )

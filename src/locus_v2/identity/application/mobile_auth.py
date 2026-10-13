@@ -44,6 +44,9 @@ class MobileUserView:
     is_active: bool
     profile_context: str = ""
     preferred_name: str = ""
+    # Para las compras de la app de iPhone: Apple liga cada compra a este UUID
+    # (appAccountToken) y el servidor comprueba que coincide con quien la abona.
+    purchase_account_token: str = ""
 
 
 class MobileAuthService:
@@ -258,4 +261,5 @@ class MobileAuthService:
             is_active=user.status == UserStatus.ACTIVE,
             profile_context=user.profile_context or "",
             preferred_name=user.preferred_name or "",
+            purchase_account_token=user.public_id,
         )

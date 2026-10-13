@@ -468,3 +468,45 @@ async def contact_head() -> Response:
 @router.get("/contact", response_class=HTMLResponse)
 async def contact() -> str:
     return _CONTACT_HTML
+
+
+_SUPPORT_HTML = _page(
+    "Soporte",
+    f"""
+      <h1>Soporte de Locus</h1>
+      <p>
+        ¿Algo no funciona, tienes una duda sobre tu saldo o quieres contarnos qué mejorarías?
+        Escríbenos a <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a> y te contestamos lo antes
+        posible, normalmente en menos de 48 horas.
+      </p>
+
+      <h2>Preguntas frecuentes</h2>
+      <p><strong>¿Cómo funciona el saldo?</strong> Locus no tiene suscripción: recargas saldo y cada
+        llamada con el guía o cada mensaje al planificador descuenta lo que consume. Puedes ver tus
+        movimientos en el apartado Saldo de la app.</p>
+      <p><strong>El guía no me oye o no le oigo.</strong> Comprueba que la app tiene permiso para usar
+        el micrófono (Ajustes del teléfono → Locus) y que no hay otra app usando el audio.</p>
+      <p><strong>No veo mi ubicación en el mapa.</strong> Da permiso de ubicación a Locus en los
+        Ajustes del teléfono.</p>
+      <p><strong>Quiero denunciar un comentario o una foto.</strong> Pulsa «···» junto al comentario o
+        «Denunciar foto» en la llamada. Lo revisamos en menos de 24 horas.</p>
+      <p><strong>Quiero borrar mi cuenta.</strong> Desde Perfil → Eliminar cuenta, o
+        <a href="/account-deletion">como se explica aquí</a>.</p>
+
+      <h2>Más información</h2>
+      <p>
+        <a href="/terms">Términos y condiciones</a> ·
+        <a href="/privacy-policy">Política de privacidad</a>
+      </p>
+""",
+)
+
+
+@router.head("/support")
+async def support_head() -> Response:
+    return Response(media_type="text/html")
+
+
+@router.get("/support", response_class=HTMLResponse)
+async def support() -> str:
+    return _SUPPORT_HTML

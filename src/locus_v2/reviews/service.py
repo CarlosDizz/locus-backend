@@ -3,6 +3,7 @@
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import structlog
@@ -14,9 +15,9 @@ from locus_v2.calls.models import Room
 from locus_v2.catalog.models import Poi
 from locus_v2.config import Settings
 from locus_v2.identity.models import User
-from locus_v2.reviews.models import CallReview, CommentStatus
+from locus_v2.reviews.models import CallReview, CommentStatus, ContentReport, UserBlock
 from locus_v2.shared.clock import utc_now
-from locus_v2.shared.mobile_ids import mobile_id_clause
+from locus_v2.shared.mobile_ids import mobile_id, mobile_id_clause
 from locus_v2.shared.openai_client import build_openai_client
 from locus_v2.voice.models import VoiceSession
 
@@ -62,6 +63,9 @@ class Popularity(BaseModel):
 
 
 class PublicReview(BaseModel):
+    # Para denunciarlo o bloquear a quien lo escribió desde la app.
+    id: int = 0
+    author_id: int = 0
     author: str
     created_at: datetime
     liked: bool | None
@@ -244,7 +248,9 @@ class ReviewService:
             for poi_id, stat in stats.items()
         }
 
-    async def poi_summary(self, poi_mobile_id: int, limit: int = 3) -> PoiReviewSummary:
+    async def poi_summary(
+        self, poi_mobile_id: int, limit: int = 3, viewer: User | None = None
+    ) -> PoiReviewSummary:
         poi = await self.session.scalar(select(Poi).where(mobile_id_clause(Poi, poi_mobile_id)))
         if poi is None:
             raise ReviewError("POI no encontrado", 404)
@@ -253,11 +259,15 @@ class ReviewService:
             CallReview.poi_id == poi.id,
             CallReview.place_comment_status == CommentStatus.PUBLISHED,
         )
+        if viewer is not None:
+            # Lo de quien ha bloqueado no se le enseña a quien bloquea.
+            bloqueados = select(UserBlock.blocked_user_id).where(UserBlock.user_id == viewer.id)
+            publicados = and_(publicados, CallReview.user_id.not_in(bloqueados))
         total = int(
             await self.session.scalar(select(func.count(CallReview.id)).where(publicados)) or 0
         )
         rows = await self.session.execute(
-            select(CallReview, User.display_name)
+            select(CallReview, User.display_name, User.legacy_v1_id)
             .join(User, User.id == CallReview.user_id)
             .where(publicados)
             .order_by(CallReview.created_at.desc(), CallReview.id.desc())
@@ -270,6 +280,8 @@ class ReviewService:
             total=total,
             latest=[
                 PublicReview(
+                    id=review.id,
+                    author_id=mobile_id(SimpleNamespace(id=review.user_id, legacy_v1_id=legacy)),
                     # Solo el nombre de pila: es un comentario público.
                     author=(nombre or "Viajero").split()[0],
                     # La base guarda UTC sin zona; sin marcarla, el móvil la lee
@@ -278,7 +290,7 @@ class ReviewService:
                     liked=review.place_vote,
                     text=review.place_comment or "",
                 )
-                for review, nombre in rows
+                for review, nombre, legacy in rows
             ],
         )
 
@@ -306,4 +318,99 @@ class ReviewService:
                 "guide_comment": review.guide_comment,
             }
             for review, email, nombre, poi_name in rows
+        ]
+
+
+REPORT_KINDS = frozenset({"review", "call_image"})
+
+
+class ReportInput(BaseModel):
+    kind: str
+    target_id: str = Field(min_length=1, max_length=120)
+    reason: str = Field(default="", max_length=500)
+
+
+class ModerationService:
+    """Denuncias y bloqueos: lo que Apple exige para el contenido de los usuarios."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def report(self, reporter: User, payload: ReportInput) -> ContentReport:
+        if payload.kind not in REPORT_KINDS:
+            raise ReviewError("No se puede denunciar esto")
+        if payload.kind == "review":
+            review = await self.session.get(CallReview, int(payload.target_id)) if (
+                payload.target_id.isdigit()
+            ) else None
+            if review is None:
+                raise ReviewError("Ese comentario ya no existe", 404)
+            # Se oculta en cuanto alguien lo denuncia, hasta que lo revisemos.
+            if review.place_comment_status == CommentStatus.PUBLISHED:
+                review.place_comment_status = CommentStatus.REPORTED
+        report = ContentReport(
+            reporter_id=reporter.id,
+            kind=payload.kind,
+            target=payload.target_id,
+            reason=payload.reason.strip(),
+        )
+        self.session.add(report)
+        await self.session.commit()
+        logger.info("content_reported", kind=payload.kind, target=payload.target_id)
+        return report
+
+    async def block(self, user: User, blocked_mobile_id: int) -> None:
+        bloqueado = await self.session.scalar(
+            select(User).where(mobile_id_clause(User, blocked_mobile_id))
+        )
+        if bloqueado is None:
+            raise ReviewError("Usuario no encontrado", 404)
+        if bloqueado.id == user.id:
+            raise ReviewError("No puedes bloquearte a ti mismo")
+        ya = await self.session.scalar(
+            select(UserBlock).where(
+                UserBlock.user_id == user.id, UserBlock.blocked_user_id == bloqueado.id
+            )
+        )
+        if ya is None:
+            self.session.add(UserBlock(user_id=user.id, blocked_user_id=bloqueado.id))
+            await self.session.commit()
+
+    async def resolve_review(self, review_id: int, publish: bool) -> None:
+        """Lo que decide el administrador tras una denuncia: vuelve a publicarse o se retira."""
+        review = await self.session.get(CallReview, review_id)
+        if review is None:
+            raise ReviewError("Comentario no encontrado", 404)
+        review.place_comment_status = (
+            CommentStatus.PUBLISHED if publish else CommentStatus.REJECTED
+        )
+        abiertas = await self.session.scalars(
+            select(ContentReport).where(
+                ContentReport.kind == "review",
+                ContentReport.target == str(review_id),
+                ContentReport.resolved_at.is_(None),
+            )
+        )
+        for report in abiertas:
+            report.resolved_at = utc_now()
+        await self.session.commit()
+
+    async def open_reports(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = await self.session.execute(
+            select(ContentReport, User.email)
+            .join(User, User.id == ContentReport.reporter_id)
+            .where(ContentReport.resolved_at.is_(None))
+            .order_by(ContentReport.created_at.desc())
+            .limit(limit)
+        )
+        return [
+            {
+                "id": report.id,
+                "kind": report.kind,
+                "target": report.target,
+                "reason": report.reason,
+                "reporter_email": email,
+                "created_at": report.created_at.replace(tzinfo=UTC),
+            }
+            for report, email in rows
         ]

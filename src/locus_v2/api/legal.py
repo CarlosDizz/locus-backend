@@ -294,6 +294,20 @@ _TERMS_HTML = _page(
         consumido salvo que la suspensión responda a un uso fraudulento.
       </p>
 
+      <h2>Contenido de los usuarios</h2>
+      <p>
+        Los comentarios públicos sobre los lugares y las fotos que compartes en una llamada en grupo
+        los ven otras personas. No se tolera contenido ofensivo, abusivo, sexual, violento, que incite
+        al odio o que vulnere derechos de terceros. Los comentarios pasan una moderación automática
+        antes de publicarse.
+      </p>
+      <p>
+        Cualquier persona puede denunciar un comentario o una foto desde la app, y bloquear a quien lo
+        publicó para dejar de ver sus comentarios. Un comentario denunciado se oculta en el momento y
+        lo revisamos en menos de 24 horas: si incumple estas condiciones lo retiramos y podemos
+        suspender la cuenta de quien lo publicó. También puedes escribirnos a la dirección de contacto.
+      </p>
+
       <h2>Disponibilidad</h2>
       <p>
         Locus se presta tal cual está disponible. Dependemos de proveedores externos de inteligencia

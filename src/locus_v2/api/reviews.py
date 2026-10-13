@@ -5,14 +5,16 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException
 
 from locus_v2.api.admin_auth import require_admin
-from locus_v2.api.auth import CurrentUserDep, SessionDep, SettingsDep
+from locus_v2.api.auth import CurrentUserDep, OptionalUserDep, SessionDep, SettingsDep
 from locus_v2.calls.models import CallError
 from locus_v2.calls.store import RoomStore
 from locus_v2.identity.models import User
 from locus_v2.infrastructure.redis import get_redis
 from locus_v2.reviews.service import (
     CommentModerator,
+    ModerationService,
     PoiReviewSummary,
+    ReportInput,
     ReviewError,
     ReviewInput,
     ReviewService,
@@ -46,9 +48,11 @@ async def review_call(
 
 
 @router.get("/api/catalog/pois/{poi_id}/reviews", response_model=PoiReviewSummary)
-async def poi_reviews(poi_id: int, session: SessionDep) -> PoiReviewSummary:
+async def poi_reviews(
+    poi_id: int, session: SessionDep, viewer: OptionalUserDep
+) -> PoiReviewSummary:
     try:
-        return await ReviewService(session).poi_summary(poi_id)
+        return await ReviewService(session).poi_summary(poi_id, viewer=viewer)
     except ReviewError as error:
         raise HTTPException(error.status, str(error)) from error
 
@@ -56,3 +60,38 @@ async def poi_reviews(poi_id: int, session: SessionDep) -> PoiReviewSummary:
 @router.get("/admin/v2/reviews")
 async def admin_reviews(session: SessionDep, _admin: AdminDep) -> list[dict[str, Any]]:
     return await ReviewService(session).admin_list()
+
+
+@router.post("/api/reports", status_code=201)
+async def report_content(
+    payload: ReportInput, session: SessionDep, current_user: CurrentUserDep
+) -> dict[str, Any]:
+    """Denunciar un comentario público o una foto de una llamada."""
+    try:
+        report = await ModerationService(session).report(current_user, payload)
+    except ReviewError as error:
+        raise HTTPException(error.status, str(error)) from error
+    return {"id": report.id}
+
+
+@router.post("/api/users/{user_id}/block", status_code=204)
+async def block_user(user_id: int, session: SessionDep, current_user: CurrentUserDep) -> None:
+    try:
+        await ModerationService(session).block(current_user, user_id)
+    except ReviewError as error:
+        raise HTTPException(error.status, str(error)) from error
+
+
+@router.get("/admin/v2/reports")
+async def admin_reports(session: SessionDep, _admin: AdminDep) -> list[dict[str, Any]]:
+    return await ModerationService(session).open_reports()
+
+
+@router.post("/admin/v2/reviews/{review_id}/resolve", status_code=204)
+async def admin_resolve_review(
+    review_id: int, publish: bool, session: SessionDep, _admin: AdminDep
+) -> None:
+    try:
+        await ModerationService(session).resolve_review(review_id, publish)
+    except ReviewError as error:
+        raise HTTPException(error.status, str(error)) from error

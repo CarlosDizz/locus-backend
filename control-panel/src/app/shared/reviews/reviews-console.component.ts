@@ -11,7 +11,7 @@ export interface AdminReview {
   poi_name: string;
   place_vote: boolean | null;
   place_comment: string | null;
-  place_comment_status: 'published' | 'pending' | 'rejected' | null;
+  place_comment_status: 'published' | 'pending' | 'rejected' | 'reported' | null;
   guide_stars: number | null;
   guide_tags: string[];
   guide_comment: string | null;
@@ -25,7 +25,17 @@ const TAG_LABELS: Record<string, string> = {
   misheard: 'No me entendía',
 };
 
+export interface AdminReport {
+  id: number;
+  kind: 'review' | 'call_image';
+  target: string;
+  reason: string;
+  reporter_email: string;
+  created_at: string;
+}
+
 const STATUS_LABELS: Record<string, string> = {
+  reported: 'Denunciado',
   published: 'Publicado',
   pending: 'Pendiente',
   rejected: 'Rechazado',
@@ -46,6 +56,8 @@ export class ReviewsConsoleComponent {
   private readonly http = inject(HttpClient);
 
   readonly reviews = signal<AdminReview[]>([]);
+  // Denuncias sin resolver. Apple pide actuar en menos de 24 horas.
+  readonly reports = signal<AdminReport[]>([]);
   readonly loading = signal(true);
   readonly error = signal<string | null>(null);
 
@@ -78,6 +90,10 @@ export class ReviewsConsoleComponent {
   load(): void {
     this.loading.set(true);
     this.error.set(null);
+    this.http.get<AdminReport[]>('/admin/v2/reports').subscribe({
+      next: (reports) => this.reports.set(reports),
+      error: () => this.reports.set([]),
+    });
     this.http.get<AdminReview[]>('/admin/v2/reviews').subscribe({
       next: (reviews) => {
         this.reviews.set(reviews);
@@ -88,6 +104,18 @@ export class ReviewsConsoleComponent {
         this.loading.set(false);
       },
     });
+  }
+
+  /** El comentario denunciado, para leerlo antes de decidir. */
+  reportedReview(report: AdminReport): AdminReview | undefined {
+    return report.kind === 'review' ? this.reviews().find((r) => String(r.id) === report.target) : undefined;
+  }
+
+  /** Volver a publicar el comentario (la denuncia no tenía razón) o retirarlo. */
+  resolve(report: AdminReport, publish: boolean): void {
+    this.http
+      .post(`/admin/v2/reviews/${report.target}/resolve`, null, { params: { publish } })
+      .subscribe({ next: () => this.load(), error: () => this.error.set('No se ha podido resolver la denuncia.') });
   }
 
   tagLabel(tag: string): string {

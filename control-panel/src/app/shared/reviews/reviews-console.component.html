@@ -9,6 +9,27 @@
 } @else if (error()) {
   <div class="state error">{{ error() }} <button type="button" (click)="load()">Reintentar</button></div>
 } @else {
+  @if (reports().length) {
+    <section class="reports">
+      <h3>Denuncias pendientes ({{ reports().length }}) · resolver en menos de 24 h</h3>
+      @for (report of reports(); track report.id) {
+        <article class="report">
+          <small>{{ report.created_at | date: 'd MMM, HH:mm' }} · {{ report.reporter_email }}</small>
+          @if (report.kind === 'review') {
+            <p>«{{ reportedReview(report)?.place_comment ?? 'Comentario ' + report.target }}»
+              <span>— {{ reportedReview(report)?.user_email }} sobre {{ reportedReview(report)?.poi_name }}</span></p>
+            <div class="report__actions">
+              <button type="button" (click)="resolve(report, true)">Volver a publicar</button>
+              <button type="button" class="danger" (click)="resolve(report, false)">Retirar</button>
+            </div>
+          } @else {
+            <p>Foto de la llamada {{ report.target }}</p>
+          }
+          @if (report.reason) { <small>Motivo: {{ report.reason }}</small> }
+        </article>
+      }
+    </section>
+  }
   <div class="money-strip">
     <article>
       <span>Valoraciones</span>

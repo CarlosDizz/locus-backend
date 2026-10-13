@@ -38,3 +38,47 @@
 .status[data-status="pending"]{background:rgba(209,168,72,.18);color:#8a6a1c}
 .status[data-status="rejected"]{background:rgba(193,94,64,.14);color:var(--locus-terracotta)}
 @media(max-width:700px){.review-body{grid-template-columns:1fr}.tag-row{grid-template-columns:1fr 30px}.tag-row .model-bar{display:none}}
+
+.reports {
+  margin: 0 0 1.2rem;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(184, 106, 75, 0.4);
+  background: rgba(184, 106, 75, 0.07);
+
+  h3 {
+    margin: 0 0 0.6rem;
+    font-size: 0.95rem;
+  }
+}
+
+.report {
+  padding: 0.55rem 0;
+  border-top: 1px solid rgba(31, 42, 46, 0.08);
+
+  p {
+    margin: 0.25rem 0;
+  }
+
+  span {
+    color: rgba(31, 42, 46, 0.6);
+  }
+}
+
+.report__actions {
+  display: flex;
+  gap: 0.5rem;
+
+  button {
+    padding: 0.3rem 0.7rem;
+    border-radius: 8px;
+    border: 1px solid rgba(47, 93, 98, 0.3);
+    background: white;
+    cursor: pointer;
+  }
+
+  .danger {
+    border-color: rgba(184, 106, 75, 0.6);
+    color: #b86a4b;
+  }
+}

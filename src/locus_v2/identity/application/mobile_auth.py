@@ -96,6 +96,65 @@ class MobileAuthService:
         raw_token = await self._create_session(user, user_agent)
         return self._view(user), raw_token
 
+    async def login_apple(
+        self,
+        raw_id_token: str,
+        verifier: IdentityVerifier,
+        user_agent: str | None,
+        display_name: str | None = None,
+    ) -> tuple[MobileUserView, str]:
+        """Entrar con Apple. Apple exige ofrecerlo si la app deja entrar con Google.
+
+        El nombre no viene en el token: Apple lo da a la app solo la primera vez,
+        y la app lo manda aparte. Si la persona oculta su email, Apple da uno de
+        reenvío (@privaterelay.appleid.com) y la cuenta es nueva; si lo comparte
+        y ya entraba con Google, es la misma cuenta.
+        """
+        audiences = [audience for audience in self.settings.apple_auth_audiences if audience]
+        try:
+            claims = await verifier.verify(raw_id_token, audiences)
+        except ValueError as exc:
+            raise MobileAuthError("No he podido verificar la cuenta de Apple") from exc
+
+        apple_sub = str(claims.get("sub", "")).strip()
+        email = str(claims.get("email", "")).strip().lower()
+        if not apple_sub:
+            raise MobileAuthError("La cuenta de Apple no es válida")
+
+        user = await self.session.scalar(select(User).where(User.apple_subject == apple_sub))
+        verified = str(claims.get("email_verified", "")).lower() == "true"
+        if user is None and email and verified:
+            user = await self.session.scalar(select(User).where(User.email == email))
+        if user is None:
+            if not email:
+                raise MobileAuthError("Apple no ha compartido un email para crear la cuenta")
+            role = await self.session.scalar(select(Role).where(Role.code == "user"))
+            user = User(
+                email=email,
+                display_name=(display_name or "").strip() or email.split("@", 1)[0],
+                auth_provider="apple",
+                apple_subject=apple_sub,
+                status=UserStatus.ACTIVE,
+                roles=[role] if role else [],
+            )
+            self.session.add(user)
+            await self.session.flush()
+            await create_signup_wallet(
+                self.session, user.id, self.settings.billing_signup_bonus_cents
+            )
+        else:
+            if user.apple_subject and user.apple_subject != apple_sub:
+                raise MobileAuthError("Esta cuenta ya está vinculada a otro acceso de Apple")
+            user.apple_subject = apple_sub
+            if display_name and not user.display_name:
+                user.display_name = display_name.strip()
+        await self.session.commit()
+        if user.status != UserStatus.ACTIVE:
+            raise MobileAuthError("Esta cuenta está desactivada")
+
+        raw_token = await self._create_session(user, user_agent)
+        return self._view(user), raw_token
+
     async def authenticate(self, raw_token: str | None) -> User | None:
         if not raw_token:
             return None

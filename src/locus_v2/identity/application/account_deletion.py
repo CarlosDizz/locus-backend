@@ -27,6 +27,7 @@ def anonymize(user: User) -> None:
     user.preferred_name = ""
     user.avatar_url = None
     user.provider_subject = None
+    user.apple_subject = None
     user.profile_context = ""
     user.status = UserStatus.DELETED
 

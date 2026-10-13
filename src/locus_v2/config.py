@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     # this and `env` have to be permissive for that route to answer at all.
     allow_insecure_local_admin: bool = False
     google_auth_client_ids: list[str] = Field(default_factory=list)
+    # A quién va dirigido el token de Apple: el bundle id de la app de iPhone.
+    apple_auth_audiences: list[str] = Field(default_factory=lambda: ["com.carlos.locusia"])
     admin_session_days: int = 7
     admin_session_cookie: str = "locus_admin_session"
     auth_enable_password_auth: bool = False

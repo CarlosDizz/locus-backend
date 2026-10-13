@@ -17,6 +17,7 @@ from locus_v2.identity.application.mobile_auth import (
     MobileAuthService,
     MobileUserView,
 )
+from locus_v2.identity.infrastructure.apple_identity import AppleIdentityVerifier
 from locus_v2.identity.infrastructure.google_identity import GoogleIdentityVerifier
 from locus_v2.identity.models import User
 from locus_v2.infrastructure.database.session import get_session
@@ -40,6 +41,12 @@ class LoginRequest(BaseModel):
 
 class GoogleAuthRequest(BaseModel):
     id_token: str = Field(min_length=20)
+
+
+class AppleAuthRequest(BaseModel):
+    id_token: str = Field(min_length=20)
+    # Apple solo da el nombre a la app la primera vez que se entra.
+    display_name: str | None = Field(default=None, max_length=160)
 
 
 class UserResponse(BaseModel):
@@ -147,6 +154,22 @@ async def google_auth(
     try:
         user, token = await MobileAuthService(session, settings).login_google(
             payload.id_token, GoogleIdentityVerifier(), request.headers.get("user-agent")
+        )
+    except MobileAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return AuthResponse(token=token, user=_view(user))
+
+
+@router.post("/apple", response_model=AuthResponse)
+async def apple_auth(
+    payload: AppleAuthRequest, request: Request, session: SessionDep, settings: SettingsDep
+) -> AuthResponse:
+    try:
+        user, token = await MobileAuthService(session, settings).login_apple(
+            payload.id_token,
+            AppleIdentityVerifier(),
+            request.headers.get("user-agent"),
+            payload.display_name,
         )
     except MobileAuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc

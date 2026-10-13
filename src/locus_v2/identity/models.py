@@ -27,6 +27,9 @@ class User(TimestampMixin, Base):
     avatar_url: Mapped[str | None] = mapped_column(String(1000))
     auth_provider: Mapped[str] = mapped_column(String(40), default="google", nullable=False)
     provider_subject: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
+    # El «sub» de Iniciar sesión con Apple. Aparte del de Google para que una misma
+    # cuenta pueda entrar por los dos lados.
+    apple_subject: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
     locale: Mapped[str] = mapped_column(String(16), default="es-ES", nullable=False)
     status: Mapped[str] = mapped_column(String(20), default=UserStatus.ACTIVE, nullable=False)
 

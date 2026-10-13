@@ -19,6 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from locus_v2.ai.models import AIModel, AIProvider
+from locus_v2.billing.infrastructure.app_store import (
+    AppStoreVerificationError,
+    AppStoreVerifier,
+)
 from locus_v2.billing.infrastructure.google_play import (
     GooglePlayVerificationError,
     GooglePlayVerifier,
@@ -41,6 +45,14 @@ from locus_v2.infrastructure.database.session import get_database
 from locus_v2.shared.clock import utc_now
 from locus_v2.shared.mobile_ids import mobile_id
 from locus_v2.voice.models import VoiceSession
+
+# Las recargas de la app de iPhone. Mismos importes que en la web: el saldo que
+# entra es lo que paga la persona; la comisión de Apple sale de nuestro margen.
+APP_STORE_TOPUP_PRODUCTS: dict[str, int] = {
+    "locus_ios_top_up_5": 499,
+    "locus_ios_top_up_10": 999,
+    "locus_ios_top_up_20": 1999,
+}
 
 GOOGLE_PLAY_TOPUP_PRODUCTS: dict[str, int] = {
     "locus_top_up_1": 100,
@@ -366,6 +378,82 @@ class MobileBillingService:
                 "package_name": effective_package_name,
                 "raw_purchase": raw_purchase or {},
                 "verification": verification,
+            },
+            reserved_topup=topup,
+        )
+        return _topup_view(topup)
+
+    async def confirm_app_store_topup(
+        self,
+        *,
+        user: User,
+        signed_transaction: str,
+        verifier: AppStoreVerifier | None = None,
+    ) -> TopUpView:
+        """Abona una compra de la app de iPhone. Idempotente por transacción.
+
+        La app manda la compra firmada por Apple tal como la da StoreKit 2. Se
+        verifica aquí (sin red), y solo entonces se mira el producto. La compra
+        lleva el public_id de quien la hizo (appAccountToken): si no coincide
+        con quien la manda, no se abona, para que una compra no se pueda
+        reaprovechar en otra cuenta.
+        """
+        active = verifier or AppStoreVerifier(self.settings)
+        try:
+            purchase = active.verify(signed_transaction.strip())
+        except AppStoreVerificationError as error:
+            raise BillingError(str(error)) from error
+        amount_cents = APP_STORE_TOPUP_PRODUCTS.get(purchase.product_id)
+        if amount_cents is None:
+            raise BillingError("Producto de recarga no reconocido")
+        if purchase.revoked:
+            raise BillingError("Apple ha anulado esta compra")
+        token = purchase.app_account_token
+        if token and token.lower() != user.public_id.lower():
+            raise BillingError("Esta compra es de otra cuenta")
+
+        dedupe_key = sha256(f"app_store:{purchase.transaction_id}".encode()).hexdigest()
+        existing = await self.session.scalar(
+            select(TopUp).where(TopUp.purchase_dedupe_key == dedupe_key)
+        )
+        if existing is not None:
+            if existing.user_id != user.id:
+                raise BillingError("Esta compra ya fue aplicada a otra cuenta")
+            return _topup_view(existing)
+
+        wallet = await self._wallet_or_raise(user.id)
+        topup = TopUp(
+            user_id=user.id,
+            wallet_id=wallet.id,
+            amount_cents=amount_cents,
+            bonus_cents=0,
+            provider="app_store",
+            provider_reference=purchase.transaction_id,
+            purchase_dedupe_key=dedupe_key,
+            status="pending",
+            metadata_json={},
+        )
+        try:
+            async with self.session.begin_nested():
+                self.session.add(topup)
+                await self.session.flush()
+        except (IntegrityError, OperationalError):
+            existing = await self._recover_topup(dedupe_key)
+            if existing is None:
+                raise
+            if existing.user_id != user.id:
+                raise BillingError("Esta compra ya fue aplicada a otra cuenta") from None
+            return _topup_view(existing)
+
+        topup = await self._apply_topup(
+            user_id=user.id,
+            amount_cents=amount_cents,
+            provider="app_store",
+            provider_reference=purchase.transaction_id,
+            metadata={
+                "product_id": purchase.product_id,
+                "original_transaction_id": purchase.original_transaction_id,
+                "environment": purchase.environment,
             },
             reserved_topup=topup,
         )

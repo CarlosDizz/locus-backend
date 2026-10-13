@@ -9,6 +9,7 @@ description = "Locus V2 API, control plane, workers, and live voice gateway"
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.14,<2",
+  "app-store-server-library>=3.1,<4",
   "asyncmy>=0.2.10,<1",
   "email-validator>=2.2,<3",
   "fastapi>=0.115,<1",
@@ -37,6 +38,10 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# El certificado raíz de Apple con el que se verifican las compras del iPhone.
+"locus_v2.billing.infrastructure" = ["certs/*.cer"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

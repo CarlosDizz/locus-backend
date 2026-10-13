@@ -223,6 +223,27 @@ async def confirm_google_play_topup(
     return _topup_response(topup)
 
 
+class AppStoreTopUpRequest(BaseModel):
+    # La compra tal como la da StoreKit 2 (jwsRepresentation), firmada por Apple.
+    signed_transaction: str = Field(min_length=100, max_length=20000)
+
+
+@router.post("/app-store/topups/confirm", response_model=TopUpResponse)
+async def confirm_app_store_topup(
+    payload: AppStoreTopUpRequest,
+    session: SessionDep,
+    settings: SettingsDep,
+    current_user: CurrentUserDep,
+) -> TopUpResponse:
+    try:
+        topup = await _service(session, settings).confirm_app_store_topup(
+            user=current_user, signed_transaction=payload.signed_transaction
+        )
+    except BillingError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return _topup_response(topup)
+
+
 @router.post("/web/checkout", response_model=WebCheckoutResponse)
 async def create_web_checkout(
     payload: WebCheckoutRequest,

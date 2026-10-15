@@ -28,13 +28,17 @@ async def create_structured_response(
     json_schema: dict[str, Any],
     max_output_tokens: int,
     tool_choice: str = "none",
-    reasoning_effort: str = "minimal",
+    reasoning_effort: str = "none",
 ) -> dict[str, Any]:
-    """`reasoning_effort` defaults to "minimal": these are mechanical tasks
+    """`reasoning_effort` defaults to "none": these are mechanical tasks
     (list candidates, translate a given string) where a reasoning-capable
     model burning its `max_output_tokens` budget on hidden reasoning, instead
     of the visible JSON, is what truncates the response — the actual failure
     mode hit during testing (`json.JSONDecodeError` on a cut-off payload).
+
+    It was "minimal" until gpt-5.6-luna became `tool_model` (2026-09-13): that
+    model rejects "minimal" with a 400, so every city seeded since then got
+    no AI candidates and fell back to Wikidata alone (8-9 POIs per city).
     """
     client = AsyncOpenAI(api_key=api_key)
     try:

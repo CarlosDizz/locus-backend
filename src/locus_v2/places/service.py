@@ -21,6 +21,7 @@ from locus_v2.catalog.models import Poi
 from locus_v2.config import Settings
 from locus_v2.places.client import GooglePlacesClient
 from locus_v2.sessions.models import SessionPoi
+from locus_v2.shared.mobile_ids import mobile_id
 from locus_v2.shared.prompting import localized_field
 from locus_v2.shared.text import clean_text, slugify
 
@@ -205,7 +206,7 @@ def _catalog_poi(row: Poi, locale: str) -> SessionPoi:
         or row.short_description
     )
     return SessionPoi(
-        id=str(row.id),
+        id=str(mobile_id(row)),
         name=name,
         lat=float(row.lat) if row.lat is not None else 0.0,
         lng=float(row.lng) if row.lng is not None else 0.0,

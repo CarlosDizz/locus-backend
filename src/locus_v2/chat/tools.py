@@ -31,6 +31,7 @@ from locus_v2.config import Settings
 from locus_v2.places.service import PlaceSearchService, distance_km, looks_like_service
 from locus_v2.sessions.application.service import MapSessionService
 from locus_v2.sessions.models import SessionPoi, SessionStateView
+from locus_v2.shared.mobile_ids import mobile_id
 from locus_v2.shared.openai_usage import ToolUsage
 from locus_v2.shared.text import clean_text, slugify
 from locus_v2.voice.tools import VoiceToolDispatcher
@@ -495,7 +496,7 @@ def _km_from(candidate: SessionPoi, city: City) -> float | None:
 
 def _catalog_row_to_session_poi(row: Poi) -> SessionPoi:
     return SessionPoi(
-        id=str(row.id),
+        id=str(mobile_id(row)),
         name=row.name,
         lat=float(row.lat) if row.lat is not None else 0.0,
         lng=float(row.lng) if row.lng is not None else 0.0,

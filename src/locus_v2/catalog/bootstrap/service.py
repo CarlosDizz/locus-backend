@@ -71,6 +71,7 @@ from locus_v2.catalog.models import City, Poi, PoiType
 from locus_v2.config import Settings
 from locus_v2.identity.models import AdminAuditEvent
 from locus_v2.observability import LocusEventLogger
+from locus_v2.places.service import distance_km
 from locus_v2.shared.text import clean_text
 
 logger = structlog.get_logger()
@@ -79,6 +80,29 @@ AI_SEED_LOCALIZATION_LIMIT = 12
 
 DEFAULT_RADIUS_KM = 8.0
 DEFAULT_LIMIT = 60
+
+
+def _near_city(
+    city: City, bindings: list[dict[str, Any]], radius_km: float
+) -> list[dict[str, Any]]:
+    """Descarta las filas de Wikidata que caen lejos de la ciudad del mapa.
+
+    La entidad de la ciudad se elige solo por nombre: en 2026-10 «San José»
+    (California) se resolvió a San José de Costa Rica y se importaron nueve
+    sitios a 5.000 km. Si no queda ninguna fila, el import sigue con la
+    búsqueda por radio alrededor de la ciudad.
+    """
+    if city.lat is None or city.lng is None:
+        return bindings
+    max_km = max(radius_km * 3, 40.0)
+    kept = []
+    for item in bindings:
+        lat, lng = wkt_point_to_coords(item.get("coord", {}).get("value", ""))
+        if lat is None or lng is None:
+            continue
+        if distance_km(float(city.lat), float(city.lng), lat, lng) <= max_km:
+            kept.append(item)
+    return kept
 
 
 class CatalogBootstrapError(RuntimeError):
@@ -298,8 +322,12 @@ class CatalogBootstrapService:
         if city_entity_id:
             try:
                 bindings.extend(
-                    await self.wikidata.run_sparql(
-                        build_city_entity_import_query(city_entity_id, limit)
+                    _near_city(
+                        city,
+                        await self.wikidata.run_sparql(
+                            build_city_entity_import_query(city_entity_id, limit)
+                        ),
+                        radius_km,
                     )
                 )
                 if bindings:

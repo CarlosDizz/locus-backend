@@ -1,8 +1,9 @@
 """Public catalog reads and V1 serialization using strict mobile identifiers."""
 
+from math import cos, radians
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import raiseload
@@ -23,12 +24,26 @@ from locus_v2.catalog.mobile_schemas import (
 )
 from locus_v2.catalog.models import City, Poi, PoiType
 from locus_v2.config import Settings
+from locus_v2.places.service import distance_km
 from locus_v2.reviews.service import ReviewService
 from locus_v2.shared.mobile_ids import mobile_id, mobile_id_clause
+
+# El mapa pide los sitios «de una ciudad», pero donde los pueblos se tocan
+# (Cupertino, San José, Mountain View) la ciudad más cercana puede tener pocos
+# sitios y los buenos estar a 10 km, en la de al lado. Por eso la lista de una
+# ciudad incluye también los de las vecinas hasta este radio, por cercanía.
+NEIGHBOR_RADIUS_KM = 25.0
+_KM_PER_DEGREE_LAT = 111.0
 
 
 class CatalogNotFoundError(LookupError):
     pass
+
+
+def _distance_from(center: tuple[float, float], poi: Poi) -> float:
+    if poi.lat is None or poi.lng is None:
+        return float("inf")
+    return distance_km(center[0], center[1], float(poi.lat), float(poi.lng))
 
 
 def display_text(values: dict[str, str], language: str, *, name: bool = False) -> str:
@@ -113,9 +128,23 @@ class MobileCatalogService:
         self, *, city_id: int | None = None, poi_type_code: str | None = None,
         q: str = "", limit: int = 200,
     ) -> list[PoiResponse]:
-        stmt = self._poi_query().order_by(Poi.name, Poi.id).limit(limit)
-        if city_id is not None:
-            stmt = stmt.where(mobile_id_clause(City, city_id))
+        center = await self._city_center(city_id) if city_id is not None else None
+        stmt = self._poi_query().order_by(Poi.name, Poi.id)
+        if center is not None:
+            lat, lng = center
+            lat_margin = NEIGHBOR_RADIUS_KM / _KM_PER_DEGREE_LAT
+            lng_margin = lat_margin / max(cos(radians(lat)), 0.2)
+            stmt = stmt.where(or_(
+                mobile_id_clause(City, city_id),
+                and_(
+                    Poi.lat.between(lat - lat_margin, lat + lat_margin),
+                    Poi.lng.between(lng - lng_margin, lng + lng_margin),
+                ),
+            ))
+        else:
+            stmt = stmt.limit(limit)
+            if city_id is not None:
+                stmt = stmt.where(mobile_id_clause(City, city_id))
         if poi_type_code:
             stmt = stmt.where(PoiType.code == poi_type_code)
         if q.strip():
@@ -124,6 +153,8 @@ class MobileCatalogService:
                 Poi.name.ilike(token), Poi.slug.ilike(token), Poi.short_description.ilike(token)
             ))
         rows = (await self.session.execute(stmt)).all()
+        if center is not None:
+            rows = sorted(rows, key=lambda row: _distance_from(center, row[0]))[:limit]
         # El escalón es relativo a los demás sitios de la lista (la ciudad, en
         # el mapa): por eso se calcula aquí, con todos a la vez.
         popularidad = await self._popularity([poi for poi, _, _ in rows])
@@ -131,6 +162,16 @@ class MobileCatalogService:
             poi_response(poi, city, poi_type, self.language, popularidad.get(poi.id))
             for poi, city, poi_type in rows
         ]
+
+    async def _city_center(self, city_id: int) -> tuple[float, float] | None:
+        row = (
+            await self.session.execute(
+                select(City.lat, City.lng).where(mobile_id_clause(City, city_id))
+            )
+        ).one_or_none()
+        if row is None or row.lat is None or row.lng is None:
+            return None
+        return float(row.lat), float(row.lng)
 
     async def get_poi(self, poi_id: int) -> PoiResponse:
         row = (

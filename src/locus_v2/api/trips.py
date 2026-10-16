@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -55,11 +55,20 @@ async def get_trip(
 
 @router.post("/{trip_id}/locate", response_model=TripView)
 async def locate_trip(
-    trip_id: str, session: SessionDep, settings: SettingsDep, current_user: CurrentUserDep
+    trip_id: str, session: SessionDep, settings: SettingsDep, current_user: CurrentUserDep,
+    locale: str | None = Query(default=None),
+    accept_language: str | None = Header(default=None),
 ) -> TripView:
-    """Pone en el mapa la ciudad y las paradas que aún no tienen sitio."""
+    """Pone en el mapa la ciudad y las paradas que aún no tienen sitio.
+
+    Los sitios se buscan en el idioma del viaje. La app publicada no manda
+    `locale` aquí, así que sin él se toma el primero de `Accept-Language`.
+    """
+    idioma = locale or (accept_language or "es").split(",", 1)[0].split(";", 1)[0].strip()
     try:
-        trip = await TripPlannerService(session, settings).locate_missing(current_user, trip_id)
+        trip = await TripPlannerService(session, settings).locate_missing(
+            current_user, trip_id, idioma or "es"
+        )
     except TripError as error:
         raise _http(error) from error
     except ChatConfigurationError as error:

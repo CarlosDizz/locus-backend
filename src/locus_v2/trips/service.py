@@ -547,7 +547,9 @@ class TripPlannerService:
         trip.items.append(item)
         return item
 
-    async def _locate(self, trip: Trip, place: str, kind: str = "") -> dict[str, Any] | None:
+    async def _locate(
+        self, trip: Trip, place: str, kind: str = "", locale: str = "es"
+    ) -> dict[str, Any] | None:
         """El sitio exacto en Google Maps, o nada.
 
         Se busca el texto de `place` en Google Places y solo se acepta un
@@ -561,11 +563,13 @@ class TripPlannerService:
         if not place:
             return None
         resultados = await GooglePlacesClient(self.settings).search_places(
-            place, None, None, limit=3, locale="es"
+            place, None, None, limit=3, locale=locale
         )
         ciudad = slugify(trip.city)
-        # El país también: hay un Toledo en Ohio. La dirección viene en español
-        # (locale="es") y el planificador apunta el país en español.
+        # El país también: hay un Toledo en Ohio. La dirección se pide en el
+        # idioma en que escribe el planificador, para que el país coincida: con
+        # la dirección siempre en español, un viaje en inglés («Spain») no
+        # encontraba ninguna parada y su mapa salía vacío (2026-10-16).
         pais = slugify(getattr(trip, "country", "") or "")
         for resultado in resultados:
             direccion = slugify(resultado["description"])
@@ -586,7 +590,7 @@ class TripPlannerService:
         logger.info("trip_place_not_found", place=place, city=trip.city)
         return None
 
-    async def _locate_all(self, trip: Trip, targets: list[Any]) -> None:
+    async def _locate_all(self, trip: Trip, targets: list[Any], locale: str = "es") -> None:
         """Resuelve a la vez las paradas o tarjetas que traen sitio y aún no mapa."""
         pendientes = [
             t for t in targets
@@ -597,9 +601,9 @@ class TripPlannerService:
             return
         mapas = await asyncio.gather(
             *(
-                self._locate(trip, t["place"], str(t.get("kind") or ""))
+                self._locate(trip, t["place"], str(t.get("kind") or ""), locale)
                 if isinstance(t, dict)
-                else self._locate(trip, t.place, t.kind)
+                else self._locate(trip, t.place, t.kind, locale)
                 for t in pendientes
             )
         )
@@ -674,6 +678,7 @@ class TripPlannerService:
         input_items: list[dict[str, Any]] = [*history, {"role": "user", "content": actual}]
         turn = _Turn()
         turn.readonly = not es_creador
+        turn.locale = locale
         tools = TOOLS if es_creador else [
             tool for tool in TOOLS if tool.get("name") not in _WRITE_TOOLS
         ]
@@ -732,7 +737,9 @@ class TripPlannerService:
         """
         trip = await self.get(user, public_id)
         if trip.center_json is None and trip.city:
-            ciudad = await self._locate(trip, f"{trip.city}, {trip.country}".strip(", "))
+            ciudad = await self._locate(
+                trip, f"{trip.city}, {trip.country}".strip(", "), locale=locale
+            )
             if ciudad:
                 trip.center_json = {"lat": ciudad["lat"], "lng": ciudad["lng"]}
         sin_sitio = [
@@ -745,7 +752,7 @@ class TripPlannerService:
                 # Sin propuesta se marca igual, para no volver a preguntar por ella.
                 item.place = sitios.get(item.public_id) or "-"
             await self._locate_all(
-                trip, [item for item in sin_sitio if item.place != "-"]
+                trip, [item for item in sin_sitio if item.place != "-"], locale
             )
             if primary is not None:
                 await self._bill(user, primary, usage, [], uuid4().hex, 1)
@@ -880,7 +887,7 @@ class TripPlannerService:
             return {"ok": True}
         if name == "add_items":
             nuevos = [self._add_item(trip, dict(item)) for item in args.get("items") or []]
-            await self._locate_all(trip, nuevos)
+            await self._locate_all(trip, nuevos, turn.locale)
             await self.session.flush()
             return {"ok": True, "added": [item.public_id for item in nuevos]}
         if name == "suggest_items":
@@ -908,7 +915,7 @@ class TripPlannerService:
                     "accepted": False,
                 }
                 turn.proposals.append(propuesta)
-            await self._locate_all(trip, turn.proposals[desde:])
+            await self._locate_all(trip, turn.proposals[desde:], turn.locale)
             return {"ok": True, "shown_as_cards": len(args.get("items") or [])}
         if name in ("update_item", "remove_item"):
             item = next((i for i in trip.items if i.public_id == args.get("item_id")), None)
@@ -926,7 +933,7 @@ class TripPlannerService:
                 if args.get(field):
                     setattr(item, field, str(args[field]))
             if args.get("place"):
-                item.map_json = await self._locate(trip, item.place, item.kind)
+                item.map_json = await self._locate(trip, item.place, item.kind, turn.locale)
             return {"ok": True, "located": item.map_json is not None}
         if name == "find_bookable":
             result = await ReferralService(self.settings).activity_referrals(
@@ -991,6 +998,8 @@ class _Turn:
         self.referral_usages: list[ToolUsage] = []
         # Escribe un invitado: puede proponer, no cambiar el plan.
         self.readonly = False
+        # El idioma del turno, para buscar los sitios en el mismo idioma.
+        self.locale = "es"
 
 
 def _add_usage(

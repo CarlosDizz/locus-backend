@@ -375,3 +375,11 @@ def test_the_viewer_sees_their_role() -> None:
     )
     assert trip_view(trip, 1).my_role == "owner"
     assert trip_view(trip, 2).my_role == "guest"
+
+
+def test_planner_language_rule_names_the_language() -> None:
+    from locus_v2.trips.service import _language_rule
+
+    assert "en inglés" in _language_rule("en")
+    assert "en japonés" in _language_rule("ja-JP")
+    assert "en español" in _language_rule("")

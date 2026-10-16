@@ -563,38 +563,52 @@ class TripPlannerService:
         place = place.strip()
         if not place:
             return None
-        resultados = await GooglePlacesClient(self.settings).search_places(
-            place, None, None, limit=3, locale=locale
-        )
         ciudad = slugify(trip.city)
-        # El país también: hay un Toledo en Ohio. La dirección se pide en el
-        # idioma en que escribe el planificador, para que el país coincida: con
-        # la dirección siempre en español, un viaje en inglés («Spain») no
-        # encontraba ninguna parada y su mapa salía vacío (2026-10-16).
+        # El país también: hay un Toledo en Ohio.
         pais = slugify(getattr(trip, "country", "") or "")
         centro = trip.center_json or None
-        for resultado in resultados:
-            direccion = slugify(resultado["description"])
-            # Google escribe la calle con el nombre local de la ciudad aunque el
-            # resto vaya en el idioma pedido: un viaje en francés («Tolède»)
-            # recibía «… 45001 Toledo, Espagne» y no encontraba ninguna parada.
-            # Si el nombre no aparece, vale estar cerca del centro del viaje.
-            if ciudad and ciudad not in direccion and not _near_center(centro, resultado):
-                continue
-            if pais and pais not in direccion:
-                continue
-            if kind == "meal" and resultado.get("poi_type_code") not in _FOOD_TYPES:
-                continue
-            if not _same_name(place, resultado["name"]):
-                continue
-            return {
-                "name": resultado["name"],
-                "place_id": resultado["google_place_id"],
-                "lat": resultado["lat"],
-                "lng": resultado["lng"],
-            }
+        # Primero en el idioma del viaje; si nada encaja, en español y en
+        # inglés. El planificador escribe los sitios a menudo con su nombre
+        # local («Museo del Greco») y Google responde en el idioma pedido
+        # («エル グレコ美術館»): en japonés o árabe el nombre nunca coincidía.
+        idiomas = list(dict.fromkeys([locale, "es", "en"]))
+        for idioma in idiomas:
+            resultados = await GooglePlacesClient(self.settings).search_places(
+                place, None, None, limit=3, locale=idioma
+            )
+            for resultado in resultados:
+                direccion = slugify(resultado["description"])
+                # Google escribe la calle con el nombre local de la ciudad y el
+                # país en el idioma pedido: un viaje en francés («Tolède»)
+                # recibía «… 45001 Toledo, Espagne». Si el nombre no aparece,
+                # vale estar cerca del centro del viaje.
+                cerca = _near_center(centro, resultado)
+                if ciudad and ciudad not in direccion and not cerca:
+                    continue
+                if pais and pais not in direccion and not cerca:
+                    continue
+                if kind == "meal" and resultado.get("poi_type_code") not in _FOOD_TYPES:
+                    continue
+                if not _same_name(place, resultado["name"]):
+                    continue
+                return {
+                    "name": resultado["name"],
+                    "place_id": resultado["google_place_id"],
+                    "lat": resultado["lat"],
+                    "lng": resultado["lng"],
+                }
         logger.info("trip_place_not_found", place=place, city=trip.city)
         return None
+
+    async def _ensure_center(self, trip: Trip, locale: str = "es") -> None:
+        """El centro de la ciudad, antes de situar paradas: sirve para aceptar
+        sitios cuya dirección nombra la ciudad en otro idioma."""
+        if trip.center_json is None and trip.city:
+            ciudad = await self._locate(
+                trip, f"{trip.city}, {trip.country}".strip(", "), locale=locale
+            )
+            if ciudad:
+                trip.center_json = {"lat": ciudad["lat"], "lng": ciudad["lng"]}
 
     async def _locate_all(self, trip: Trip, targets: list[Any], locale: str = "es") -> None:
         """Resuelve a la vez las paradas o tarjetas que traen sitio y aún no mapa."""
@@ -605,6 +619,7 @@ class TripPlannerService:
         ]
         if not pendientes:
             return
+        await self._ensure_center(trip, locale)
         mapas = await asyncio.gather(
             *(
                 self._locate(trip, t["place"], str(t.get("kind") or ""), locale)
@@ -742,12 +757,7 @@ class TripPlannerService:
         que repetir la llamada no vuelve a gastar.
         """
         trip = await self.get(user, public_id)
-        if trip.center_json is None and trip.city:
-            ciudad = await self._locate(
-                trip, f"{trip.city}, {trip.country}".strip(", "), locale=locale
-            )
-            if ciudad:
-                trip.center_json = {"lat": ciudad["lat"], "lng": ciudad["lng"]}
+        await self._ensure_center(trip, locale)
         sin_sitio = [
             item for item in trip.items
             if not item.place and item.kind in ("visit", "meal", "walk")
@@ -939,6 +949,7 @@ class TripPlannerService:
                 if args.get(field):
                     setattr(item, field, str(args[field]))
             if args.get("place"):
+                await self._ensure_center(trip, turn.locale)
                 item.map_json = await self._locate(trip, item.place, item.kind, turn.locale)
             return {"ok": True, "located": item.map_json is not None}
         if name == "find_bookable":

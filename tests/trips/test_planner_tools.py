@@ -408,3 +408,29 @@ async def test_a_far_away_namesake_is_still_rejected_by_distance(monkeypatch) ->
                 center_json={"lat": 39.8628, "lng": -4.0273})
 
     assert await servicio._locate(trip, "Catedral Primada, Toledo") is None
+
+
+async def test_a_local_name_is_matched_in_spanish_when_the_trip_language_fails(monkeypatch) -> None:
+    """En japonés Google llama «エル グレコ美術館» al «Museo del Greco» del planificador."""
+    nombres = {"ja": "エル グレコ美術館", "es": "Museo del Greco"}
+    pedidos: list[str] = []
+
+    class _Places:
+        def __init__(self, settings) -> None:
+            pass
+
+        async def search_places(self, query, lat, lng, limit=3, locale="es"):
+            pedidos.append(locale)
+            return [{**_resultado(nombres.get(locale, "El Greco Museum"),
+                                  "P.º del Tránsito, 45002 Toledo"),
+                     "lat": 39.856, "lng": -4.028}]
+
+    monkeypatch.setattr("locus_v2.trips.service.GooglePlacesClient", _Places)
+    servicio, session = _servicio()
+    trip = Trip(user_id=1, city="トレド", country="スペイン", conversation_json=[], items=[],
+                center_json={"lat": 39.8628, "lng": -4.0273})
+
+    mapa = await servicio._locate(trip, "Museo del Greco, Toledo", locale="ja")
+
+    assert mapa is not None and mapa["name"] == "Museo del Greco"
+    assert pedidos == ["ja", "es"]

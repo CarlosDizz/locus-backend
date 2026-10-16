@@ -30,6 +30,7 @@ from locus_v2.chat.providers.openai_responses import ChatFunctionCall, OpenAIRes
 from locus_v2.config import Settings
 from locus_v2.identity.models import User
 from locus_v2.places.client import GooglePlacesClient
+from locus_v2.places.service import distance_km
 from locus_v2.shared.clock import utc_now
 from locus_v2.shared.mobile_ids import mobile_id
 from locus_v2.shared.openai_usage import ToolUsage
@@ -571,9 +572,14 @@ class TripPlannerService:
         # la dirección siempre en español, un viaje en inglés («Spain») no
         # encontraba ninguna parada y su mapa salía vacío (2026-10-16).
         pais = slugify(getattr(trip, "country", "") or "")
+        centro = trip.center_json or None
         for resultado in resultados:
             direccion = slugify(resultado["description"])
-            if ciudad and ciudad not in direccion:
+            # Google escribe la calle con el nombre local de la ciudad aunque el
+            # resto vaya en el idioma pedido: un viaje en francés («Tolède»)
+            # recibía «… 45001 Toledo, Espagne» y no encontraba ninguna parada.
+            # Si el nombre no aparece, vale estar cerca del centro del viaje.
+            if ciudad and ciudad not in direccion and not _near_center(centro, resultado):
                 continue
             if pais and pais not in direccion:
                 continue
@@ -1036,3 +1042,15 @@ def _language_rule(locale: str) -> str:
         "va, el ritmo), aunque el estado del viaje o los mensajes anteriores estén en "
         "otro idioma. Los nombres propios de los sitios se dejan como son."
     )
+
+
+NEAR_CENTER_KM = 25.0
+
+
+def _near_center(centro: dict[str, Any] | None, resultado: dict[str, Any]) -> bool:
+    if not centro or resultado.get("lat") is None or resultado.get("lng") is None:
+        return False
+    return distance_km(
+        float(centro["lat"]), float(centro["lng"]),
+        float(resultado["lat"]), float(resultado["lng"]),
+    ) <= NEAR_CENTER_KM

@@ -383,3 +383,28 @@ def test_planner_language_rule_names_the_language() -> None:
     assert "en inglés" in _language_rule("en")
     assert "en japonés" in _language_rule("ja-JP")
     assert "en español" in _language_rule("")
+
+
+async def test_a_city_written_in_another_language_matches_by_distance(monkeypatch) -> None:
+    """En francés el viaje es a «Tolède», pero Google escribe la calle en «Toledo»."""
+    cerca = {**_resultado("Catedral Primada", "Calle Cardenal Cisneros, 45002 Toledo, Espagne"),
+             "lat": 39.857, "lng": -4.024}
+    _places(monkeypatch, [cerca])
+    servicio, session = _servicio()
+    trip = Trip(user_id=1, city="Tolède", country="Espagne", conversation_json=[], items=[],
+                center_json={"lat": 39.8628, "lng": -4.0273})
+
+    mapa = await servicio._locate(trip, "Catedral Primada, Toledo")
+
+    assert mapa is not None and mapa["name"] == "Catedral Primada"
+
+
+async def test_a_far_away_namesake_is_still_rejected_by_distance(monkeypatch) -> None:
+    lejos = {**_resultado("Catedral Primada", "Plaza Mayor, Santo Domingo, Espagne"),
+             "lat": 18.47, "lng": -69.88}
+    _places(monkeypatch, [lejos])
+    servicio, session = _servicio()
+    trip = Trip(user_id=1, city="Tolède", country="Espagne", conversation_json=[], items=[],
+                center_json={"lat": 39.8628, "lng": -4.0273})
+
+    assert await servicio._locate(trip, "Catedral Primada, Toledo") is None

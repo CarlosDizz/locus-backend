@@ -79,3 +79,27 @@ app.locusguide.es {
 		file_server
 	}
 }
+
+# BACUL comparte esta máquina de momento. Sus contenedores (bacul-*) se unen a
+# la red de Locus con nombres propios, para no chocar con api, mysql y demás de
+# aquí, y se despliegan desde su propio repo. Estos bloques son lo único de
+# BACUL que vive en Locus: añadirlos o quitarlos solo pide un caddy reload.
+api.bacul.es {
+	import hsts
+	reverse_proxy bacul-api:8300
+}
+
+panel.bacul.es {
+	import hsts
+	reverse_proxy bacul-panel:80
+}
+
+bacul.es {
+	import hsts
+	reverse_proxy bacul-web:80
+}
+
+www.bacul.es {
+	import hsts
+	redir https://bacul.es{uri} permanent
+}

@@ -49,6 +49,19 @@ MODELS = (
         Lifecycle.STABLE,
         True,
     ),
+    # Releva a gpt-5.6-luna (2026-10-22) en los chats y en tool_model: cuesta la
+    # mitad (0,10/0,50 frente a 0,20/1,20) y en BACUL ya demostró ser el mejor de
+    # los baratos con herramientas. Antes de cambiar se probó contra la API real con
+    # lo que usa Locus: razonamiento low y none, verbosity, funciones y web_search.
+    (
+        "openai",
+        "gpt-6-luna",
+        "GPT-6 luna",
+        ServiceKind.CHAT,
+        "openai_responses",
+        Lifecycle.STABLE,
+        True,
+    ),
     (
         "openai",
         "gpt-realtime-2.1-mini",
@@ -105,6 +118,7 @@ RETIRED_MODEL_REPLACEMENTS = (
     # los dos comparten openai_responses, asi que un perfil nuevo ya cogeria luna
     # pero uno ya publicado se quedaria en gpt-5-mini para siempre.
     ("openai", "gpt-5-mini", "gpt-5.6-luna"),
+    ("openai", "gpt-5.6-luna", "gpt-6-luna"),
 )
 
 PRICE_CARDS = (
@@ -174,6 +188,18 @@ PRICE_CARDS = (
             "text_input_per_million_usd": "0.25",
             "cached_text_input_per_million_usd": "0.025",
             "text_output_per_million_usd": "2.00",
+            "tool_call_usd": "0.01",
+        },
+    ),
+    (
+        "openai",
+        "gpt-6-luna",
+        datetime(2026, 10, 22),
+        "https://developers.openai.com/api/docs/pricing",
+        {
+            "text_input_per_million_usd": "0.10",
+            "cached_text_input_per_million_usd": "0.01",
+            "text_output_per_million_usd": "0.50",
             "tool_call_usd": "0.01",
         },
     ),

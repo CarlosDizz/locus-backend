@@ -77,8 +77,9 @@ class Settings(BaseSettings):
     # frente a 0,25/2,00). El cambio no es por precio sino por lo que sabe:
     # documentando la Plaza del Altozano de Albacete, gpt-5-mini admitio no
     # conocerla y llenó 3.700 caracteres describiendo farolas y papeleras — y es
-    # la plaza central de la ciudad.
-    tool_model: str = "gpt-5.6-luna"
+    # la plaza central de la ciudad. Desde 2026-10-22, gpt-6-luna: la mitad de
+    # precio y probado con las mismas llamadas (ver MODELS en entrypoints/seed.py).
+    tool_model: str = "gpt-6-luna"
     # gpt-5-mini's reasoning tokens count against wall-clock time, not just the token
     # budget: a real document_poi call at the 8000-token ceiling (see voice/tools.py)
     # timed out at exactly 60s (2026-09-06, live), got killed mid-reasoning, and the

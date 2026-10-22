@@ -447,3 +447,39 @@ def test_planner_does_not_name_the_model_behind_it(monkeypatch) -> None:
     instrucciones = servicio._instructions("Eres Locus.", _viaje(session), locale="zh")
 
     assert IDENTITY_RULE in instrucciones
+
+
+def _viaje_en_tren() -> Trip:
+    return Trip(
+        user_id=1, city="Barcelona", country="España", conversation_json=[],
+        items=[
+            TripItem(public_id="3f1c9a20-tren", day=date(2026, 10, 20), time="14:29",
+                     title="Tren Albacete–Barcelona", kind="transport", position=0),
+            TripItem(public_id="77aa0b11-hotel", day=date(2026, 10, 20), time="15:00",
+                     title="Check-in", kind="logistics", position=1),
+        ],
+    )
+
+
+async def test_a_wrong_item_id_answers_with_the_ids_that_exist() -> None:
+    """Con un id que no existe, el modelo recibe las franjas y puede reintentar."""
+    servicio, _ = _servicio()
+
+    salida = await servicio._tool(
+        _viaje_en_tren(), "update_item", {"item_id": "tren-renfe", "time": "14:59"}, _turno()
+    )
+
+    assert salida["ok"] is False
+    assert [i["id"] for i in salida["items"]] == ["3f1c9a20-tren", "77aa0b11-hotel"]
+
+
+async def test_a_unique_id_prefix_still_finds_the_item() -> None:
+    servicio, _ = _servicio()
+    trip = _viaje_en_tren()
+
+    salida = await servicio._tool(
+        trip, "update_item", {"item_id": "3f1c9a20", "time": "14:59"}, _turno()
+    )
+
+    assert salida["ok"] is True
+    assert trip.items[0].time == "14:59"

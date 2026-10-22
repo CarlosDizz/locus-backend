@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
@@ -305,11 +306,28 @@ VOICE_RUNTIME_DEFAULTS = {
 }
 
 CHAT_RUNTIME_DEFAULTS = {
-    "max_output_tokens": 1200,
+    # En OpenAI el razonamiento cuenta dentro de este máximo: con 1200 y «medium»
+    # una respuesta con búsquedas podía quedarse a medias.
+    "max_output_tokens": 4000,
     "temperature": 0.8,
-    "reasoning_effort": "low",
+    # «medium» desde 2026-10-22, con gpt-6-luna. Con «low», el planificador buscaba
+    # mal el tren del correo de Barcelona y acababa pidiendo el billete; con
+    # «medium» encontró solo el Torre del Oro de las 14:59, vio que no cuadraba con
+    # las 14:29 del correo y lo preguntó citando a Adif. Cuesta unos décimos de
+    # céntimo más por mensaje y la mitad de lo que costaba gpt-5.6-luna en «low».
+    "reasoning_effort": "medium",
     "verbosity": "medium",
 }
+
+# Lo que la siembra impone en las versiones 1 que son suyas (mapa, planificador),
+# igual que ya les reescribe el texto. Lo demás de su configuración no se toca.
+CHAT_SEED_OWNED_RUNTIME = ("max_output_tokens", "reasoning_effort")
+
+
+def _own_chat_runtime(current: dict[str, Any] | None) -> dict[str, Any]:
+    runtime = dict(current or CHAT_RUNTIME_DEFAULTS)
+    runtime.update({key: CHAT_RUNTIME_DEFAULTS[key] for key in CHAT_SEED_OWNED_RUNTIME})
+    return runtime
 
 # Condensed from V1's app/prompts/chat_agent.json. What did NOT survive the port
 # is the ~25-rule wall telling the model when each tool applies: V1 needed it
@@ -453,6 +471,39 @@ Cómo planificas:
   place, o su map está vacío porque no se encontró, pónselo con update_item; si no
   se encuentra, prueba con el nombre exacto que dé su web.
 
+Llegar, moverse y las horas fijas:
+- Cómo llegan y cómo se mueven lo decide la persona. Si ya lo ha dicho (en coche,
+  en tren, en avión…), organiza con eso y no le busques otro. Si aún no lo tiene
+  decidido, o te lo pide, busca horarios de transporte público (trenes, autobuses,
+  vuelos, metro, ferris) y recomiéndale los que mejor encajan con su plan, diciendo
+  por qué: llegar con margen a lo que tiene con hora, no perder media mañana, el
+  último de vuelta. Ofrécelos como tarjetas; la decisión es suya.
+- Lo que ya tiene con hora (un billete, un evento, una recogida, una reserva),
+  apúntalo en el mismo turno en que te lo cuente, también el alojamiento, aunque
+  falte algún dato.
+- Lo que no te digan, dedúcelo del contexto antes de preguntarlo: de dónde salen
+  (de la ciudad a la que vuelven, donde devuelven el coche), qué día es «el
+  jueves». Y lo que se pueda comprobar en la web, búscalo tú antes de preguntar:
+  de un billete de tren, autobús o avión, busca el servicio para saber a qué hora
+  y dónde llega, que es lo que organiza el resto del día. Pregunta solo lo que
+  siga faltando después de buscar.
+- Si lo que encuentras no cuadra con lo que te han dicho, dilo con la fuente. Si
+  hay una sola opción que encaja, propónla y pide que la confirme; si hay varias,
+  enséñalas y pregunta cuál es. No elijas por tu cuenta ni supongas una hora.
+- Un día va en orden y sin solaparse: nada cae a una hora en la que la persona
+  está viajando, en un evento o en camino. Lo que viene después de un trayecto
+  empieza cuando llega y ha hecho el traslado; el alojamiento, a la hora en que de
+  verdad llega, nunca a las 00:00. Antes de confirmar un día, repásalo entero.
+- Antes de cada cosa con hora fija, apunta tú, sin que te lo pidan, cuándo hay que
+  salir del sitio anterior y cómo, con el tiempo de trayecto comprobado. Y en un
+  trayecto largo (en coche, en tren, en avión), apunta la hora aproximada de llegada.
+- Los puntos de salida y llegada (estación, aeropuerto, oficina, aparcamiento) van
+  en place, para que salgan en el mapa.
+- Si te falta una hora, no la inventes: propónla razonada («al acabar el evento,
+  antes de que cierre la oficina a las 19:00») y pregúntala.
+- Lo práctico de una reserva (localizador, a nombre de quién, datos para la
+  factura, a qué hora cierra) va en la nota de su franja.
+
 Propuestas y reservas:
 - Para ofrecer opciones usa suggest_items: salen como tarjetas que la persona añade al
   plan con un toque. Si la persona ya te ha dicho que sí, o te pide que lo apuntes,
@@ -475,7 +526,13 @@ deja los detalles para el plan, que la persona ve aparte. No repitas el plan ent
 en el chat. Si la persona quiere cambiar algo del plan, cámbialo ahí mismo: con
 update_item, o quitando lo viejo con remove_item antes de poner lo nuevo. Cambiar nunca
 es añadir y dejar lo anterior; mira el estado del viaje para confirmar que ya no está.
-Confírmalo en una frase."""
+Confírmalo en una frase.
+
+Si una herramienta falla, arréglalo tú en ese mismo turno: usa el id correcto del
+estado del viaje y vuelve a intentarlo, o quita la franja y créala de nuevo. Nunca
+le digas a la persona que «el sistema no te deja», ni dejes en el plan algo que
+sabes que está mal. Y di que algo está apuntado o cambiado solo cuando la
+herramienta te lo haya confirmado."""
 CALL_GUIDE_PROMPT = """Eres Locus, el guía turístico de esta llamada en grupo sobre
 {poi_name}. Hablas en {locale}. Puede haber varias personas escuchando y hablando a la
 vez; cada intervención te llega con el nombre de quien la dice, así que dirígete a ellos
@@ -1234,8 +1291,7 @@ async def seed() -> None:
                     _tool_snapshot(tools["plan_poi_visit"]),
                     _tool_snapshot(tools["find_activities"]),
                 ]
-            if not chat_prompt.runtime_config_json:
-                chat_prompt.runtime_config_json = CHAT_RUNTIME_DEFAULTS
+            chat_prompt.runtime_config_json = _own_chat_runtime(chat_prompt.runtime_config_json)
 
         chat_profile = await session.scalar(
             select(RoutingProfile).where(RoutingProfile.code == "chat.poi.local")
@@ -1308,6 +1364,7 @@ async def seed() -> None:
             )
             if map_prompt is not None:
                 map_prompt.content = MAP_CHAT_PROMPT
+                map_prompt.runtime_config_json = _own_chat_runtime(map_prompt.runtime_config_json)
                 map_prompt.variables_json = map_variables
                 map_prompt.tools_json = map_tools
 
@@ -1398,6 +1455,9 @@ async def seed() -> None:
             )
             if trip_prompt is not None:
                 trip_prompt.content = TRIP_PLANNER_PROMPT
+                trip_prompt.runtime_config_json = _own_chat_runtime(
+                    trip_prompt.runtime_config_json
+                )
 
         await session.commit()
 

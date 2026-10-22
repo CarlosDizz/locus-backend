@@ -8,7 +8,12 @@ from locus_v2.ai.enums import PublicationStatus, ServiceKind
 from locus_v2.ai.models import AIModel, AIProvider, RoutingProfile
 from locus_v2.catalog.models import Poi
 from locus_v2.config import Settings
-from locus_v2.shared.prompting import PromptRenderingError, localized_field, render_prompt
+from locus_v2.shared.prompting import (
+    PromptRenderingError,
+    localized_field,
+    render_prompt,
+    with_identity,
+)
 from locus_v2.voice.protocol import SessionStart
 from locus_v2.voice.providers.base import LiveSessionConfig
 
@@ -70,7 +75,7 @@ class VoiceConfigurationResolver:
             "city_name": context.get("city_name", ""),
         }
         try:
-            prompt = render_prompt(profile.prompt_version.content, variables)
+            prompt = with_identity(render_prompt(profile.prompt_version.content, variables))
         except PromptRenderingError as error:
             raise VoiceConfigurationError(str(error)) from error
         tools = [

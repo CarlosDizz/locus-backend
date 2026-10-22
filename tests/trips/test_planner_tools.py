@@ -434,3 +434,16 @@ async def test_a_local_name_is_matched_in_spanish_when_the_trip_language_fails(m
 
     assert mapa is not None and mapa["name"] == "Museo del Greco"
     assert pedidos == ["ja", "es"]
+
+
+def test_planner_does_not_name_the_model_behind_it(monkeypatch) -> None:
+    from locus_v2.shared.prompting import IDENTITY_RULE
+    from locus_v2.trips import service as trips_service
+
+    monkeypatch.setattr(
+        trips_service, "trip_view", lambda trip: SimpleNamespace(model_dump=lambda **_: {})
+    )
+    servicio, session = _servicio()
+    instrucciones = servicio._instructions("Eres Locus.", _viaje(session), locale="zh")
+
+    assert IDENTITY_RULE in instrucciones

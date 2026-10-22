@@ -71,7 +71,12 @@ from locus_v2.infrastructure.database.session import Database
 from locus_v2.reviews.service import ReviewService
 from locus_v2.shared.clock import utc_now
 from locus_v2.shared.openai_usage import ToolUsage
-from locus_v2.shared.prompting import PromptRenderingError, localized_field, render_prompt
+from locus_v2.shared.prompting import (
+    PromptRenderingError,
+    localized_field,
+    render_prompt,
+    with_identity,
+)
 from locus_v2.voice.models import VoiceSession, VoiceSessionStatus
 from locus_v2.voice.protocol import AudioFormat
 from locus_v2.voice.providers.base import (
@@ -609,7 +614,7 @@ class _CallVoiceBridge:
                 self._itinerary = await self._itinerary_tracker(session, poi, self._travel_mode)
 
             try:
-                prompt = render_prompt(
+                prompt = with_identity(render_prompt(
                     profile.prompt_version.content,
                     {
                         "locale": room.language,
@@ -621,7 +626,7 @@ class _CallVoiceBridge:
                         # placeholder renders instead of failing the whole call.
                         "traveler_context": "",
                     },
-                )
+                ))
             except PromptRenderingError as error:
                 raise CallError(str(error), 503) from error
             # Los hechos del sitio van antes que el perfil de quien escucha: si la

@@ -756,6 +756,28 @@ class TripPlannerService:
                     break
                 input_items = await self._run_tools(trip, result.function_calls, turn)
                 previous_id = result.raw_response_id
+            if not reply.strip():
+                # Tras muchas búsquedas el modelo podía cerrar sin una palabra (gastó la
+                # salida razonando, o se quedó sin rondas): la persona no veía respuesta.
+                # Una ronda más, sin herramientas, para que conteste con lo que tiene.
+                cierre: list[dict[str, Any]] = []
+                if result.function_calls:
+                    cierre = await self._run_tools(trip, result.function_calls, turn)
+                cierre.append({
+                    "role": "user",
+                    "content": "Contesta ya a la persona con lo que tienes, sin buscar más.",
+                })
+                result = await adapter.respond(
+                    model=primary.model,
+                    instructions=self._instructions(primary.prompt, trip, user, locale),
+                    input_items=cierre,
+                    options=primary.provider_options,
+                    tools=None,
+                    previous_response_id=result.raw_response_id,
+                )
+                rounds += 1
+                usage = _add_usage(usage, result.usage, result.web_search_calls)
+                reply = result.text
         finally:
             await adapter.close()
 

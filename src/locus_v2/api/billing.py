@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from locus_v2.api.auth import CurrentUserDep
 from locus_v2.billing.application.mobile_billing import BillingError, MobileBillingService
+from locus_v2.billing.application.spending import spending_groups
 from locus_v2.billing.infrastructure.paddle_gateway import (
     PaddleError,
     PaddleGateway,
@@ -85,6 +86,7 @@ class LedgerEntryResponse(BaseModel):
     usage_audio_output_tokens: int | None
     usage_image_input_tokens: int | None
     created_at: UtcDatetime
+    usage_app: str | None = None
 
 
 class UsageEventResponse(BaseModel):
@@ -109,6 +111,7 @@ class UsageEventResponse(BaseModel):
     currency: str
     status: str
     created_at: UtcDatetime
+    app: str = "guide"
 
 
 class TopUpResponse(BaseModel):
@@ -344,3 +347,23 @@ def _topup_response(topup: Any) -> TopUpResponse:
         status=topup.status,
         created_at=topup.created_at.isoformat(),
     )
+
+
+class SpendingGroupResponse(BaseModel):
+    app: str
+    title: str
+    amount_eur: float
+    last_at: UtcDatetime
+    trip_id: str = ""
+
+
+@router.get("/spending", response_model=list[SpendingGroupResponse])
+async def get_spending(
+    session: SessionDep,
+    settings: SettingsDep,
+    current_user: CurrentUserDep,
+    limit: int = Query(default=20, ge=1, le=50),
+) -> list[SpendingGroupResponse]:
+    """Lo gastado por viaje y por llamada, con la app de cada gasto (saldo común)."""
+    groups = await spending_groups(session, settings, current_user.id, limit)
+    return [SpendingGroupResponse(**asdict(group)) for group in groups]

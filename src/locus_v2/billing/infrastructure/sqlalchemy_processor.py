@@ -72,31 +72,42 @@ class SqlAlchemyUsageProcessor:
             raise MissingBillingConfiguration(event.id, f"User {event.user_id} has no wallet")
 
         aggregate = event.interaction_type == "realtime_call" and event.voice_session_id is not None
-        previous_cost, previous_charge, previous_tool_calls = (
-            await self._previous_call_totals(event) if aggregate else (0, 0, 0)
+        usage = NormalizedUsage(
+            text_input_tokens=event.text_input_tokens,
+            cached_text_input_tokens=event.cached_text_input_tokens,
+            text_output_tokens=event.text_output_tokens,
+            audio_input_tokens=event.audio_input_tokens,
+            cached_audio_input_tokens=event.cached_audio_input_tokens,
+            audio_output_tokens=event.audio_output_tokens,
+            image_input_tokens=event.image_input_tokens,
+            cached_image_input_tokens=event.cached_image_input_tokens,
+            audio_input_milliseconds=event.audio_input_milliseconds,
+            audio_output_milliseconds=event.audio_output_milliseconds,
+            tool_calls=event.tool_calls,
+            raw=event.raw_usage_json,
         )
-        decision = self.decision_engine.decide(
-            usage=NormalizedUsage(
-                text_input_tokens=event.text_input_tokens,
-                cached_text_input_tokens=event.cached_text_input_tokens,
-                text_output_tokens=event.text_output_tokens,
-                audio_input_tokens=event.audio_input_tokens,
-                cached_audio_input_tokens=event.cached_audio_input_tokens,
-                audio_output_tokens=event.audio_output_tokens,
-                image_input_tokens=event.image_input_tokens,
-                cached_image_input_tokens=event.cached_image_input_tokens,
-                audio_input_milliseconds=event.audio_input_milliseconds,
-                audio_output_milliseconds=event.audio_output_milliseconds,
-                tool_calls=event.tool_calls,
-                raw=event.raw_usage_json,
-            ),
-            price=PriceCard.from_json(snapshot.pricing_json),
-            wallet_balance_cents=wallet.balance_cents,
-            previous_provider_cost_microusd=previous_cost,
-            previous_charged_cents=previous_charge,
-            previous_tool_calls=previous_tool_calls,
-            aggregate_by_call=aggregate,
-        )
+        price = PriceCard.from_json(snapshot.pricing_json)
+        previous_charge = 0
+        app = event.app or "guide"
+        if app in self.decision_engine.exact_apps and not aggregate:
+            decision, wallet.carry_microeur = self.decision_engine.decide_exact(
+                usage=usage, price=price, wallet_balance_cents=wallet.balance_cents,
+                carry_microeur=wallet.carry_microeur or 0,
+                free=app in self.decision_engine.free_apps,
+            )
+        else:
+            previous_cost, previous_charge, previous_tool_calls = (
+                await self._previous_call_totals(event) if aggregate else (0, 0, 0)
+            )
+            decision = self.decision_engine.decide(
+                usage=usage,
+                price=price,
+                wallet_balance_cents=wallet.balance_cents,
+                previous_provider_cost_microusd=previous_cost,
+                previous_charged_cents=previous_charge,
+                previous_tool_calls=previous_tool_calls,
+                aggregate_by_call=aggregate,
+            )
 
         event.price_snapshot_id = snapshot.id
         event.provider_cost_microusd = decision.provider_cost_microusd
@@ -107,6 +118,7 @@ class SqlAlchemyUsageProcessor:
         event.currency = wallet.currency
         event.status = UsageStatus.CHARGED
         billing_metadata = {
+            "app": app,
             "aggregate_by_call": aggregate,
             "call_total_provider_cost_microusd": decision.call_total_provider_cost_microusd,
             "call_total_charge_cents": decision.call_total_charge_cents,

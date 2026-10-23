@@ -1,3 +1,4 @@
+from locus_v2.affiliates.models import ReferralClick
 from locus_v2.ai.models import (
     AIModel,
     AIProvider,
@@ -25,6 +26,7 @@ from locus_v2.trips.models import Trip, TripItem, TripMember
 from locus_v2.voice.models import VoiceSession, VoiceTurn
 
 __all__ = [
+    "ReferralClick",
     "AIModel",
     "AIProvider",
     "AITool",

@@ -48,6 +48,17 @@ class Trip(TimestampMixin, Base):
 
     # El enlace para unirse al viaje (/trips/join/<código>); se crea al invitar.
     invite_code: Mapped[str | None] = mapped_column(String(16), unique=True)
+    # En qué apps se ve el viaje, como máscara de bits (shared/apps.py): 1 Locus
+    # Guide, 2 Borea, 3 las dos. Los planes son de la app que los crea hasta que la
+    # persona lleva uno de Borea a Locus.
+    apps: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    # El tiempo que suele hacer esas fechas, buscado en la web por el planificador
+    # cuando el viaje queda lejos para tener previsión: {max_c, min_c, rain_days,
+    # summary, source}. La previsión real no se guarda: se pide al abrir el viaje.
+    climate_json: Mapped[dict | None] = mapped_column(JSON)
+    # «Para este viaje»: lo que el planificador recomienda según la fecha, el
+    # equipamiento y quién viaja. Lista de {id, kind, title, reason, booking}.
+    recommendations_json: Mapped[list | None] = mapped_column(JSON)
 
     owner: Mapped[User] = relationship(foreign_keys=[user_id])
     members: Mapped[list["TripMember"]] = relationship(

@@ -83,6 +83,12 @@ class GooglePlacesClient:
                     "is_ephemeral": True,
                     "google_place_id": place_id,
                     "context_kind": "hospitality",
+                    # Para huir de las turistadas (skill de hostelería de Borea):
+                    # una nota alta con veinte reseñas no vale lo que una con mil.
+                    "rating": item.get("rating"),
+                    "user_ratings_total": item.get("user_ratings_total"),
+                    "price_level": item.get("price_level"),
+                    "open_now": (item.get("opening_hours") or {}).get("open_now"),
                 }
             )
         return normalized

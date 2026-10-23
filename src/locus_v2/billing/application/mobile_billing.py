@@ -92,6 +92,8 @@ class LedgerEntryView:
     usage_audio_output_tokens: int | None
     usage_image_input_tokens: int | None
     created_at: datetime
+    # De qué app es el gasto (shared/apps.py), para su icono en el historial.
+    usage_app: str | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +119,7 @@ class UsageEventView:
     currency: str
     status: str
     created_at: datetime
+    app: str = "guide"
 
 
 @dataclass(frozen=True)
@@ -217,6 +220,7 @@ class MobileBillingService:
                     if usage_event
                     else None,
                     created_at=row.created_at,
+                    usage_app=usage_event.app if usage_event is not None else None,
                 )
             )
         return views
@@ -270,6 +274,7 @@ class MobileBillingService:
                 currency=row.currency,
                 status=row.status,
                 created_at=row.created_at,
+                app=row.app,
             )
             for row, model, provider in rows
         ]

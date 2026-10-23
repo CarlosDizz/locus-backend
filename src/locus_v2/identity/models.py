@@ -45,6 +45,10 @@ class User(TimestampMixin, Base):
     profile_context: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
     # What they want to be called, which is not always the name Google gave us.
     preferred_name: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    # Por qué app llegó (shared/apps.py): para medir cuánta gente pasa de una a otra.
+    signup_app: Mapped[str] = mapped_column(
+        String(20), default="guide", server_default="guide", nullable=False
+    )
 
     roles: Mapped[list["Role"]] = relationship(
         secondary="user_roles", lazy="selectin", back_populates="users"

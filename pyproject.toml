@@ -42,6 +42,8 @@ where = ["src"]
 [tool.setuptools.package-data]
 # El certificado raíz de Apple con el que se verifican las compras del iPhone.
 "locus_v2.billing.infrastructure" = ["certs/*.cer"]
+# Las skills del planificador de Borea (trips/skills.py).
+"locus_v2.trips" = ["skills/*.md"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

@@ -57,7 +57,16 @@ class Settings(BaseSettings):
     app_store_bundle_id: str = "com.carlos.locusia"
     app_store_app_apple_id: int = 6821354015
     # A quién va dirigido el token de Apple: el bundle id de la app de iPhone.
-    apple_auth_audiences: list[str] = Field(default_factory=lambda: ["com.carlos.locusia"])
+    apple_auth_audiences: list[str] = Field(
+        default_factory=lambda: ["com.carlos.locusia", "com.carlos.borea"]
+    )
+    # Borea, el planificador del grupo Locus (shared/apps.py). Misma base de datos y
+    # mismas cuentas; su propia app en la App Store, con sus propias recargas.
+    borea_app_store_bundle_id: str = "com.carlos.borea"
+    borea_app_store_app_apple_id: int = 0
+    # Si los referidos acaban siendo el negocio, Borea puede pasar a ser gratis:
+    # sus consumos se registran pero no se cobran. Se cambia sin versión nueva.
+    borea_free: bool = False
     admin_session_days: int = 7
     admin_session_cookie: str = "locus_admin_session"
     auth_enable_password_auth: bool = False
@@ -155,6 +164,18 @@ class Settings(BaseSettings):
 
     getyourguide_referrals_enabled: bool = True
     getyourguide_partner_id: str = ""
+    # Programas de referidos activos (affiliates/programs.py): código del programa →
+    # «param=valor» o una plantilla de red de afiliados con {url}. Ejemplo:
+    # {"booking": "aid=1234567", "amazon": "tag=borea-21"}.
+    affiliate_links: dict[str, str] = Field(default_factory=dict)
+
+    # WeatherKit de Apple para la previsión de los próximos días de un viaje. Va
+    # incluido en la cuenta de desarrollador; sin estas claves, Borea solo enseña
+    # el clima habitual que busca el planificador.
+    weatherkit_team_id: str = ""
+    weatherkit_key_id: str = ""
+    weatherkit_service_id: str = ""
+    weatherkit_private_key: SecretStr | None = None
 
     app_android_latest_version_code: int = 10
     app_android_update_url: str = ""

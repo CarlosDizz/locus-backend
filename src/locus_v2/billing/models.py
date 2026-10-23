@@ -43,6 +43,12 @@ class Wallet(TimestampMixin, Base):
     )
     currency: Mapped[str] = mapped_column(String(3), default="EUR", nullable=False)
     balance_cents: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    # Lo que se ha cobrado por debajo del céntimo y aún no ha llegado a uno, en
+    # millonésimas de euro. Borea cobra cada mensaje exacto, sin mínimo; como el
+    # saldo va en céntimos, las fracciones se acumulan aquí hasta sumar uno.
+    carry_microeur: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
 
     ledger_entries: Mapped[list["LedgerEntry"]] = relationship(back_populates="wallet")
 
@@ -83,6 +89,11 @@ class UsageEvent(TimestampMixin, Base):
     dedupe_key: Mapped[str] = mapped_column(String(160), nullable=False)
     request_id: Mapped[str | None] = mapped_column(String(200), index=True)
     interaction_type: Mapped[str] = mapped_column(String(60), nullable=False)
+    # De qué app es el consumo (shared/apps.py): cambia cómo se cobra y se ve en
+    # el panel y en el historial de gastos.
+    app: Mapped[str] = mapped_column(
+        String(20), default="guide", server_default="guide", nullable=False
+    )
 
     text_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     cached_text_input_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)

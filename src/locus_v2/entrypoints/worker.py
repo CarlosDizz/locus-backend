@@ -44,6 +44,7 @@ async def process_pending_usage(stop: asyncio.Event) -> None:
         usd_to_eur=settings.billing_usd_to_eur,
         margin_multiplier=settings.billing_margin_multiplier,
         minimum_realtime_call_charge_cents=settings.billing_min_realtime_call_charge_cents,
+        free_apps=frozenset({"borea"}) if settings.borea_free else frozenset(),
     )
     logger = structlog.get_logger()
 

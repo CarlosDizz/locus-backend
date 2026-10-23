@@ -80,6 +80,46 @@ class GoogleRoutesClient:
         return routes[0] if routes else None
 
 
+_TRAVEL_MODES = {"a pie": "WALK", "transporte publico": "TRANSIT",
+                 "transporte público": "TRANSIT", "coche": "DRIVE"}
+
+
+async def travel_time(
+    settings: Settings, origin: str, destination: str, mode: str = "a pie"
+) -> dict[str, Any] | None:
+    """Lo que se tarda de un sitio a otro (la tool «ruta» de las skills de Borea)."""
+    client = GoogleRoutesClient(settings)
+    if not client._api_key or not origin.strip() or not destination.strip():
+        return None
+    body = {
+        "origin": {"address": origin},
+        "destination": {"address": destination},
+        "travelMode": _TRAVEL_MODES.get(mode.strip().lower(), "WALK"),
+        "languageCode": "es",
+    }
+    headers = {
+        "X-Goog-Api-Key": client._api_key,
+        "X-Goog-FieldMask": "routes.duration,routes.distanceMeters",
+    }
+    try:
+        async with httpx.AsyncClient() as http:
+            response = await http.post(
+                client.url, json=body, headers=headers, timeout=client._timeout_seconds
+            )
+        response.raise_for_status()
+        routes = response.json().get("routes") or []
+    except (httpx.HTTPError, ValueError) as error:
+        logger.warning("trip_travel_time_failed", error=str(error))
+        return None
+    if not routes:
+        return None
+    return {
+        "minutes": round(_seconds(routes[0].get("duration")) / 60),
+        "km": round(int(routes[0].get("distanceMeters") or 0) / 1000, 1),
+        "mode": mode,
+    }
+
+
 def _seconds(value: object) -> int:
     """Google da las duraciones como texto: «498s»."""
     try:

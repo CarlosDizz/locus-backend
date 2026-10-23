@@ -50,9 +50,12 @@ class MobileUserView:
 
 
 class MobileAuthService:
-    def __init__(self, session: AsyncSession, settings: Settings) -> None:
+    def __init__(self, session: AsyncSession, settings: Settings, app: str = "guide") -> None:
         self.session = session
         self.settings = settings
+        # La app desde la que entra (shared/apps.py): queda como signup_app si la
+        # cuenta es nueva, para medir cuánta gente llega por cada una.
+        self.app = app
 
     async def register(
         self, *, email: str, password: str, display_name: str
@@ -137,6 +140,7 @@ class MobileAuthService:
                 display_name=(display_name or "").strip() or email.split("@", 1)[0],
                 auth_provider="apple",
                 apple_subject=apple_sub,
+                signup_app=self.app,
                 status=UserStatus.ACTIVE,
                 roles=[role] if role else [],
             )
@@ -211,6 +215,7 @@ class MobileAuthService:
                 avatar_url=avatar_url or None,
                 auth_provider="google",
                 provider_subject=google_sub,
+                signup_app=self.app,
                 status=UserStatus.ACTIVE,
                 roles=[role] if role else [],
             )

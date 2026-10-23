@@ -30,12 +30,74 @@ class BillingDecisionEngine:
         usd_to_eur: Decimal,
         margin_multiplier: Decimal,
         minimum_realtime_call_charge_cents: int,
+        exact_apps: frozenset[str] = frozenset({"borea"}),
+        free_apps: frozenset[str] = frozenset(),
     ) -> None:
         self.usd_to_eur = usd_to_eur
         self.margin_multiplier = margin_multiplier
         self.minimum_realtime_call_charge_cents = minimum_realtime_call_charge_cents
+        # Apps que cobran cada consumo exacto, sin redondear al céntimo: el saldo va
+        # en céntimos y lo que no llega a uno se arrastra (Wallet.carry_microeur).
+        self.exact_apps = exact_apps
+        # Apps gratis: el consumo se registra con su coste, pero no se cobra.
+        self.free_apps = free_apps
         self.costs = ProviderCostCalculator()
         self.policy = BillingPolicy()
+
+    def decide_exact(
+        self,
+        *,
+        usage: NormalizedUsage,
+        price: PriceCard,
+        wallet_balance_cents: int,
+        carry_microeur: int,
+        free: bool = False,
+    ) -> tuple[BillingDecision, int]:
+        """Un consumo cobrado a su coste x margen exacto, sin mínimo (Borea).
+
+        Devuelve la decisión y lo que queda por debajo del céntimo para el
+        siguiente consumo. Gratis: se apunta el coste y no se cobra nada.
+        """
+        event_cost = self.costs.calculate_microusd(usage, price)
+        provider_quote = self.policy.quote(event_cost, self.usd_to_eur, self.margin_multiplier)
+        if free:
+            decision = BillingDecision(
+                provider_cost_microusd=event_cost,
+                provider_cost_eur_cents=provider_quote.provider_cost_eur_cents,
+                requested_charge_cents=0, charged_amount_cents=0,
+                gross_margin_cents=-provider_quote.provider_cost_eur_cents,
+                call_total_provider_cost_microusd=event_cost, call_total_charge_cents=0,
+                partial_charge=False,
+            )
+            return decision, carry_microeur
+        provider_microeur = Decimal(event_cost) * self.usd_to_eur
+        if price.tool_call_charge_eur_cents is not None:
+            tools_cost = Decimal(self.costs.tool_calls_microusd(usage.tool_calls, price))
+            rest = (Decimal(event_cost) - tools_cost) * self.usd_to_eur * self.margin_multiplier
+            fixed = Decimal(usage.tool_calls) * price.tool_call_charge_eur_cents * 10_000
+            charge_microeur = max(rest, Decimal(0)) + fixed
+        else:
+            charge_microeur = provider_microeur * self.margin_multiplier
+        total = carry_microeur + int(charge_microeur.quantize(Decimal("1"), rounding=ROUND_CEILING))
+        requested = total // 10_000
+        charged = min(requested, max(wallet_balance_cents, 0))
+        # Lo que no se ha podido cobrar por falta de saldo no se arrastra: igual que
+        # en Locus, el consumo se queda a medias y la app pide recargar.
+        new_carry = total - requested * 10_000
+        provider_cents = int(
+            (provider_microeur / 10_000).quantize(Decimal("1"), rounding=ROUND_CEILING)
+        )
+        decision = BillingDecision(
+            provider_cost_microusd=event_cost,
+            provider_cost_eur_cents=provider_cents,
+            requested_charge_cents=requested,
+            charged_amount_cents=charged,
+            gross_margin_cents=charged - provider_cents,
+            call_total_provider_cost_microusd=event_cost,
+            call_total_charge_cents=requested,
+            partial_charge=charged < requested,
+        )
+        return decision, new_carry
 
     def decide(
         self,

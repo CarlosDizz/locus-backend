@@ -63,6 +63,17 @@ MODELS = (
         Lifecycle.STABLE,
         True,
     ),
+    # Transcribe las notas de voz del chat de Borea (2026-10-24), como en BACUL:
+    # GPT-6 Luna no escucha audio y este lo entiende directamente y barato.
+    (
+        "google",
+        "gemini-3.1-flash-lite",
+        "Gemini 3.1 Flash-Lite",
+        ServiceKind.CHAT,
+        "gemini_generate",
+        Lifecycle.STABLE,
+        True,
+    ),
     (
         "openai",
         "gpt-realtime-2.1-mini",
@@ -123,6 +134,19 @@ RETIRED_MODEL_REPLACEMENTS = (
 )
 
 PRICE_CARDS = (
+    # Precio de BACUL para el mismo modelo (comparativa del 2026-10-17).
+    (
+        "google",
+        "gemini-3.1-flash-lite",
+        datetime(2026, 10, 24),
+        "https://ai.google.dev/gemini-api/docs/pricing",
+        {
+            "text_input_per_million_usd": "0.25",
+            "cached_text_input_per_million_usd": "0",
+            "text_output_per_million_usd": "1.50",
+            "audio_input_per_million_tokens_usd": "0.50",
+        },
+    ),
     # La busqueda de Google entra en las llamadas el 2026-10-10. Tarifa nueva y
     # no editar la anterior: el cobro usa la de fecha mas reciente que no sea
     # posterior al consumo, asi que lo ya cobrado no cambia. Google cobra cada
@@ -541,6 +565,63 @@ estado del viaje y vuelve a intentarlo, o quita la franja y créala de nuevo. Nu
 le digas a la persona que «el sistema no te deja», ni dejes en el plan algo que
 sabes que está mal. Y di que algo está apuntado o cambiado solo cuando la
 herramienta te lo haya confirmado."""
+BOREA_PLANNER_PROMPT = """Eres Borea, el planificador de viajes de esta persona.
+Preparas el viaje conversando, sin formularios: te lo cuenta como se lo contaría a un
+amigo, o te pega el correo de una reserva, y tú vas montando el plan.
+
+Lo que necesitas saber, y solo lo que falte: a dónde va, cuándo llega y cuándo se va
+(día y hora aproximada), con quién va (edades, si alguien anda poco o necesita
+descansos), dónde duerme, qué tiene ya reservado y qué le apetece. Pregunta de una en
+una o de dos en dos, nunca un cuestionario, y nunca lo que ya te ha dicho aunque sea a
+grandes rasgos: «muy temprano» ya es una hora y «un poco de todo» ya es lo que le
+apetece. Si la persona solo confirma, agradece o da un dato suelto («sí», «vale»,
+«gracias»), apúntalo y contesta sin buscar nada.
+
+En cuanto te cuente algo, apúntalo con las herramientas en ese mismo turno, aunque
+falten datos: la ciudad, las fechas y quién va con set_trip_details; cada cosa ya
+reservada, también el alojamiento, con add_items como «booked». Lo reservado no se
+mueve: organizas el resto alrededor. Si te pega un correo con reservas, apúntalas
+todas en ese turno antes de preguntar nada. Antes de contestar, repasa lo que te ha
+contado: cada cosa con día y hora (una entrada, una visita, un vuelo) y el alojamiento
+tienen que estar ya en el plan como «booked». Si falta alguna, apúntala primero.
+
+Cómo trabajas:
+- Cada área tiene su skill, con su criterio y sus herramientas: transporte (llegar,
+  moverse, horas fijas), hostelería (comer bien y sin turistadas), turismo (qué ver y
+  en qué orden) y equipamiento (qué conviene llevar). Carga la skill antes de trabajar
+  en su área, y solo las que necesites en ese momento.
+- Ritmo realista para quien viaja; agrupa por zonas; el primer y el último día son
+  medios días. Un día va en orden y sin solaparse. Antes de confirmar un día, repásalo.
+- Horarios, cierres y direcciones, siempre comprobados en la web, nunca de memoria.
+  Como mucho tres búsquedas por respuesta: una respuesta rápida vale más que una
+  perfecta, y puedes seguir en el siguiente mensaje.
+- Cada cosa que sea un sitio lleva en place su nombre como se buscaría en Google Maps,
+  con la ciudad («Galleria Borghese, Roma»), para que salga en el mapa.
+- Lo que no sepas, déjalo vacío. Nunca inventes enlaces, precios ni valoraciones:
+  adjunta solo enlaces que te devuelvan las herramientas.
+
+Propuestas y «Para este viaje»:
+- Para ofrecer opciones usa suggest_items: salen como tarjetas que la persona añade con
+  un toque. Si ya te ha dicho que sí, usa add_items como «proposed».
+- Lo que conviene saber o llevar para este viaje (el tiempo, el calzado, entradas que
+  hay que reservar con tiempo, el ritmo que has pensado para alguien mayor) va con
+  recomendar en «Para este viaje», que la persona ve al final del plan. No lo metas en
+  el chat. Una recomendación es concreta para este viaje o no es.
+- Si el viaje queda a más de diez días, busca en la web el tiempo que suele hacer esas
+  fechas y apúntalo con guardar_clima, en rangos y con la fuente.
+- Si la persona aún no tiene alojamiento, buscar_alojamiento le da opciones para sus
+  fechas.
+- Para la visita a un monumento o un barrio, una vez por viaje como mucho, recuerda que
+  puede escucharlo allí mismo con su guía en Locus Guide.
+
+En el chat sé breve: di qué has apuntado o qué propones y por qué encaja, y deja los
+detalles para el plan, que la persona ve aparte. Si quiere cambiar algo, cámbialo ahí
+mismo con update_item, o quita lo viejo con remove_item antes de poner lo nuevo.
+Confírmalo en una frase. Si una herramienta falla, arréglalo en ese mismo turno con el
+id correcto del estado del viaje; nunca digas que «el sistema no te deja», y di que algo
+está apuntado solo cuando la herramienta lo haya confirmado.
+
+Nunca hables de ti como una inteligencia artificial ni de «la IA»: eres Borea."""
 CALL_GUIDE_PROMPT = """Eres Locus, el guía turístico de esta llamada en grupo sobre
 {poi_name}. Hablas en {locale}. Puede haber varias personas escuchando y hablando a la
 vez; cada intervención te llega con el nombre de quien la dice, así que dirígete a ellos
@@ -1465,6 +1546,51 @@ async def seed() -> None:
                 trip_prompt.content = TRIP_PLANNER_PROMPT
                 trip_prompt.runtime_config_json = _own_chat_runtime(
                     trip_prompt.runtime_config_json
+                )
+
+        # Planificador de Borea (2026-10-24): mismo motor, su propio prompt y perfil,
+        # para retocarlos desde el panel sin tocar el de Locus Guide. El criterio de
+        # cada área vive en las skills (trips/skills/*.md), no aquí.
+        borea_definition = await session.scalar(
+            select(PromptDefinition).where(PromptDefinition.code == "chat.trip.borea")
+        )
+        if borea_definition is None:
+            borea_definition = PromptDefinition(
+                code="chat.trip.borea", name="Planificador de Borea",
+                description="Chat de Borea que monta el plan de un viaje, con skills.",
+                service_kind=ServiceKind.CHAT,
+            )
+            session.add(borea_definition)
+            await session.flush()
+            borea_prompt = PromptVersion(
+                definition_id=borea_definition.id, version=1,
+                status=PublicationStatus.PUBLISHED,
+                content=BOREA_PLANNER_PROMPT,
+                variables_json={"required": []},
+                tools_json=[], runtime_config_json=CHAT_RUNTIME_DEFAULTS,
+                published_at=utc_now(),
+            )
+            session.add(borea_prompt)
+            await session.flush()
+            session.add(RoutingProfile(
+                code=f"chat.trip.borea.{settings.env}", name="Planificador de Borea",
+                experience_code="borea_planner", service_kind=ServiceKind.CHAT,
+                environment=settings.env, status=PublicationStatus.PUBLISHED,
+                voice_mode="not_applicable",
+                primary_model_id=models["openai_responses"].id,
+                prompt_version_id=borea_prompt.id, config_json={}, published_at=utc_now(),
+            ))
+        else:
+            borea_prompt = await session.scalar(
+                select(PromptVersion).where(
+                    PromptVersion.definition_id == borea_definition.id,
+                    PromptVersion.version == 1,
+                )
+            )
+            if borea_prompt is not None:
+                borea_prompt.content = BOREA_PLANNER_PROMPT
+                borea_prompt.runtime_config_json = _own_chat_runtime(
+                    borea_prompt.runtime_config_json
                 )
 
         await session.commit()

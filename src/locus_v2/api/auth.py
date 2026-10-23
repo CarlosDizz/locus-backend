@@ -21,11 +21,20 @@ from locus_v2.identity.infrastructure.apple_identity import AppleIdentityVerifie
 from locus_v2.identity.infrastructure.google_identity import GoogleIdentityVerifier
 from locus_v2.identity.models import User
 from locus_v2.infrastructure.database.session import get_session
+from locus_v2.shared.apps import ClientApp, client_app
 from locus_v2.shared.mobile_ids import mobile_id
 
 router = APIRouter(prefix="/api/auth", tags=["mobile-auth"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+
+
+def get_client_app(x_locus_app: str | None = Header(default=None)) -> ClientApp:
+    """De qué app viene la petición (shared/apps.py); sin cabecera, Locus Guide."""
+    return client_app(x_locus_app)
+
+
+ClientAppDep = Annotated[ClientApp, Depends(get_client_app)]
 
 
 class RegisterRequest(BaseModel):
@@ -151,10 +160,11 @@ async def login(payload: LoginRequest, session: SessionDep, settings: SettingsDe
 
 @router.post("/google", response_model=AuthResponse)
 async def google_auth(
-    payload: GoogleAuthRequest, request: Request, session: SessionDep, settings: SettingsDep
+    payload: GoogleAuthRequest, request: Request, session: SessionDep, settings: SettingsDep,
+    app: ClientAppDep,
 ) -> AuthResponse:
     try:
-        user, token = await MobileAuthService(session, settings).login_google(
+        user, token = await MobileAuthService(session, settings, app.value).login_google(
             payload.id_token, GoogleIdentityVerifier(), request.headers.get("user-agent")
         )
     except MobileAuthError as exc:
@@ -164,10 +174,11 @@ async def google_auth(
 
 @router.post("/apple", response_model=AuthResponse)
 async def apple_auth(
-    payload: AppleAuthRequest, request: Request, session: SessionDep, settings: SettingsDep
+    payload: AppleAuthRequest, request: Request, session: SessionDep, settings: SettingsDep,
+    app: ClientAppDep,
 ) -> AuthResponse:
     try:
-        user, token = await MobileAuthService(session, settings).login_apple(
+        user, token = await MobileAuthService(session, settings, app.value).login_apple(
             payload.id_token,
             AppleIdentityVerifier(),
             request.headers.get("user-agent"),

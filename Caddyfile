@@ -77,6 +77,15 @@ app.locusguide.es {
 		reverse_proxy api:8100
 	}
 
+	# La web informativa de Borea (api/borea_web.py). Lleva el script de
+	# Travelpayouts Drive, solo en esta página: la PWA de Locus no lo carga.
+	handle /borea {
+		reverse_proxy api:8100
+	}
+	handle /borea/ {
+		reverse_proxy api:8100
+	}
+
 	# Angular enruta en el cliente: cualquier ruta desconocida devuelve el índice
 	# o /call, /poi/3 y demás darían 404 al recargar o al abrir un enlace.
 	# Dentro de su propio handle: try_files se aplica antes que cualquier handle

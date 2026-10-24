@@ -1,3 +1,4 @@
+# ruff: noqa: E501 - el HTML de las páginas va tal cual, con líneas largas.
 """La invitación a un viaje de Borea: /borea/unirse/<código>.
 
 Es el enlace que se comparte por WhatsApp y el que lleva el QR. En un iPhone con
@@ -174,3 +175,71 @@ async def borea_invite(
 </html>
 """
     return HTMLResponse(html, status_code=status)
+
+
+# --- La web informativa de Borea: /borea ----------------------------------------------
+# Una sola página, sin app web (Borea es solo iPhone). Lleva el script de Travelpayouts
+# Drive, que su alta exige verificar en la web (2026-10-24, decidido por Carlos): va
+# solo aquí, nunca en la PWA de Locus, para no meter contenido de terceros en ella
+# (locusguide.es ya estuvo marcado por Google por eso; ver el Caddyfile).
+
+_TRAVELPAYOUTS_DRIVE = """
+    <script nowprocket data-noptimize="1" data-cfasync="false" data-wpfc-render="false" seraph-accel-crit="1" data-no-defer="1" data-cmp-ab="2">
+      (function () {
+          var script = document.createElement("script");
+          script.async = 1;
+          script.setAttribute("data-cmp-ab","2");
+          script.src = 'https://emrldtp.com/NTkwNTQz.js?t=590543';
+          document.head.appendChild(script);
+      })();
+    </script>"""
+
+_HOME = """<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Borea Travel Planner, de Locus</title>
+    <meta name="description" content="Prepara tu viaje conversando: Borea monta el plan día a día, con el tiempo, el mapa y dónde comer como la gente del sitio." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="{fonts}" rel="stylesheet" />
+    <style>{styles}
+      .claim {{ font-size: 30px; line-height: 1.15; font-weight: 600; margin: 26px 0 10px; }}
+      .sub {{ color: #a3a6c8; font-size: 16px; line-height: 1.55; margin: 0 0 26px; }}
+      ul {{ list-style: none; padding: 0; margin: 0 0 28px; text-align: left; display: grid; gap: 12px; }}
+      li {{ background: #17142e; border: 1px solid #2b2650; border-radius: 16px; padding: 14px 16px; font-size: 15px; line-height: 1.45; }}
+      li b {{ color: #5cf2a0; font-weight: 600; }}
+      footer {{ margin-top: 30px; font-size: 13px; color: #a3a6c8; }}
+      footer a {{ color: #a3a6c8; }}
+    </style>{drive}
+  </head>
+  <body>
+    <main>
+      <div class="marca">Borea</div>
+      <p class="claim">Tu viaje, montado conversando.</p>
+      <p class="sub">Cuéntale a Borea a dónde vas y con quién, o pégale el correo de una reserva. Ella monta el plan día a día.</p>
+      <ul>
+        <li><b>El plan, día a día.</b> Con el tiempo de cada día, el mapa y el camino a pie entre paradas.</li>
+        <li><b>Comer como la gente del sitio.</b> Recomendaciones con valoraciones reales, sin turistadas y sin que nadie pague por salir.</li>
+        <li><b>Viajes compartidos.</b> Invita con un QR o un enlace y planead juntos; avisos cuando alguien cambia algo.</li>
+        <li><b>De Locus.</b> Lleva el plan a Locus Guide y escucha cada sitio con tu guía.</li>
+      </ul>
+      <a class="boton principal" href="{store}">Próximamente en la App Store</a>
+      <footer>
+        <a href="https://api.locusguide.es/borea/privacy-policy">Privacidad</a> ·
+        <a href="https://api.locusguide.es/borea/terms">Términos</a> ·
+        <a href="https://app.locusguide.es">Locus Guide</a>
+      </footer>
+    </main>
+  </body>
+</html>
+"""
+
+
+@router.get("/borea", response_class=HTMLResponse)
+@router.get("/borea/", response_class=HTMLResponse)
+async def borea_home(settings: SettingsDep) -> HTMLResponse:
+    store = f"https://apps.apple.com/app/id{settings.borea_app_store_app_apple_id}"
+    return HTMLResponse(_HOME.format(
+        fonts=_FONTS, styles=_STYLES, drive=_TRAVELPAYOUTS_DRIVE, store=escape(store),
+    ))

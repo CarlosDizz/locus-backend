@@ -21,6 +21,7 @@ from locus_v2.affiliates.programs import is_configured
 from locus_v2.affiliates.search import amazon_search, booking_search, web_program_links
 from locus_v2.affiliates.service import ReferralService
 from locus_v2.places.client import GooglePlacesClient
+from locus_v2.places.service import distance_km
 from locus_v2.trips.routes import travel_time
 from locus_v2.trips.skills import load_skills
 
@@ -90,12 +91,38 @@ BASE_TOOLS: list[dict[str, Any]] = [
     ),
     _function(
         "buscar_alojamiento",
-        "Un enlace para buscar alojamiento en la ciudad y las fechas del viaje. Úsalo solo si "
-        "la persona aún no tiene dónde dormir.",
-        {"zona": {"type": "string", "description": "Barrio o zona, si se ha elegido."}},
+        "Hoteles reales de la ciudad del viaje en Google, con valoración, reseñas, nivel de "
+        "precio, distancia al centro y su enlace de Booking para las fechas del viaje. Úsalo "
+        "solo si la persona aún no tiene dónde dormir.",
+        {
+            "zona": {"type": "string", "description": "Barrio o zona, si se ha elegido."},
+            "tipo": {
+                "type": "string",
+                "description": "Lo que busca en pocas palabras: «hotel con parking», «hostal».",
+            },
+        },
         [],
     ),
 ]
+
+_NOTHING_BOOKABLE = (
+    "No hay ninguna actividad reservable concreta para esto. No pongas tarjeta con enlace de "
+    "reserva ni digas que hay una visita. Si existe algo real (la visita gratuita de la "
+    "oficina de turismo, un paseo por libre), propónlo sin enlace y di de dónde lo sacas."
+)
+
+
+def only_concrete(resultado: dict[str, Any]) -> dict[str, Any]:
+    """Sin búsquedas genéricas: en Borea solo se ofrece lo que tiene su página.
+
+    Cuando no había un tour concreto, GetYourGuide devolvía una búsqueda con la frase
+    entera; para Albacete («Visita guiada de Albacete centro histórico») mandaba a
+    Breslavia, y el planificador la presentaba como una actividad (2026-10-24).
+    """
+    if resultado.get("provider") != "getyourguide_fallback_search":
+        return resultado
+    return {"ok": True, "links": [], "policy": _NOTHING_BOOKABLE}
+
 
 SKILL_TOOLS: dict[str, dict[str, Any]] = {
     "ruta": _function(
@@ -222,15 +249,43 @@ async def run_borea_tool(
         return {"ok": True}
 
     if name == "buscar_alojamiento":
-        ciudad = ", ".join(x for x in (str(args.get("zona") or ""), trip.city) if x)
-        if not ciudad:
+        if not trip.city:
             return {"ok": False, "error": "Apunta antes la ciudad del viaje."}
-        enlace = booking_search(
-            settings, ciudad,
-            trip.starts_at.date() if trip.starts_at else None,
-            trip.ends_at.date() if trip.ends_at else None,
+        zona = str(args.get("zona") or "").strip()
+        tipo = str(args.get("tipo") or "").strip() or "hotel"
+        entrada = trip.starts_at.date() if trip.starts_at else None
+        salida = trip.ends_at.date() if trip.ends_at else None
+        centro = trip.center_json or {}
+        consulta = " ".join(x for x in (tipo, zona, trip.city) if x)
+        sitios = await GooglePlacesClient(settings).search_places(
+            consulta, centro.get("lat"), centro.get("lng"), limit=8, locale=turn.locale
         )
-        return {"ok": True, "links": [enlace.to_dict()]}
+        hoteles = []
+        for s in sitios:
+            # Cada hotel con su búsqueda en Booking por su nombre: abre ese hotel con las
+            # fechas del viaje, no una lista de la ciudad.
+            reserva = booking_search(settings, f"{s['name']}, {trip.city}", entrada, salida)
+            distancia = (
+                round(distance_km(centro["lat"], centro["lng"], s["lat"], s["lng"]), 1)
+                if centro.get("lat") is not None and s.get("lat") is not None else None
+            )
+            hoteles.append({
+                "name": s["name"], "address": s["description"], "rating": s.get("rating"),
+                "reviews": s.get("user_ratings_total"), "price_level": s.get("price_level"),
+                "km_to_center": distancia, "booking_url": reserva.url,
+            })
+        if not hoteles:
+            return {"ok": False, "error": "No encuentro hoteles; prueba con otra zona o tipo."}
+        return {
+            "ok": True, "hotels": hoteles,
+            "how": (
+                "Elige dos o tres que encajen con lo que ha pedido y enséñalos como tarjetas "
+                "con propose_items: kind logistics, lodging true, el hotel en place y su "
+                "booking_url. Di la valoración y lo cerca que queda del centro. El precio "
+                "por noche se ve en Booking: no lo inventes (price_level, de 1 a 4, suele "
+                "venir vacío en hoteles)."
+            ),
+        }
 
     if name == "ruta":
         resultado = await travel_time(
@@ -272,6 +327,7 @@ async def run_borea_tool(
         usage = resultado.pop("_usage", None)
         if usage is not None:
             turn.referral_usages.append(usage)
+        resultado = only_concrete(resultado)
         if is_configured(settings, "civitatis") or is_configured(settings, "tiqets"):
             otros, usage = await web_program_links(
                 settings, "activity", str(args.get("consulta") or ""), trip.city, max_results=2

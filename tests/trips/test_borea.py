@@ -19,6 +19,7 @@ from locus_v2.affiliates.tracking import TrackedLink, sign, verify
 from locus_v2.billing.application.processor import BillingDecisionEngine
 from locus_v2.billing.pricing import NormalizedUsage, PriceCard
 from locus_v2.shared.apps import ClientApp, app_bit, client_app, visible_in
+from locus_v2.trips import borea_tools
 from locus_v2.trips.borea_tools import SKILL_TOOLS, run_borea_tool, tools_for_turn
 from locus_v2.trips.calendar import trip_ics
 from locus_v2.trips.models import Trip, TripItem
@@ -188,10 +189,58 @@ def test_climate_is_saved_as_ranges() -> None:
     assert trip.climate_json["max_c"] == 21
 
 
-def test_accommodation_search_carries_the_trip_dates() -> None:
-    result = _run("buscar_alojamiento", {}, _Turn(), _borea_trip())
-    query = parse_qs(urlparse(result["links"][0]["url"]).query)
+def test_accommodation_search_gives_real_hotels_with_their_booking_link(monkeypatch) -> None:
+    pedidas: list[str] = []
+
+    class _Places:
+        def __init__(self, settings) -> None:
+            pass
+
+        async def search_places(self, query, lat, lng, limit=5, locale="es"):
+            pedidas.append(query)
+            return [{
+                "name": "Hotel Castilla", "description": "Paseo de la Cuba 3, Albacete",
+                "rating": 4.3, "user_ratings_total": 900, "price_level": 2,
+                "lat": 41.9, "lng": 12.5, "google_place_id": "P",
+            }]
+
+    monkeypatch.setattr(borea_tools, "GooglePlacesClient", _Places)
+    trip = _borea_trip()
+    trip.center_json = {"lat": 41.9, "lng": 12.49}
+
+    result = _run("buscar_alojamiento", {"tipo": "hotel con parking"}, _Turn(), trip)
+
+    assert pedidas == ["hotel con parking Roma"]
+    hotel = result["hotels"][0]
+    assert (hotel["name"], hotel["price_level"]) == ("Hotel Castilla", 2)
+    assert hotel["km_to_center"] == 0.8
+    query = parse_qs(urlparse(hotel["booking_url"]).query)
+    assert query["ss"] == ["Hotel Castilla, Roma"]
     assert query["checkin"] == ["2026-10-05"] and query["checkout"] == ["2026-10-09"]
+
+
+def test_a_generic_activity_search_is_never_offered_as_an_activity() -> None:
+    generica = {
+        "ok": True, "provider": "getyourguide_fallback_search",
+        "links": [{"url": "https://www.getyourguide.es/s/?q=Albacete"}],
+    }
+    concreta = {"ok": True, "provider": "getyourguide_websearch", "links": [{"url": "x"}]}
+
+    assert borea_tools.only_concrete(generica)["links"] == []
+    assert borea_tools.only_concrete(concreta) is concreta
+
+
+def test_the_same_slot_is_not_added_twice() -> None:
+    trip = _borea_trip()
+    service = TripPlannerService(None, _settings(), ClientApp.BOREA)  # type: ignore[arg-type]
+    salida = {
+        "date": "2026-11-01", "time": "08:00", "title": "Vuelta a Alicante", "kind": "transport",
+    }
+
+    primera = service._add_item(trip, dict(salida))
+    segunda = service._add_item(trip, dict(salida))
+
+    assert primera is segunda and len(trip.items) == 1
 
 
 def test_the_view_shows_apps_recommendations_and_tracked_links() -> None:

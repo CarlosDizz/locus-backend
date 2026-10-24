@@ -40,7 +40,12 @@ from locus_v2.shared.mobile_ids import mobile_id
 from locus_v2.shared.openai_usage import ToolUsage
 from locus_v2.shared.prompting import IDENTITY_RULE
 from locus_v2.shared.text import slugify
-from locus_v2.trips.borea_tools import BOREA_TOOL_NAMES, run_borea_tool, tools_for_turn
+from locus_v2.trips.borea_tools import (
+    BOREA_TOOL_NAMES,
+    only_concrete,
+    run_borea_tool,
+    tools_for_turn,
+)
 from locus_v2.trips.lodging import lodging_for_day
 from locus_v2.trips.models import Trip, TripItem, TripMember
 from locus_v2.trips.skills import skills_index
@@ -107,7 +112,10 @@ _ITEM_FIELDS: dict[str, Any] = {
     "price": {"type": "string", "description": "Precio orientativo si lo sabes seguro."},
     "booking_url": {
         "type": "string",
-        "description": "Solo un enlace devuelto por find_bookable, nunca inventado.",
+        "description": (
+            "Solo un enlace devuelto por una herramienta (find_bookable, buscar_actividades, "
+            "buscar_alojamiento, buscar_transporte), nunca inventado."
+        ),
     },
     "booking_title": {"type": "string"},
 }
@@ -745,6 +753,16 @@ class TripPlannerService:
         raise TripError("Propuesta no encontrada", 404)
 
     def _add_item(self, trip: Trip, data: dict[str, Any]) -> TripItem:
+        # La misma franja dos veces (mismo día, hora y título) es un duplicado: el
+        # modelo a veces repite add_items en la misma ronda («Salida del Hotel Castilla»
+        # salió dos veces, Albacete 2026-10-24).
+        dia, hora = _parse_day(data.get("date")), _parse_time(data.get("time"))
+        titulo = str(data.get("title") or "").strip()[:255] or "Sin título"
+        repetida = next(
+            (i for i in trip.items if i.day == dia and i.time == hora and i.title == titulo), None
+        )
+        if repetida is not None:
+            return repetida
         kind = str(data.get("kind") or "visit")
         status = str(data.get("status") or "proposed")
         booking = data.get("booking")
@@ -1238,7 +1256,7 @@ class TripPlannerService:
             usage = result.pop("_usage", None)
             if usage is not None:
                 turn.referral_usages.append(usage)
-            return result
+            return only_concrete(result) if self.app == ClientApp.BOREA else result
         raise TripError(f"Herramienta desconocida: {name}")
 
     async def bill_transcription(self, user: User, usage: NormalizedUsage) -> None:

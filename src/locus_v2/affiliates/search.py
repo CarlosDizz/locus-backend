@@ -15,7 +15,7 @@ from urllib.parse import urlencode, urlparse
 
 import structlog
 
-from locus_v2.affiliates.programs import decorate, program_for, programs_of
+from locus_v2.affiliates.programs import decorate, is_configured, program_for, programs_of
 from locus_v2.config import Settings
 from locus_v2.shared.openai_client import build_openai_client
 from locus_v2.shared.openai_usage import ToolUsage, usage_from_openai_response
@@ -113,6 +113,9 @@ async def web_program_links(
         ))
         if len(links) >= max(1, min(max_results, 5)):
             break
+    # Primero los programas donde tenemos código: a la persona le sirven igual y son
+    # los que sostienen la app (Omio antes que Trainline, por ejemplo).
+    links.sort(key=lambda link: not is_configured(settings, link.program))
     return links, usage
 
 

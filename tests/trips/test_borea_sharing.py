@@ -213,14 +213,15 @@ def test_a_table_link_must_be_the_restaurant_asked_for() -> None:
     from locus_v2.affiliates.search import _is_concrete_page
     from locus_v2.trips.borea_tools import _same_restaurant
 
-    assert _same_restaurant(
-        "Restaurante José María", "https://www.thefork.es/restaurante/jose-maria-r1 José María"
-    )
-    assert not _same_restaurant(
-        "Restaurante José María", "https://www.thefork.es/restaurante/la-cocina-de-segovia-r7"
-    )
-    assert not _same_restaurant("Restaurante José María", "https://x/maria-jesus-r2")
-    assert not _same_restaurant("Restaurante", "https://www.thefork.es/restaurante/lo-que-sea-r3")
+    ficha = "https://www.thefork.es/restaurante/"
+    assert _same_restaurant("Restaurante José María", ficha + "jose-maria-r1")
+    assert not _same_restaurant("Restaurante José María", ficha + "la-cocina-de-segovia-r7")
+    assert not _same_restaurant("Restaurante José María", ficha + "maria-jesus-r2")
+    assert not _same_restaurant("Restaurante", ficha + "lo-que-sea-r3")
+    # Roma, 2026-10-24: «Da Enzo» enlazaba con otra trattoria que también se llama Enzo.
+    assert not _same_restaurant("Trattoria Da Enzo", ficha + "trattoria-napoletana-da-enzo-r835416")
+    assert _same_restaurant("Da Enzo al 29", ficha + "da-enzo-al-29-r123", "Roma")
+    assert _same_restaurant("Trattoria Da Enzo", ficha + "da-enzo-roma-r9", "Roma")
     assert not _is_concrete_page("https://www.thefork.es/restaurantes/segovia-c502083")
     assert not _is_concrete_page("https://www.thefork.es/blog/las-reservas-online")
     assert _is_concrete_page("https://www.thefork.es/restaurante/meson-don-sancho-r413029")

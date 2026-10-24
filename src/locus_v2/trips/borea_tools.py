@@ -14,7 +14,9 @@ Los enlaces que devuelven ya van con nuestro código; el modelo solo los copia e
 booking_url, y aun así el backend los vuelve a decorar al apuntarlos.
 """
 
+import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from locus_v2.affiliates.programs import is_configured
@@ -260,7 +262,7 @@ async def run_borea_tool(
         turn.referral_usages.append(usage)
         # La búsqueda devuelve fichas de otros restaurantes de la ciudad («José María,
         # Segovia» daba «La Cocina de Segovia»): solo vale la del que se ha pedido.
-        suyos = [e for e in enlaces if _same_restaurant(restaurante, f"{e.url} {e.title}")]
+        suyos = [e for e in enlaces if _same_restaurant(restaurante, e.url, trip.city)]
         if not suyos:
             return {
                 "ok": True, "links": [],
@@ -309,18 +311,30 @@ async def run_borea_tool(
     return {"ok": False, "error": f"Herramienta desconocida: {name}"}
 
 
-# Lo que no distingue a un restaurante de otro («Restaurante», «Mesón», la ciudad...).
+# Lo que no distingue a un restaurante de otro («Restaurante», «Trattoria», «Mesón»...).
 _GENERIC = frozenset(
-    "el la los las de del y en al restaurante restaurant meson taberna bar cafe casa "
-    "asador bodega the of".split()
+    "el la los las de del da di y e en al alla restaurante restaurant ristorante meson "
+    "taberna taverna trattoria osteria pizzeria bar cafe casa asador bodega the of".split()
 )
 
 
-def _same_restaurant(nombre: str, pagina: str) -> bool:
-    """Si la página es la del restaurante pedido: comparten las palabras de su nombre."""
-    buscado = {w for w in slugify(nombre.split(",")[0]).split("-") if len(w) > 2} - _GENERIC
+def _words(texto: str) -> set[str]:
+    return {
+        w for w in slugify(texto).split("-") if len(w) > 2 and not w.isdigit()
+    } - _GENERIC
+
+
+def _same_restaurant(nombre: str, url: str, city: str = "") -> bool:
+    """Si la ficha es la del restaurante pedido, por el nombre que lleva su dirección.
+
+    Tienen que coincidir las palabras con significado, sin que sobre ninguna:
+    «Trattoria Da Enzo» no es «Trattoria Napoletana Da Enzo» (Roma, 2026-10-24), ni
+    «José María» es «María Jesús». La ciudad no cuenta.
+    """
+    buscado = _words(nombre.split(",")[0])
     if not buscado:
         return False
-    encontrado = set(slugify(pagina).split("-"))
-    # Todas las palabras con significado: «José María» no es «María Jesús».
-    return buscado <= encontrado
+    ficha = urlparse(url).path.rstrip("/").split("/")[-1]
+    ficha = re.sub(r"-r\d+$", "", ficha)
+    encontrado = _words(ficha) - _words(city)
+    return buscado == encontrado

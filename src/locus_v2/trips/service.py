@@ -1021,7 +1021,8 @@ class TripPlannerService:
             )
             creador = (trip.owner.display_name or "").split(" ")[0] if trip.owner else ""
             grupo = (
-                f"\nPlanean este viaje juntos: {creador} (lo organiza), {nombres}. "
+                f"\nPlanean este viaje juntos{'' if self.app == ClientApp.BOREA else ' en Locus'}: "
+                f"{creador} (lo organiza), {nombres}. "
                 "Cada mensaje llega con el nombre de quien lo escribe: dirígete a esa persona."
             )
             if self.app == ClientApp.BOREA:

@@ -146,7 +146,11 @@ SKILL_TOOLS: dict[str, dict[str, Any]] = {
         "buscar_equipamiento",
         "Un enlace para comprar algo que conviene llevar a este viaje (un paraguas plegable, "
         "un calzado cómodo, un adaptador de enchufe).",
-        {"producto": {"type": "string", "description": "El tipo de producto, sin marca."}},
+        {"producto": {
+            "type": "string",
+            "description": "El producto en 2 a 4 palabras, sin marca ni destino: «chaqueta "
+                           "impermeable plegable», «adaptador enchufe Reino Unido».",
+        }},
         ["producto"],
     ),
 }

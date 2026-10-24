@@ -107,3 +107,39 @@ async def test_one_stop_is_not_a_route(monkeypatch) -> None:
 
     assert await routes.day_route(_Session(), SimpleNamespace(), trip, DIA) is None
     assert pedidas == []
+
+
+@pytest.mark.asyncio
+async def test_a_ride_or_a_very_long_leg_is_not_walked(monkeypatch) -> None:
+    """Barcelona, 2026-10-24: Sants–Poblenou en taxi salía como «1 h 27 min a pie»."""
+
+    class _Routes:
+        def __init__(self, settings) -> None:
+            pass
+
+        async def walking(self, place_ids):
+            return {
+                "duration": "5400s", "distanceMeters": 7000, "polyline": {"encodedPolyline": "x"},
+                "legs": [
+                    {"duration": "60s", "distanceMeters": 50},  # tren → taxi, en la estación
+                    {"duration": "5220s", "distanceMeters": 6400},  # taxi → hotel
+                    {"duration": "120s", "distanceMeters": 120},  # hotel → cena
+                ],
+            }
+
+    monkeypatch.setattr(routes, "GoogleRoutesClient", _Routes)
+    taxi = _item("taxi", "20:50", "P2", 1)
+    taxi.kind = "transport"
+    trip = _viaje()
+    trip.items = [
+        _item("tren", "14:59", "P1", 0), taxi, _item("hotel", "21:15", "P3", 2),
+        _item("cena", "21:45", "P4", 3),
+    ]
+
+    ruta = await routes.day_route(_Session(), SimpleNamespace(), trip, DIA)
+
+    assert ruta is not None
+    assert [leg.walk for leg in ruta.legs] == [True, False, True]
+    assert ruta.walk_duration_s == 180 and ruta.walk_distance_m == 170
+    # Locus Guide sigue leyendo el total de siempre.
+    assert ruta.duration_s == 5400

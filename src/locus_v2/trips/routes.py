@@ -20,11 +20,21 @@ logger = structlog.get_logger()
 
 # Google admite hasta 25 paradas intermedias andando; con más, no hay ruta.
 MAX_STOPS = 27
+# Un tramo a pie de más de esto no se anda: Barcelona Sants–Poblenou en taxi salía
+# como «1 h 27 min a pie» (2026-10-24).
+MAX_WALK_S = 40 * 60
+# Sube cuando cambia lo que se guarda, para no servir rutas viejas sin los tramos.
+_CACHE_VERSION = "v2"
 
 
 class RouteLeg(BaseModel):
     duration_s: int
     distance_m: int
+    # Si ese tramo se hace andando. No: sale de un transporte (taxi, tren, coche) o es
+    # demasiado largo para ir a pie. La app lo pinta en discontinua y sin minutos.
+    walk: bool = True
+    # El camino de ese tramo, para pintar solo lo que se anda.
+    polyline: str = ""
 
 
 class DayRoute(BaseModel):
@@ -36,6 +46,10 @@ class DayRoute(BaseModel):
     # Un tramo por cada par de paradas seguidas: legs[0] va de stops[0] a stops[1].
     legs: list[RouteLeg]
     stops: list[str]
+    # Solo lo que se anda de verdad (Borea). duration_s y distance_m siguen siendo el
+    # total entero, que es lo que lee la app de Locus Guide.
+    walk_duration_s: int = 0
+    walk_distance_m: int = 0
 
 
 class GoogleRoutesClient:
@@ -63,7 +77,7 @@ class GoogleRoutesClient:
             "X-Goog-Api-Key": self._api_key,
             "X-Goog-FieldMask": (
                 "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,"
-                "routes.legs.duration,routes.legs.distanceMeters"
+                "routes.legs.duration,routes.legs.distanceMeters,routes.legs.polyline.encodedPolyline"
             ),
         }
         try:
@@ -138,7 +152,10 @@ async def day_route(
     if len(paradas) < 2 or len(paradas) > MAX_STOPS:
         return None
     place_ids = [item.map_json["place_id"] for item in paradas]
-    clave = "|".join(place_ids)
+    # La clave cambia si cambian los sitios o qué paradas son transporte.
+    clave = _CACHE_VERSION + "|" + "|".join(
+        f"{item.map_json['place_id']}:{item.kind}" for item in paradas
+    )
     guardadas = dict(trip.routes_json or {})
     previa = guardadas.get(day.isoformat())
     if previa and previa.get("key") == clave:
@@ -148,17 +165,27 @@ async def day_route(
     if route is None:
         return None
     legs = route.get("legs") or []
+    tramos: list[RouteLeg] = []
+    for k, leg in enumerate(legs):
+        duracion = _seconds(leg.get("duration"))
+        # De una parada que es un transporte (el taxi, el tren, recoger el coche) al
+        # siguiente sitio se va en ese transporte, no andando.
+        sale_de_transporte = k < len(paradas) and paradas[k].kind == "transport"
+        tramos.append(RouteLeg(
+            duration_s=duracion,
+            distance_m=int(leg.get("distanceMeters") or 0),
+            walk=not sale_de_transporte and duracion <= MAX_WALK_S,
+            polyline=str((leg.get("polyline") or {}).get("encodedPolyline") or ""),
+        ))
     resultado = DayRoute(
         date=day,
         polyline=str((route.get("polyline") or {}).get("encodedPolyline") or ""),
         duration_s=_seconds(route.get("duration")),
         distance_m=int(route.get("distanceMeters") or 0),
-        legs=[
-            RouteLeg(duration_s=_seconds(leg.get("duration")),
-                     distance_m=int(leg.get("distanceMeters") or 0))
-            for leg in legs
-        ],
+        legs=tramos,
         stops=[item.public_id for item in paradas],
+        walk_duration_s=sum(t.duration_s for t in tramos if t.walk),
+        walk_distance_m=sum(t.distance_m for t in tramos if t.walk),
     )
     guardadas[day.isoformat()] = {"key": clave, "route": resultado.model_dump(mode="json")}
     # Un diccionario nuevo: SQLAlchemy no ve los cambios dentro de un JSON mutado.

@@ -1,0 +1,47 @@
+<p class="eyebrow">COMPROBAR QUE LLEGAN LOS AVISOS</p>
+<div class="billing-toolbar">
+  <strong>Avisos de prueba</strong>
+  <button type="button" class="reload" (click)="load()">Recargar</button>
+</div>
+
+@if (loading()) {
+  <div class="state"><i></i>Buscando móviles registrados…</div>
+} @else if (error()) {
+  <div class="state error">{{ error() }} <button type="button" (click)="load()">Reintentar</button></div>
+} @else {
+  <section class="panel">
+    <div class="title"><h2>Destinatarios</h2><span>{{ recipients().length }} con móvil activo</span></div>
+    @for (r of recipients(); track r.id) {
+      <label class="tag-row">
+        <span><input type="checkbox" [checked]="selected().has(r.id)" (change)="toggle(r.id)" />
+          <b>{{ r.display_name }}</b> · {{ r.email }}</span>
+        <span class="label">{{ r.apps.join(', ') }} · {{ r.devices }} móvil(es)</span>
+        <span class="label">{{ r.last_seen_at | date: 'd MMM, HH:mm' }}</span>
+      </label>
+    } @empty {
+      <p class="empty">Nadie tiene todavía un móvil registrado. Se registra al dar permiso de avisos en la app.</p>
+    }
+  </section>
+
+  <section class="panel">
+    <div class="title"><h2>Aviso</h2><span>{{ selected().size }} seleccionado(s)</span></div>
+    <div class="billing-toolbar">
+      <label>Título <input [(ngModel)]="title" maxlength="120" /></label>
+      <label>Texto <input [(ngModel)]="body" maxlength="300" /></label>
+      <label>Viaje que abre (opcional) <input [(ngModel)]="tripId" placeholder="id del viaje" /></label>
+      <button type="button" class="reload" (click)="send()" [disabled]="!selected().size || sending()">
+        {{ sending() ? 'Enviando…' : 'Enviar aviso' }}
+      </button>
+    </div>
+    @if (apns()) {
+      <p class="disclaimer">APNs: {{ apns() }}</p>
+    }
+    @for (r of results(); track $index) {
+      <div class="tag-row">
+        <span><b>{{ r.display_name }}</b> · {{ r.device }}</span>
+        <span class="status" [attr.data-status]="r.status === 'enviada' ? 'published' : 'rejected'">{{ label(r.status) }}</span>
+        <span class="label">{{ r.detail }}</span>
+      </div>
+    }
+  </section>
+}

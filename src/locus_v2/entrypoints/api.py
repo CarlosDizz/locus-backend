@@ -11,6 +11,7 @@ from locus_v2.api.admin_billing import router as admin_billing_router
 from locus_v2.api.admin_catalog import router as admin_catalog_router
 from locus_v2.api.admin_configuration import router as admin_configuration_router
 from locus_v2.api.admin_logs import router as admin_logs_router
+from locus_v2.api.admin_push import router as admin_push_router
 from locus_v2.api.admin_users import router as admin_users_router
 from locus_v2.api.app_info import router as app_info_router
 from locus_v2.api.auth import router as mobile_auth_router
@@ -64,6 +65,7 @@ app.include_router(admin_catalog_router)
 app.include_router(admin_configuration_router)
 app.include_router(admin_logs_router)
 app.include_router(admin_users_router)
+app.include_router(admin_push_router)
 app.include_router(app_info_router)
 app.include_router(legal_router)
 app.include_router(borea_web_router)

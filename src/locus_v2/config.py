@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     # Borea, el planificador del grupo Locus (shared/apps.py). Misma base de datos y
     # mismas cuentas; su propia app en la App Store, con sus propias recargas.
     borea_app_store_bundle_id: str = "com.carlos.borea"
-    borea_app_store_app_apple_id: int = 0
+    borea_app_store_app_apple_id: int = 6826524837
     # Si los referidos acaban siendo el negocio, Borea puede pasar a ser gratis:
     # sus consumos se registran pero no se cobran. Se cambia sin versión nueva.
     borea_free: bool = False
@@ -176,6 +176,15 @@ class Settings(BaseSettings):
     weatherkit_key_id: str = ""
     weatherkit_service_id: str = ""
     weatherkit_private_key: SecretStr | None = None
+
+    # Avisos al iPhone por APNs (notifications/apns.py). Una clave .p8 de APNs vale
+    # para todas las apps del equipo; el bundle de cada app va en apns-topic. Sin
+    # clave no se envía nada y el aviso queda en el log como simulado.
+    apns_key: SecretStr | None = None
+    apns_key_id: str = ""
+    apns_team_id: str = "SAW7J38C9M"
+    # Las compilaciones de Xcode y TestFlight usan el entorno de pruebas de Apple.
+    apns_sandbox: bool = True
 
     app_android_latest_version_code: int = 10
     app_android_update_url: str = ""

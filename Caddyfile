@@ -67,7 +67,14 @@ app.locusguide.es {
 	# redirecciones y como JSON.
 	handle /.well-known/apple-app-site-association {
 		header Content-Type application/json
-		respond `{"applinks":{"details":[{"appIDs":["SAW7J38C9M.com.carlos.locusia"],"components":[{"/":"/trips/join/*"}]}]}}` 200
+		respond `{"applinks":{"details":[{"appIDs":["SAW7J38C9M.com.carlos.locusia"],"components":[{"/":"/trips/join/*"}]},{"appIDs":["SAW7J38C9M.com.carlos.borea"],"components":[{"/":"/borea/unirse/*"}]}]}}` 200
+	}
+
+	# La invitación a un viaje de Borea. Con Borea instalada la abre la app (el
+	# fichero de arriba); sin ella, la página la sirve el backend
+	# (api/borea_web.py): quién invita, adónde y el botón de la App Store.
+	handle /borea/unirse/* {
+		reverse_proxy api:8100
 	}
 
 	# Angular enruta en el cliente: cualquier ruta desconocida devuelve el índice

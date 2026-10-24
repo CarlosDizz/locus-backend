@@ -30,6 +30,7 @@ from locus_v2.chat.configuration import ChatConfigurationResolver, ChatRequest
 from locus_v2.chat.providers.openai_responses import ChatFunctionCall, OpenAIResponsesAdapter
 from locus_v2.config import Settings
 from locus_v2.identity.models import User
+from locus_v2.notifications.service import PlanChange, notify_trip
 from locus_v2.places.client import GooglePlacesClient
 from locus_v2.places.service import distance_km
 from locus_v2.shared.apps import ClientApp, app_bit, visible_in
@@ -343,6 +344,8 @@ class TripView(BaseModel):
     # Quién va: el creador primero. my_role dice qué puede hacer quien lo mira.
     members: list[MemberView] = []
     my_role: str = "owner"
+    # En Borea el viaje compartido lo cambian todos; en Locus Guide solo quien lo creó.
+    can_edit: bool = True
     # En qué apps se ve (shared/apps.py) y lo propio de Borea.
     apps: list[str] = ["guide"]
     climate: ClimateView | None = None
@@ -450,6 +453,7 @@ def trip_view(
             *(_member(m.user, "guest") for m in trip.members or [] if m.user is not None),
         ],
         my_role="owner" if viewer_id in (None, trip.user_id) else "guest",
+        can_edit=viewer_id in (None, trip.user_id) or app == ClientApp.BOREA.value,
         apps=[a.value for a in ClientApp if visible_in(getattr(trip, "apps", 1) or 1, a)],
         climate=ClimateView(**trip.climate_json) if getattr(trip, "climate_json", None) else None,
         recommendations=[
@@ -526,6 +530,25 @@ class TripPlannerService:
             raise TripError("Solo quien creó el viaje puede cambiar el plan", 403)
         return trip
 
+    def _can_edit(self, trip: Trip, user: User) -> bool:
+        """En Borea, un viaje compartido es de todos; en Locus Guide lo cambia quien lo creó."""
+        return trip.user_id == user.id or self.app == ClientApp.BOREA
+
+    async def _editable(self, user: User, public_id: str) -> Trip:
+        trip = await self.get(user, public_id)
+        if not self._can_edit(trip, user):
+            raise TripError("Solo quien creó el viaje puede cambiar el plan", 403)
+        return trip
+
+    async def _notify(self, trip: Trip, actor: User, change: PlanChange) -> None:
+        """Avisa a los demás del viaje; si falla, el cambio ya está guardado."""
+        if not trip.members:
+            return
+        try:
+            await notify_trip(self.session, self.settings, trip, actor, change)
+        except Exception as error:  # noqa: BLE001 - un aviso nunca rompe el cambio
+            logger.warning("trip_notify_failed", error=str(error), trip=trip.public_id)
+
     async def share_with(self, user: User, public_id: str, app: ClientApp) -> Trip:
         """«Llevar este plan a Locus»: el viaje pasa a verse también en esa app."""
         trip = await self.get(user, public_id, owner_only=True)
@@ -550,13 +573,17 @@ class TripPlannerService:
             .where(Trip.invite_code == code)
             .execution_options(populate_existing=True)
         )
-        if trip is None:
+        # Un viaje de otra app no se ve aquí: unirse dejaría a la persona sin verlo.
+        if trip is None or not visible_in(trip.apps, self.app):
             raise TripError("El enlace del viaje no es válido", 404)
         ya_va = trip.user_id == user.id or any(m.user_id == user.id for m in trip.members)
-        if not ya_va:
-            self.session.add(TripMember(trip_id=trip.id, user_id=user.id))
-            await self.session.commit()
-        return await self.get(user, trip.public_id)
+        if ya_va:
+            return await self.get(user, trip.public_id)
+        self.session.add(TripMember(trip_id=trip.id, user_id=user.id))
+        await self.session.commit()
+        trip = await self.get(user, trip.public_id)
+        await self._notify(trip, user, PlanChange("joined"))
+        return trip
 
     async def leave(self, user: User, public_id: str) -> None:
         trip = await self.get(user, public_id)
@@ -583,14 +610,15 @@ class TripPlannerService:
         await self.session.commit()
 
     async def accept_proposal(self, user: User, public_id: str, proposal_id: str) -> Trip:
-        trip = await self.get(user, public_id, owner_only=True)
+        trip = await self._editable(user, public_id)
         conversation = [dict(m) for m in trip.conversation_json or []]
         for message in conversation:
             proposals = [dict(p) for p in message.get("proposals") or []]
             for proposal in proposals:
                 if proposal.get("id") != proposal_id:
                     continue
-                if not proposal.get("accepted"):
+                nuevo = not proposal.get("accepted")
+                if nuevo:
                     item = self._add_item(trip, {**proposal, "status": "proposed"})
                     await self.session.flush()
                     # Para poder deshacerlo desde la misma tarjeta.
@@ -599,7 +627,12 @@ class TripPlannerService:
                 message["proposals"] = proposals
                 trip.conversation_json = conversation
                 await self.session.commit()
-                return await self.get(user, public_id)
+                trip = await self.get(user, public_id)
+                if nuevo:
+                    await self._notify(
+                        trip, user, PlanChange("added", [str(proposal.get("title") or "")])
+                    )
+                return trip
         raise TripError("Propuesta no encontrada", 404)
 
     async def undo_proposal(self, user: User, public_id: str, proposal_id: str) -> Trip:
@@ -608,7 +641,7 @@ class TripPlannerService:
         Añadir es un toque y se cuela sin querer (pasó en Toledo con el paseo
         del domingo); deshacerlo no debería necesitar pedírselo al chat.
         """
-        trip = await self.get(user, public_id, owner_only=True)
+        trip = await self._editable(user, public_id)
         conversation = [dict(m) for m in trip.conversation_json or []]
         for message in conversation:
             proposals = [dict(p) for p in message.get("proposals") or []]
@@ -792,7 +825,8 @@ class TripPlannerService:
             raise TripError("El planificador no está disponible", 503)
 
         en_grupo = bool(trip.members)
-        es_creador = trip.user_id == user.id
+        puede_editar = self._can_edit(trip, user)
+        antes = _plan_signature(trip)
         autor = (user.display_name or "").split(" ")[0] or "Viajero"
 
         def contenido(mensaje: dict[str, Any]) -> str:
@@ -808,12 +842,12 @@ class TripPlannerService:
         actual = f"{autor}: {text}" if en_grupo else text
         input_items: list[dict[str, Any]] = [*history, {"role": "user", "content": actual}]
         turn = _Turn()
-        turn.readonly = not es_creador
+        turn.readonly = not puede_editar
         turn.locale = locale
         base = TOOLS if self.app == ClientApp.GUIDE else [
             tool for tool in TOOLS if tool.get("name") != "find_bookable"
         ]
-        if not es_creador:
+        if not puede_editar:
             base = [tool for tool in base if tool.get("name") not in _WRITE_TOOLS]
 
         def tools() -> list[dict[str, Any]]:
@@ -885,7 +919,11 @@ class TripPlannerService:
             trace_id=trace_id, rounds=rounds, proposals=len(turn.proposals),
             items=len(trip.items), elapsed_ms=round((perf_counter() - started_at) * 1000, 1),
         )
-        return await self.get(user, public_id)
+        cambio = _plan_change(antes, trip)
+        trip = await self.get(user, public_id)
+        if cambio is not None:
+            await self._notify(trip, user, cambio)
+        return trip
 
     async def locate_missing(self, user: User, public_id: str, locale: str = "es") -> Trip:
         """Pone en el mapa lo que aún no está: la ciudad y las paradas sin sitio.
@@ -986,7 +1024,9 @@ class TripPlannerService:
                 f"\nPlanean este viaje juntos: {creador} (lo organiza), {nombres}. "
                 "Cada mensaje llega con el nombre de quien lo escribe: dirígete a esa persona."
             )
-            if writer is not None and writer.id != trip.user_id:
+            if self.app == ClientApp.BOREA:
+                grupo += " Todos pueden cambiar el plan, no solo quien lo organiza."
+            elif writer is not None and writer.id != trip.user_id:
                 grupo += (
                     f" Ahora escribe un invitado. Sus mensajes son opiniones: no puedes cambiar "
                     f"el plan por él. Si propone algo, dáselo como tarjetas con suggest_items "
@@ -1207,6 +1247,31 @@ class _Turn:
         self.locale = "es"
         # Las skills que el modelo ha cargado en este turno (solo Borea).
         self.skills: set[str] = set()
+
+
+def _plan_signature(trip: Trip) -> dict[str, Any]:
+    """Lo que el grupo ve del plan, para saber después si un turno lo ha cambiado."""
+    return {
+        "details": (trip.city, trip.starts_at, trip.ends_at, trip.travelers, trip.pace),
+        "items": {
+            i.public_id: (i.day, i.time, i.title, i.place, i.status, i.note)
+            for i in trip.items
+        },
+    }
+
+
+def _plan_change(antes: dict[str, Any], trip: Trip) -> PlanChange | None:
+    """Qué ha cambiado en el turno: lo añadido por su nombre, o «ha cambiado el plan»."""
+    despues = _plan_signature(trip)
+    if despues == antes:
+        return None
+    nuevos = sorted(
+        (i for i in trip.items if i.public_id not in antes["items"]),
+        key=lambda i: (i.day, i.time, i.position),
+    )
+    if nuevos:
+        return PlanChange("added", [i.title for i in nuevos])
+    return PlanChange("changed")
 
 
 def _add_usage(

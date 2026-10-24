@@ -52,11 +52,11 @@ APP_STORE_TOPUP_PRODUCTS: dict[str, int] = {
     "locus_ios_top_up_5": 499,
     "locus_ios_top_up_10": 999,
     "locus_ios_top_up_20": 1999,
-    # Borea (2026-10-24): mismas cantidades, productos propios de su app en App
-    # Store Connect. Aún hay que crearlos allí con estos identificadores.
+    # Borea (2026-10-24): recargas pequeñas, porque un mensaje al planificador
+    # cuesta céntimos. Productos propios de su app en App Store Connect.
+    "borea_ios_top_up_1": 99,
+    "borea_ios_top_up_3": 299,
     "borea_ios_top_up_5": 499,
-    "borea_ios_top_up_10": 999,
-    "borea_ios_top_up_20": 1999,
 }
 
 GOOGLE_PLAY_TOPUP_PRODUCTS: dict[str, int] = {

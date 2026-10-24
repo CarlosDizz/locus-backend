@@ -65,10 +65,12 @@ def _enabled(settings: Settings) -> bool:
 def _token(settings: Settings) -> str:
     now = int(time.time())
     assert settings.weatherkit_private_key is not None
+    # En el .env la clave .p8 va en una línea, con los saltos escritos como \n.
+    private_key = settings.weatherkit_private_key.get_secret_value().replace("\\n", "\n")
     return jwt.encode(
         {"iss": settings.weatherkit_team_id, "iat": now, "exp": now + 1800,
          "sub": settings.weatherkit_service_id},
-        settings.weatherkit_private_key.get_secret_value(),
+        private_key,
         algorithm="ES256",
         headers={"kid": settings.weatherkit_key_id,
                  "id": f"{settings.weatherkit_team_id}.{settings.weatherkit_service_id}"},

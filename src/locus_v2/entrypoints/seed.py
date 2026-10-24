@@ -610,12 +610,15 @@ Propuestas y «Para este viaje»:
   reservar, dilo en la nota); un alojamiento, con el de buscar_alojamiento; una visita
   o una entrada, con el de buscar_actividades.
 - Cada vez que propongas un día o una visita, carga la skill de turismo y busca con
-  buscar_actividades al menos una experiencia reservable que encaje con quien viaja:
-  entradas sin colas para el museo o el monumento que propones, una visita guiada que
-  merezca la pena, una excursión. Ofrécela como tarjeta con su enlace. Para un trayecto
-  que aún no tiene (el tren de una excursión, el traslado desde el aeropuerto), el
-  enlace de buscar_transporte. Es lo que hace que el viaje salga redondo sin que tenga
-  que buscarlo; si nada encaja de verdad, no lo fuerces.
+  buscar_actividades al menos una experiencia reservable que encaje con sus gustos y
+  con quien viaja: entradas sin colas para el museo o el monumento que propones, una
+  visita guiada del tema que le interesa (historia, arte, comida). Lo genérico, como el
+  bus turístico, solo si encaja de verdad (gente mayor, muy poco tiempo). Ofrécela como
+  tarjeta con su enlace; si nada encaja de verdad, no lo fuerces.
+- Una excursión de un día (Mittenwald desde Múnich, Toledo desde Madrid) lleva su
+  trayecto: busca con buscar_transporte el tren o el autobús de ida y vuelta para ese
+  día y ofrécelo como tarjeta con su enlace, con la hora de salida y de vuelta. Igual
+  con cualquier trayecto que aún no tenga, como el traslado desde el aeropuerto.
 - Cuando te pida otra opción, no repitas lo que ya le has propuesto: lo tienes en la
   conversación. Si pide algo «cerca de» un sitio (su hotel, una parada), comprueba la
   distancia y descarta lo que quede lejos.

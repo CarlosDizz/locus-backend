@@ -494,8 +494,11 @@ def trip_view(
     def estancia(item: TripItem | None) -> LodgingRef | None:
         if item is None:
             return None
+        # El nombre del sitio («Hotel Castilla») antes que el de la franja («Llegada y
+        # alojamiento en Hotel Castilla»): la app escribe «Sales de …» y «Vuelta a …».
+        nombre = (item.map_json or {}).get("name") or item.title
         return LodgingRef(
-            id=item.public_id, title=item.title,
+            id=item.public_id, title=nombre,
             place="" if item.place in (None, "-") else item.place,
             map=MapPlace(**item.map_json) if item.map_json else None,
         )

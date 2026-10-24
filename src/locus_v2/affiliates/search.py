@@ -62,7 +62,8 @@ def _is_concrete_page(url: str) -> bool:
     path = urlparse(url).path.strip("/")
     if not path or path.count("/") < 1 and len(path) < 12:
         return False
-    return not any(part in path.lower() for part in ("search", "busqueda", "/s/", "results"))
+    excluidas = ("search", "busqueda", "/s/", "results", "blog", "restaurantes/", "restaurants/")
+    return not any(part in f"{path.lower()}/" for part in excluidas)
 
 
 async def web_program_links(

@@ -8,6 +8,7 @@ en tools_json: las ejecuta este servicio sobre las tablas trips y trip_items.
 
 import asyncio
 import json
+import re
 import secrets
 from datetime import date, datetime, timedelta
 from time import perf_counter
@@ -412,6 +413,35 @@ def _with_tracking(
     return view
 
 
+_LINK = re.compile(r"https://[^\s)<>\]]+")
+
+
+def _track_text(
+    text: str, settings: Settings | None, app: str, viewer_id: int | None, trip_id: str
+) -> str:
+    """Los enlaces que el planificador escribe en el chat, como los de las tarjetas.
+
+    Un enlace de un programa conocido (affiliates/programs.py) sale con nuestro
+    código y pasando por /r/, que cuenta el clic; cualquier otro se queda como está.
+    Solo en Borea: en Locus Guide el chat sigue igual que antes.
+    """
+    if settings is None or app != ClientApp.BOREA.value or "https://" not in text:
+        return text
+
+    def cambiar(encontrado: re.Match[str]) -> str:
+        # El punto o la coma que cierran la frase no son del enlace.
+        url = encontrado.group(0).rstrip(".,;:!?")
+        resto = encontrado.group(0)[len(url):]
+        enlace, programa = decorate(url, settings)
+        if programa is None or not enlace.startswith("https://"):
+            return url + resto
+        return tracked_url(settings, TrackedLink(
+            url=enlace, program=programa.code, app=app, user_id=viewer_id, trip_id=trip_id,
+        )) + resto
+
+    return _LINK.sub(cambiar, text)
+
+
 def trip_view(
     trip: Trip, viewer_id: int | None = None, *, settings: Settings | None = None,
     app: str = "guide",
@@ -442,6 +472,10 @@ def trip_view(
         conversation=[
             MessageView(**{
                 **m,
+                "text": (
+                    _track_text(m.get("text") or "", settings, app, viewer_id, trip.public_id)
+                    if m.get("role") == "assistant" else m.get("text") or ""
+                ),
                 "proposals": [
                     {**p, "booking": reserva(p.get("booking"))} for p in m.get("proposals") or []
                 ],

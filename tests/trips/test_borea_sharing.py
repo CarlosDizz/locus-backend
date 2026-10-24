@@ -6,9 +6,13 @@ en el idioma de quien lo recibe y solo a los móviles de las apps donde se ve el
 viaje, y que un móvil que Apple da por caducado no se vuelva a intentar.
 """
 
+import re
 from datetime import date, datetime
 from types import SimpleNamespace
 
+from pydantic import SecretStr
+
+from locus_v2.affiliates.tracking import verify
 from locus_v2.api.borea_web import _dates, _language
 from locus_v2.identity.models import User
 from locus_v2.notifications.apns import SendResult
@@ -20,6 +24,7 @@ from locus_v2.trips.service import (
     TripPlannerService,
     _plan_change,
     _plan_signature,
+    _track_text,
     trip_view,
 )
 
@@ -176,3 +181,46 @@ def test_the_invite_page_picks_a_known_language_and_writes_the_dates() -> None:
     assert _dates(trip, "es") == "5 nov – 9 nov 2026"
     assert _dates(trip, "en") == "Nov 5 – Nov 9 2026"
     assert _dates(trip, "ja") == "11月5日 – 2026年11月9日"
+
+
+# --- enlaces en el chat ---------------------------------------------------------------
+
+
+def test_links_in_borea_chat_get_our_code_and_count_the_click() -> None:
+    settings = SimpleNamespace(
+        getyourguide_partner_id="CDLANTY", affiliate_links={"booking": "aid=1234567"},
+        jwt_secret=SecretStr("x" * 40), public_api_base_url="https://api.locusguide.es/api",
+    )
+    texto = (
+        "Mira [hoteles](https://www.booking.com/searchresults.html?ss=Segovia) o "
+        "https://www.getyourguide.es/segovia-l1694/x-t1/. Y la web https://www.catedral.es/."
+    )
+    nuevo = _track_text(texto, settings, "borea", 7, "t-1")  # type: ignore[arg-type]
+    enlaces = [
+        e.rstrip(".") for e in re.findall(r"https://api\.locusguide\.es/api/r/[^)\s]+", nuevo)
+    ]
+    assert len(enlaces) == 2
+    assert verify(settings, enlaces[0].rsplit("/", 1)[1]).url.endswith("aid=1234567")  # type: ignore[union-attr,arg-type]
+    gyg = verify(settings, enlaces[1].rsplit("/", 1)[1])  # type: ignore[arg-type]
+    assert gyg is not None and "partner_id=CDLANTY" in gyg.url and gyg.user_id == 7
+    # Lo que no es de un programa se queda igual, y el punto final sigue fuera.
+    assert "https://www.catedral.es/." in nuevo
+    # En Locus Guide el chat no cambia.
+    assert _track_text(texto, settings, "guide", 7, "t-1") == texto  # type: ignore[arg-type]
+
+
+def test_a_table_link_must_be_the_restaurant_asked_for() -> None:
+    from locus_v2.affiliates.search import _is_concrete_page
+    from locus_v2.trips.borea_tools import _same_restaurant
+
+    assert _same_restaurant(
+        "Restaurante José María", "https://www.thefork.es/restaurante/jose-maria-r1 José María"
+    )
+    assert not _same_restaurant(
+        "Restaurante José María", "https://www.thefork.es/restaurante/la-cocina-de-segovia-r7"
+    )
+    assert not _same_restaurant("Restaurante José María", "https://x/maria-jesus-r2")
+    assert not _same_restaurant("Restaurante", "https://www.thefork.es/restaurante/lo-que-sea-r3")
+    assert not _is_concrete_page("https://www.thefork.es/restaurantes/segovia-c502083")
+    assert not _is_concrete_page("https://www.thefork.es/blog/las-reservas-online")
+    assert _is_concrete_page("https://www.thefork.es/restaurante/meson-don-sancho-r413029")

@@ -21,6 +21,7 @@ from locus_v2.affiliates.programs import is_configured
 from locus_v2.affiliates.search import amazon_search, booking_search, web_program_links
 from locus_v2.affiliates.service import ReferralService
 from locus_v2.places.client import GooglePlacesClient
+from locus_v2.shared.text import slugify
 from locus_v2.trips.routes import travel_time
 from locus_v2.trips.skills import load_skills
 
@@ -252,11 +253,21 @@ async def run_borea_tool(
         return {"ok": True, "links": [e.to_dict() for e in enlaces]}
 
     if name == "reservar_mesa":
+        restaurante = str(args.get("restaurante") or "")
         enlaces, usage = await web_program_links(
-            settings, "table", f"Reservar mesa en {args.get('restaurante') or ''}", trip.city
+            settings, "table", f"Reservar mesa en {restaurante}", trip.city
         )
         turn.referral_usages.append(usage)
-        return {"ok": True, "links": [e.to_dict() for e in enlaces]}
+        # La búsqueda devuelve fichas de otros restaurantes de la ciudad («José María,
+        # Segovia» daba «La Cocina de Segovia»): solo vale la del que se ha pedido.
+        suyos = [e for e in enlaces if _same_restaurant(restaurante, f"{e.url} {e.title}")]
+        if not suyos:
+            return {
+                "ok": True, "links": [],
+                "note": "No se puede reservar online en nuestros programas: di que se "
+                        "reserva por teléfono o en su web, sin enlace.",
+            }
+        return {"ok": True, "links": [e.to_dict() for e in suyos]}
 
     if name == "buscar_sitios":
         centro = trip.center_json or {}
@@ -296,3 +307,20 @@ async def run_borea_tool(
         return {"ok": True, "links": [enlace.to_dict()]}
 
     return {"ok": False, "error": f"Herramienta desconocida: {name}"}
+
+
+# Lo que no distingue a un restaurante de otro («Restaurante», «Mesón», la ciudad...).
+_GENERIC = frozenset(
+    "el la los las de del y en al restaurante restaurant meson taberna bar cafe casa "
+    "asador bodega the of".split()
+)
+
+
+def _same_restaurant(nombre: str, pagina: str) -> bool:
+    """Si la página es la del restaurante pedido: comparten las palabras de su nombre."""
+    buscado = {w for w in slugify(nombre.split(",")[0]).split("-") if len(w) > 2} - _GENERIC
+    if not buscado:
+        return False
+    encontrado = set(slugify(pagina).split("-"))
+    # Todas las palabras con significado: «José María» no es «María Jesús».
+    return buscado <= encontrado

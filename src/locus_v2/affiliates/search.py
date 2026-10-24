@@ -24,10 +24,10 @@ from locus_v2.shared.text import clean_text
 logger = structlog.get_logger()
 
 # La tienda de Amazon según el idioma de quien planifica.
-_AMAZON_STORE = {
-    "es": "amazon.es", "de": "amazon.de", "fr": "amazon.fr", "it": "amazon.it",
-    "en": "amazon.co.uk", "pt": "amazon.es",
-}
+# Nuestro ID de Amazon Afiliados (borea0b-21, 2026-10-24) solo cobra en amazon.es, que
+# envía a toda la UE: todos los idiomas van ahí. Si un día hay ID en otra tienda, se
+# añade aquí su idioma (y su ID en LOCUS_AFFILIATE_LINKS, que hoy vale para todas).
+_AMAZON_STORE: dict[str, str] = {}
 
 
 @dataclass(frozen=True)

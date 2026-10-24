@@ -648,7 +648,12 @@ _BOREA_TERMS_HTML = _borea_page(
       <p>
         Borea no vende viajes, entradas ni alojamiento: te enlaza con terceros donde puedes reservar. La
         reserva, su precio, sus condiciones y sus devoluciones son entre tú y ese tercero. Algunos enlaces son
-        de afiliado y nos reportan una comisión sin coste para ti.
+        de afiliado y nos reportan una comisión sin coste para ti. Las recomendaciones de restaurantes no
+        llevan comisión: nadie paga por aparecer.
+      </p>
+      <p>
+        Como Afiliado de Amazon, obtenemos ingresos por las compras adscritas que cumplen los requisitos
+        aplicables.
       </p>
 
       <h2>Uso aceptable</h2>

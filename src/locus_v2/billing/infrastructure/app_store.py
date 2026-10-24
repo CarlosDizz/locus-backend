@@ -41,14 +41,26 @@ def _root_certificate() -> bytes:
 
 
 class AppStoreVerifier:
-    def __init__(self, settings: Settings) -> None:
-        self.bundle_id = settings.app_store_bundle_id
-        self.app_apple_id = settings.app_store_app_apple_id
+    def __init__(self, settings: Settings, app: str = "guide") -> None:
+        # Cada app del grupo tiene su bundle y su id en la App Store; el saldo que
+        # se compra es el mismo (shared/apps.py).
+        if app == "borea":
+            self.bundle_id = settings.borea_app_store_bundle_id
+            self.app_apple_id = settings.borea_app_store_app_apple_id
+        else:
+            self.bundle_id = settings.app_store_bundle_id
+            self.app_apple_id = settings.app_store_app_apple_id
 
     def verify(self, signed_transaction: str) -> AppStorePurchase:
         root = [_root_certificate()]
         ultimo_error: Exception | None = None
-        for environment in (Environment.PRODUCTION, Environment.SANDBOX):
+        # Sin el id de la app en la App Store (Borea antes de publicarse) solo se
+        # pueden verificar compras de Sandbox: las de TestFlight y el revisor.
+        entornos = (
+            (Environment.PRODUCTION, Environment.SANDBOX) if self.app_apple_id
+            else (Environment.SANDBOX,)
+        )
+        for environment in entornos:
             verifier = SignedDataVerifier(
                 root,
                 False,

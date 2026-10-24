@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from locus_v2.api.auth import CurrentUserDep
+from locus_v2.api.auth import ClientAppDep, CurrentUserDep
 from locus_v2.billing.application.mobile_billing import BillingError, MobileBillingService
 from locus_v2.billing.application.spending import spending_groups
 from locus_v2.billing.infrastructure.paddle_gateway import (
@@ -237,10 +237,11 @@ async def confirm_app_store_topup(
     session: SessionDep,
     settings: SettingsDep,
     current_user: CurrentUserDep,
+    app: ClientAppDep,
 ) -> TopUpResponse:
     try:
         topup = await _service(session, settings).confirm_app_store_topup(
-            user=current_user, signed_transaction=payload.signed_transaction
+            user=current_user, signed_transaction=payload.signed_transaction, app=app.value
         )
     except BillingError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

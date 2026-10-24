@@ -510,3 +510,179 @@ async def support_head() -> Response:
 @router.get("/support", response_class=HTMLResponse)
 async def support() -> str:
     return _SUPPORT_HTML
+
+
+# --- Borea, el planificador del grupo Locus (2026-10-24) ---------------------------
+# Mismo responsable, misma base de datos y mismas cuentas que Locus: por eso sus
+# páginas cuelgan del mismo dominio. Llevan la identidad de Borea (solo oscuro).
+
+_BOREA_STYLES = """
+      :root { color-scheme: dark; font-family: -apple-system, system-ui, 'Segoe UI', sans-serif; color: #eef0fa; background: #0d0b1f; }
+      body { margin: 0; padding: 32px 18px; background: radial-gradient(120% 40% at 15% -10%, rgba(92,242,160,.22), transparent 60%), radial-gradient(90% 35% at 90% -5%, rgba(139,107,255,.2), transparent 60%), #0d0b1f; min-height: 100vh; }
+      main { max-width: 760px; margin: 0 auto; }
+      h1, h2 { line-height: 1.15; font-weight: 600; }
+      h1 { font-size: clamp(1.9rem, 5vw, 2.8rem); margin: 0 0 8px; }
+      h2 { margin-top: 28px; color: #5cf2a0; font-size: 1.15rem; }
+      p, li { font-size: 1rem; line-height: 1.65; color: #d9dcef; }
+      .updated { color: #a3a6c8; margin-top: 0; }
+      a { color: #5cf2a0; font-weight: 600; }
+"""
+
+
+def _borea_page(title: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title} | Borea</title>
+    <style>{_BOREA_STYLES}</style>
+  </head>
+  <body>
+    <main>
+{body}
+    </main>
+  </body>
+</html>
+"""
+
+
+_BOREA_PRIVACY_HTML = _borea_page(
+    "Política de privacidad",
+    f"""
+      <h1>Política de privacidad de Borea</h1>
+      <p class="updated">Última actualización: 24 de octubre de 2026</p>
+
+      <p>
+        Borea, de Locus, es una aplicación para planificar viajes conversando. Comparte cuenta, saldo y
+        base de datos con Locus Guide: es el mismo responsable y la misma cuenta. Esta política explica qué
+        datos tratamos en Borea, para qué y cómo contactar con nosotros.
+      </p>
+
+      <h2>Quién es el responsable</h2>
+      <p>Carlos García, que desarrolla y opera Locus y Borea. Contacto: <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.</p>
+
+      <h2>Datos que tratamos</h2>
+      <ul>
+        <li>Datos de cuenta: nombre, correo electrónico e identificador de Apple o Google.</li>
+        <li>Lo que cuentas al planificador: destinos, fechas, con quién viajas, reservas y correos de reservas
+            que pegues en el chat, y el plan del viaje que se genera.</li>
+        <li>Notas de voz: el audio se envía a un proveedor de IA para transcribirlo y se descarta; solo se
+            guarda el texto.</li>
+        <li>Saldo, recargas y consumo, que son comunes con Locus Guide.</li>
+        <li>Clics en enlaces de reserva de terceros (por ejemplo, actividades, alojamiento o transporte), para
+            saber qué recomendaciones resultan útiles.</li>
+        <li>Datos técnicos básicos: idioma, plataforma, versión de la app y registros de errores.</li>
+      </ul>
+      <p>Borea no pide tu ubicación.</p>
+
+      <h2>Finalidades</h2>
+      <ul>
+        <li>Preparar y mostrar el plan de tus viajes, con su tiempo previsto y recomendaciones.</li>
+        <li>Autenticarte y mantener la misma cuenta en Borea y en Locus Guide.</li>
+        <li>Gestionar el saldo, las recargas y el soporte.</li>
+        <li>Mejorar la estabilidad y la calidad del servicio.</li>
+      </ul>
+
+      <h2>Servicios de terceros</h2>
+      <p>
+        Para funcionar, Borea se apoya en proveedores de IA (OpenAI para el planificador y Google para
+        transcribir notas de voz), Google Maps para situar los sitios, Apple WeatherKit para la previsión del
+        tiempo, Apple y Google para iniciar sesión, la App Store para las compras e infraestructura en la nube.
+        Solo reciben lo necesario para prestar cada función. Cuando abres un enlace de reserva, sales a la web
+        de ese tercero (GetYourGuide, Booking, Amazon u otros), que trata tus datos según su propia política.
+        Algunos de esos enlaces son de afiliado: si reservas, el tercero nos paga una comisión; a ti no te
+        cuesta más.
+      </p>
+
+      <h2>Conservación</h2>
+      <p>
+        Conservamos tus viajes y conversaciones mientras tengas la cuenta. Puedes borrar un viaje en cualquier
+        momento desde la app. Los registros de facturación se guardan el tiempo que exige la ley.
+      </p>
+
+      <h2>Tus derechos y borrar la cuenta</h2>
+      <p>
+        Puedes borrar tu cuenta desde Perfil → Borrar mi cuenta. Como la cuenta es la misma, se borra también
+        en Locus Guide. Para acceder, rectificar u oponerte al tratamiento de tus datos, escríbenos a
+        <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>.
+      </p>
+
+      <h2>Menores</h2>
+      <p>Borea no está dirigida a menores de 13 años.</p>
+
+      <h2>Cambios</h2>
+      <p>Publicaremos cualquier cambio en esta misma página, con su fecha.</p>
+""",
+)
+
+_BOREA_TERMS_HTML = _borea_page(
+    "Términos y condiciones",
+    f"""
+      <h1>Términos y condiciones de Borea</h1>
+      <p class="updated">Última actualización: 24 de octubre de 2026</p>
+
+      <p>
+        Borea, de Locus, te ayuda a planificar viajes conversando. La desarrolla y opera Carlos García. Al
+        usarla aceptas estos términos.
+      </p>
+
+      <h2>Saldo y consumo</h2>
+      <ul>
+        <li>Borea funciona con el mismo saldo de prepago que Locus Guide. Cada mensaje al planificador
+            descuenta su coste real, sin mínimo por mensaje.</li>
+        <li>Las cuentas nuevas reciben un saldo de bienvenida.</li>
+        <li>El saldo no caduca, no genera intereses y no es transferible entre cuentas. Nunca cobramos por
+            encima del saldo disponible.</li>
+        <li>Las recargas desde el iPhone se compran a través de la App Store, que actúa como vendedor.</li>
+      </ul>
+
+      <h2>Qué esperar del planificador</h2>
+      <p>
+        El planificador comprueba horarios y direcciones en la web, pero <strong>puede equivocarse</strong>.
+        Antes de viajar, confirma horarios, precios y reservas en las fuentes oficiales. El tiempo que muestra
+        la app es una previsión o una media habitual, no una garantía.
+      </p>
+
+      <h2>Reservas y enlaces de terceros</h2>
+      <p>
+        Borea no vende viajes, entradas ni alojamiento: te enlaza con terceros donde puedes reservar. La
+        reserva, su precio, sus condiciones y sus devoluciones son entre tú y ese tercero. Algunos enlaces son
+        de afiliado y nos reportan una comisión sin coste para ti.
+      </p>
+
+      <h2>Uso aceptable</h2>
+      <ul>
+        <li>No uses Borea para actividades ilícitas ni para obtener contenido que vulnere derechos de terceros.</li>
+        <li>No compartas tu cuenta ni intentes automatizar o revender el servicio.</li>
+      </ul>
+
+      <h2>Disponibilidad y cambios</h2>
+      <p>
+        Dependemos de proveedores externos y puede haber interrupciones. Podemos actualizar estos términos y
+        lo anunciaremos en la app si el cambio es relevante.
+      </p>
+
+      <h2>Ley aplicable</h2>
+      <p>
+        Se rigen por la legislación española. Si eres consumidor, conservas todos los derechos que te reconoce
+        la normativa de consumo.
+      </p>
+
+      <h2>Contacto</h2>
+      <p>
+        <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>. Consulta también la
+        <a href="/borea/privacy-policy">política de privacidad de Borea</a>.
+      </p>
+""",
+)
+
+
+@router.get("/borea/privacy-policy", response_class=HTMLResponse)
+async def borea_privacy_policy() -> str:
+    return _BOREA_PRIVACY_HTML
+
+
+@router.get("/borea/terms", response_class=HTMLResponse)
+async def borea_terms() -> str:
+    return _BOREA_TERMS_HTML

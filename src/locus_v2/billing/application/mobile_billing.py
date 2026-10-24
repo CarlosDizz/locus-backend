@@ -52,6 +52,11 @@ APP_STORE_TOPUP_PRODUCTS: dict[str, int] = {
     "locus_ios_top_up_5": 499,
     "locus_ios_top_up_10": 999,
     "locus_ios_top_up_20": 1999,
+    # Borea (2026-10-24): mismas cantidades, productos propios de su app en App
+    # Store Connect. Aún hay que crearlos allí con estos identificadores.
+    "borea_ios_top_up_5": 499,
+    "borea_ios_top_up_10": 999,
+    "borea_ios_top_up_20": 1999,
 }
 
 GOOGLE_PLAY_TOPUP_PRODUCTS: dict[str, int] = {
@@ -394,6 +399,7 @@ class MobileBillingService:
         user: User,
         signed_transaction: str,
         verifier: AppStoreVerifier | None = None,
+        app: str = "guide",
     ) -> TopUpView:
         """Abona una compra de la app de iPhone. Idempotente por transacción.
 
@@ -403,7 +409,7 @@ class MobileBillingService:
         con quien la manda, no se abona, para que una compra no se pueda
         reaprovechar en otra cuenta.
         """
-        active = verifier or AppStoreVerifier(self.settings)
+        active = verifier or AppStoreVerifier(self.settings, app)
         try:
             purchase = active.verify(signed_transaction.strip())
         except AppStoreVerificationError as error:

@@ -41,6 +41,7 @@ from locus_v2.shared.openai_usage import ToolUsage
 from locus_v2.shared.prompting import IDENTITY_RULE
 from locus_v2.shared.text import slugify
 from locus_v2.trips.borea_tools import BOREA_TOOL_NAMES, run_borea_tool, tools_for_turn
+from locus_v2.trips.lodging import lodging_for_day
 from locus_v2.trips.models import Trip, TripItem, TripMember
 from locus_v2.trips.skills import skills_index
 from locus_v2.trips.voice import TRANSCRIBE_MODEL
@@ -92,8 +93,15 @@ _ITEM_FIELDS: dict[str, Any] = {
         "description": (
             "El sitio concreto tal como se buscaría en Google Maps, con la ciudad: «Coliseo, "
             "Roma», «Trattoria Da Enzo al 29, Roma». Si es una zona y no un sitio, la zona "
-            "(«Judería, Córdoba»). Vacío si no hay sitio (un traslado, el check-in) o si aún no "
-            "sabes cuál será (una cena sin restaurante elegido)."
+            "(«Judería, Córdoba»). En el alojamiento, el hotel o su dirección. Vacío si no hay "
+            "sitio (un traslado) o si aún no sabes cuál será (una cena sin restaurante elegido)."
+        ),
+    },
+    "lodging": {
+        "type": "boolean",
+        "description": (
+            "true solo en la entrada al alojamiento (una por estancia): los días siguientes "
+            "salen de él y vuelven a él hasta el siguiente alojamiento."
         ),
     },
     "price": {"type": "string", "description": "Precio orientativo si lo sabes seguro."},
@@ -199,6 +207,7 @@ TOOLS: list[dict[str, Any]] = [
                 "note": {"type": "string"},
                 "travel": {"type": "string"},
                 "place": {"type": "string"},
+                "lodging": {"type": "boolean"},
             },
             "required": ["item_id"],
         },
@@ -288,11 +297,24 @@ class ItemView(BaseModel):
     map: MapPlace | None = None
     price: str = ""
     booking: BookingView | None = None
+    lodging: bool = False
+
+
+class LodgingRef(BaseModel):
+    """El alojamiento del que sale o al que vuelve un día."""
+
+    id: str
+    title: str
+    place: str = ""
+    map: MapPlace | None = None
 
 
 class DayView(BaseModel):
     date: date
     items: list[ItemView]
+    # Un día con alojamiento empieza y termina en él.
+    from_lodging: LodgingRef | None = None
+    to_lodging: LodgingRef | None = None
 
 
 class ProposalView(BaseModel):
@@ -457,8 +479,23 @@ def trip_view(
                 status=item.status, note=item.note, travel=item.travel,
                 place="" if item.place in (None, "-") else item.place,
                 map=MapPlace(**item.map_json) if item.map_json else None, price=item.price,
-                booking=reserva(item.booking_json),
+                booking=reserva(item.booking_json), lodging=bool(item.lodging),
             )
+        )
+
+    def estancia(item: TripItem | None) -> LodgingRef | None:
+        if item is None:
+            return None
+        return LodgingRef(
+            id=item.public_id, title=item.title,
+            place="" if item.place in (None, "-") else item.place,
+            map=MapPlace(**item.map_json) if item.map_json else None,
+        )
+
+    def dia(day: date, items: list[ItemView]) -> DayView:
+        sale, vuelve = lodging_for_day(trip, day)
+        return DayView(
+            date=day, items=items, from_lodging=estancia(sale), to_lodging=estancia(vuelve)
         )
     centro = trip.center_json or next(
         (item.map_json for item in trip.items if item.map_json), None
@@ -468,7 +505,7 @@ def trip_view(
         center=MapCenter(lat=centro["lat"], lng=centro["lng"]) if centro else None,
         starts_at=trip.starts_at, ends_at=trip.ends_at,
         travelers=trip.travelers, pace=trip.pace,
-        days=[DayView(date=day, items=items) for day, items in sorted(dias.items())],
+        days=[dia(day, items) for day, items in sorted(dias.items())],
         conversation=[
             MessageView(**{
                 **m,
@@ -726,6 +763,7 @@ class TripPlannerService:
             price=str(data.get("price") or "")[:40],
             booking_json=booking,
             position=len(trip.items),
+            lodging=data.get("lodging") is True,
         )
         trip.items.append(item)
         return item
@@ -1147,6 +1185,7 @@ class TripPlannerService:
                     "travel": str(data.get("travel") or ""),
                     "place": str(data.get("place") or "").strip()[:255],
                     "price": str(data.get("price") or ""),
+                    "lodging": data.get("lodging") is True,
                     "booking": (
                         self._booking(
                             str(data["booking_url"]), str(data.get("booking_title") or "")
@@ -1185,6 +1224,8 @@ class TripPlannerService:
             for field in ("title", "note", "travel", "place"):
                 if args.get(field):
                     setattr(item, field, str(args[field]))
+            if isinstance(args.get("lodging"), bool):
+                item.lodging = args["lodging"]
             if args.get("place"):
                 await self._ensure_center(trip, turn.locale)
                 item.map_json = await self._locate(trip, item.place, item.kind, turn.locale)

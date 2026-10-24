@@ -14,7 +14,8 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from locus_v2.config import Settings
-from locus_v2.trips.models import Trip
+from locus_v2.trips.lodging import lodging_for_day
+from locus_v2.trips.models import Trip, TripItem
 
 logger = structlog.get_logger()
 
@@ -24,7 +25,7 @@ MAX_STOPS = 27
 # como «1 h 27 min a pie» (2026-10-24).
 MAX_WALK_S = 40 * 60
 # Sube cuando cambia lo que se guarda, para no servir rutas viejas sin los tramos.
-_CACHE_VERSION = "v2"
+_CACHE_VERSION = "v3"
 
 
 class RouteLeg(BaseModel):
@@ -50,6 +51,10 @@ class DayRoute(BaseModel):
     # total entero, que es lo que lee la app de Locus Guide.
     walk_duration_s: int = 0
     walk_distance_m: int = 0
+    # Si el camino sale del alojamiento (stops[0]) y vuelve a él (stops[-1]). Solo
+    # cuando la app lo pide: las versiones anteriores no esperan esa parada de más.
+    from_lodging: bool = False
+    to_lodging: bool = False
 
 
 class GoogleRoutesClient:
@@ -143,21 +148,34 @@ def _seconds(value: object) -> int:
 
 
 async def day_route(
-    session: AsyncSession, settings: Settings, trip: Trip, day: date
+    session: AsyncSession, settings: Settings, trip: Trip, day: date,
+    with_lodging: bool = False,
 ) -> DayRoute | None:
-    paradas = sorted(
+    paradas: list[TripItem] = sorted(
         (item for item in trip.items if item.day == day and item.map_json),
         key=lambda item: (item.time, item.position),
     )
+    desde_hotel = hasta_hotel = False
+    if with_lodging and paradas:
+        # Un día con alojamiento empieza y termina en él.
+        sale, vuelve = lodging_for_day(trip, day)
+        if sale is not None and sale.map_json and paradas[0] is not sale:
+            paradas.insert(0, sale)
+            desde_hotel = True
+        if vuelve is not None and vuelve.map_json and paradas[-1] is not vuelve:
+            paradas.append(vuelve)
+            hasta_hotel = True
     if len(paradas) < 2 or len(paradas) > MAX_STOPS:
         return None
     place_ids = [item.map_json["place_id"] for item in paradas]
     # La clave cambia si cambian los sitios o qué paradas son transporte.
     clave = _CACHE_VERSION + "|" + "|".join(
         f"{item.map_json['place_id']}:{item.kind}" for item in paradas
-    )
+    ) + f"|{int(desde_hotel)}{int(hasta_hotel)}"
     guardadas = dict(trip.routes_json or {})
-    previa = guardadas.get(day.isoformat())
+    # Con y sin alojamiento son caminos distintos: cada uno en su sitio.
+    hueco = day.isoformat() + ("+h" if with_lodging else "")
+    previa = guardadas.get(hueco)
     if previa and previa.get("key") == clave:
         return DayRoute(**previa["route"])
 
@@ -186,8 +204,10 @@ async def day_route(
         stops=[item.public_id for item in paradas],
         walk_duration_s=sum(t.duration_s for t in tramos if t.walk),
         walk_distance_m=sum(t.distance_m for t in tramos if t.walk),
+        from_lodging=desde_hotel,
+        to_lodging=hasta_hotel,
     )
-    guardadas[day.isoformat()] = {"key": clave, "route": resultado.model_dump(mode="json")}
+    guardadas[hueco] = {"key": clave, "route": resultado.model_dump(mode="json")}
     # Un diccionario nuevo: SQLAlchemy no ve los cambios dentro de un JSON mutado.
     trip.routes_json = guardadas
     await session.commit()

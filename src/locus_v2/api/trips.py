@@ -97,13 +97,17 @@ async def get_day_route(
     session: SessionDep,
     settings: SettingsDep,
     current_user: CurrentUserDep,
+    lodging: bool = False,
 ) -> DayRoute | None:
-    """El camino a pie del día, o null si no hay dos paradas con sitio en el mapa."""
+    """El camino a pie del día, o null si no hay dos paradas con sitio en el mapa.
+
+    Con `lodging=true`, el camino sale del alojamiento y vuelve a él.
+    """
     try:
         trip = await planner.get(current_user, trip_id)
     except TripError as error:
         raise _http(error) from error
-    return await day_route(session, settings, trip, day)
+    return await day_route(session, settings, trip, day, with_lodging=lodging)
 
 
 @router.delete("/{trip_id}", status_code=204)

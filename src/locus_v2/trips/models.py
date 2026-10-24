@@ -3,6 +3,7 @@ from datetime import date, datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     Date,
     DateTime,
     ForeignKey,
@@ -98,6 +99,11 @@ class TripItem(TimestampMixin, Base):
     )
     booking_json: Mapped[dict | None] = mapped_column(JSON)
     position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # El alojamiento (la entrada al hotel, una por estancia): los días siguientes
+    # salen de él y vuelven a él hasta el siguiente alojamiento o el final.
+    lodging: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
 
     trip: Mapped[Trip] = relationship(back_populates="items")
 

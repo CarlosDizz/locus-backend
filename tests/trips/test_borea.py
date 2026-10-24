@@ -69,10 +69,10 @@ def test_booking_gets_our_aid_and_loses_someone_elses() -> None:
 
 def test_a_network_program_wraps_the_link() -> None:
     url, _ = decorate(
-        "https://www.thefork.es/restaurante/x",
-        _settings(affiliate_links={"thefork": "https://www.awin1.com/cread.php?a=1&ued={url}"}),
+        "https://www.tiqets.com/es/x",
+        _settings(affiliate_links={"tiqets": "https://www.awin1.com/cread.php?a=1&ued={url}"}),
     )
-    assert url.startswith("https://www.awin1.com/cread.php?a=1&ued=https%3A%2F%2Fwww.thefork.es")
+    assert url.startswith("https://www.awin1.com/cread.php?a=1&ued=https%3A%2F%2Fwww.tiqets.com")
 
 
 def test_an_unconfigured_program_is_linked_without_commission() -> None:
@@ -139,7 +139,7 @@ def test_skill_tools_appear_only_after_loading_the_skill() -> None:
     names = {t["name"] for t in tools_for_turn([], set())}
     assert "cargar_skill" in names and "buscar_sitios" not in names
     names = {t["name"] for t in tools_for_turn([], {"hosteleria"})}
-    assert {"buscar_sitios", "reservar_mesa"} <= names and "ruta" not in names
+    assert "buscar_sitios" in names and "ruta" not in names
 
 
 def _borea_trip() -> Trip:

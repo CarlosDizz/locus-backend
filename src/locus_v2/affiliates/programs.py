@@ -22,7 +22,7 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from locus_v2.config import Settings
 
 # Lo que el modelo puede querer reservar; cada tool de skill busca en un tipo.
-KINDS = ("activity", "stay", "transport", "table", "car", "gear")
+KINDS = ("activity", "stay", "transport", "car", "gear")
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,8 @@ PROGRAMS: tuple[AffiliateProgram, ...] = (
     AffiliateProgram("airbnb", "Airbnb", "stay", ("airbnb.com", "airbnb.es")),
     AffiliateProgram("trainline", "Trainline", "transport", ("thetrainline.com", "trainline.com")),
     AffiliateProgram("omio", "Omio", "transport", ("omio.com", "omio.es")),
-    AffiliateProgram("thefork", "TheFork", "table", ("thefork.com", "thefork.es", "eltenedor.es")),
+    # Sin TheFork (2026-10-24): los restaurantes se recomiendan por las valoraciones de
+    # Google y sin enlace de reserva; nadie paga por aparecer.
     AffiliateProgram("discovercars", "DiscoverCars", "car", ("discovercars.com",)),
     AffiliateProgram("rentalcars", "Rentalcars", "car", ("rentalcars.com",)),
     AffiliateProgram(

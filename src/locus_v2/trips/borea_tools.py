@@ -6,7 +6,7 @@ añadir, proponer, cambiar y quitar franjas) y añade las suyas:
 - siempre: cargar_skill, recomendar y quitar_recomendacion («Para este viaje»),
   guardar_clima y buscar_alojamiento;
 - al cargar una skill, las que esa skill declara en su línea `tools:` (ruta,
-  buscar_transporte, buscar_sitios, reservar_mesa, buscar_actividades,
+  buscar_transporte, buscar_sitios, buscar_actividades,
   buscar_equipamiento). Una tool por tipo de cosa, no por plataforma: en qué
   programas se busca lo decide el backend (affiliates/programs.py).
 
@@ -14,16 +14,13 @@ Los enlaces que devuelven ya van con nuestro código; el modelo solo los copia e
 booking_url, y aun así el backend los vuelve a decorar al apuntarlos.
 """
 
-import re
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
 from locus_v2.affiliates.programs import is_configured
 from locus_v2.affiliates.search import amazon_search, booking_search, web_program_links
 from locus_v2.affiliates.service import ReferralService
 from locus_v2.places.client import GooglePlacesClient
-from locus_v2.shared.text import slugify
 from locus_v2.trips.routes import travel_time
 from locus_v2.trips.skills import load_skills
 
@@ -126,12 +123,6 @@ SKILL_TOOLS: dict[str, dict[str, Any]] = {
         "elegir con criterio y huir de las turistadas.",
         {"consulta": {"type": "string", "description": "«Trattoria romana en Monti»."}},
         ["consulta"],
-    ),
-    "reservar_mesa": _function(
-        "reservar_mesa",
-        "Un enlace para reservar mesa en un restaurante concreto, si se puede reservar online.",
-        {"restaurante": {"type": "string"}},
-        ["restaurante"],
     ),
     "buscar_actividades": _function(
         "buscar_actividades",
@@ -258,23 +249,6 @@ async def run_borea_tool(
         turn.referral_usages.append(usage)
         return {"ok": True, "links": [e.to_dict() for e in enlaces]}
 
-    if name == "reservar_mesa":
-        restaurante = str(args.get("restaurante") or "")
-        enlaces, usage = await web_program_links(
-            settings, "table", f"Reservar mesa en {restaurante}", trip.city
-        )
-        turn.referral_usages.append(usage)
-        # La búsqueda devuelve fichas de otros restaurantes de la ciudad («José María,
-        # Segovia» daba «La Cocina de Segovia»): solo vale la del que se ha pedido.
-        suyos = [e for e in enlaces if _same_restaurant(restaurante, e.url, trip.city)]
-        if not suyos:
-            return {
-                "ok": True, "links": [],
-                "note": "No se puede reservar online en nuestros programas: di que se "
-                        "reserva por teléfono o en su web, sin enlace.",
-            }
-        return {"ok": True, "links": [e.to_dict() for e in suyos]}
-
     if name == "buscar_sitios":
         centro = trip.center_json or {}
         sitios = await GooglePlacesClient(settings).search_places(
@@ -313,32 +287,3 @@ async def run_borea_tool(
         return {"ok": True, "links": [enlace.to_dict()]}
 
     return {"ok": False, "error": f"Herramienta desconocida: {name}"}
-
-
-# Lo que no distingue a un restaurante de otro («Restaurante», «Trattoria», «Mesón»...).
-_GENERIC = frozenset(
-    "el la los las de del da di y e en al alla restaurante restaurant ristorante meson "
-    "taberna taverna trattoria osteria pizzeria bar cafe casa asador bodega the of".split()
-)
-
-
-def _words(texto: str) -> set[str]:
-    return {
-        w for w in slugify(texto).split("-") if len(w) > 2 and not w.isdigit()
-    } - _GENERIC
-
-
-def _same_restaurant(nombre: str, url: str, city: str = "") -> bool:
-    """Si la ficha es la del restaurante pedido, por el nombre que lleva su dirección.
-
-    Tienen que coincidir las palabras con significado, sin que sobre ninguna:
-    «Trattoria Da Enzo» no es «Trattoria Napoletana Da Enzo» (Roma, 2026-10-24), ni
-    «José María» es «María Jesús». La ciudad no cuenta.
-    """
-    buscado = _words(nombre.split(",")[0])
-    if not buscado:
-        return False
-    ficha = urlparse(url).path.rstrip("/").split("/")[-1]
-    ficha = re.sub(r"-r\d+$", "", ficha)
-    encontrado = _words(ficha) - _words(city)
-    return buscado == encontrado

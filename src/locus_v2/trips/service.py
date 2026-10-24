@@ -110,7 +110,7 @@ _WRITE_TOOLS = frozenset({"set_trip_details", "add_items", "update_item", "remov
 _BOREA_WRITE_TOOLS = frozenset({"recomendar", "quitar_recomendacion", "guardar_clima"})
 # Las que solo buscan y no tocan la base de datos van en paralelo (_run_tools).
 _PARALLEL_TOOLS = frozenset({
-    "find_bookable", "buscar_actividades", "buscar_transporte", "reservar_mesa",
+    "find_bookable", "buscar_actividades", "buscar_transporte",
     "buscar_sitios", "ruta",
 })
 

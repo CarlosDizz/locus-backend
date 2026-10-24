@@ -68,6 +68,7 @@ class _Sender:
 
 
 _SETTINGS = SimpleNamespace(
+    getyourguide_partner_id="CDLANTY", affiliate_links={},
     app_store_bundle_id="com.carlos.locusia", borea_app_store_bundle_id="com.carlos.borea"
 )
 
@@ -209,19 +210,12 @@ def test_links_in_borea_chat_get_our_code_and_count_the_click() -> None:
     assert _track_text(texto, settings, "guide", 7, "t-1") == texto  # type: ignore[arg-type]
 
 
-def test_a_table_link_must_be_the_restaurant_asked_for() -> None:
+def test_restaurants_never_carry_a_booking_link() -> None:
+    """Sin TheFork: un enlace suyo no es de ningún programa y la tarjeta va sin él."""
+    from locus_v2.affiliates.programs import program_for
     from locus_v2.affiliates.search import _is_concrete_page
-    from locus_v2.trips.borea_tools import _same_restaurant
 
-    ficha = "https://www.thefork.es/restaurante/"
-    assert _same_restaurant("Restaurante José María", ficha + "jose-maria-r1")
-    assert not _same_restaurant("Restaurante José María", ficha + "la-cocina-de-segovia-r7")
-    assert not _same_restaurant("Restaurante José María", ficha + "maria-jesus-r2")
-    assert not _same_restaurant("Restaurante", ficha + "lo-que-sea-r3")
-    # Roma, 2026-10-24: «Da Enzo» enlazaba con otra trattoria que también se llama Enzo.
-    assert not _same_restaurant("Trattoria Da Enzo", ficha + "trattoria-napoletana-da-enzo-r835416")
-    assert _same_restaurant("Da Enzo al 29", ficha + "da-enzo-al-29-r123", "Roma")
-    assert _same_restaurant("Trattoria Da Enzo", ficha + "da-enzo-roma-r9", "Roma")
-    assert not _is_concrete_page("https://www.thefork.es/restaurantes/segovia-c502083")
-    assert not _is_concrete_page("https://www.thefork.es/blog/las-reservas-online")
-    assert _is_concrete_page("https://www.thefork.es/restaurante/meson-don-sancho-r413029")
+    assert program_for("https://www.thefork.es/restaurante/da-enzo-al-29-r123") is None
+    servicio = TripPlannerService(None, _SETTINGS, ClientApp.BOREA)  # type: ignore[arg-type]
+    assert servicio._booking("https://www.thefork.es/restaurante/x-r1", "Reservar") is None
+    assert not _is_concrete_page("https://www.tiqets.com/es/blog/algo")

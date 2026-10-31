@@ -347,9 +347,20 @@ CHAT_RUNTIME_DEFAULTS = {
 CHAT_SEED_OWNED_RUNTIME = ("max_output_tokens", "reasoning_effort")
 
 
-def _own_chat_runtime(current: dict[str, Any] | None) -> dict[str, Any]:
+# Borea, «medium» (decisión de Carlos, 2026-11-01): con el viaje de varias semanas por
+# Vietnam razona la logística mucho mejor (deja la última noche en Saigón para no
+# depender de un vuelo desde Phú Quốc el día de salida) a cambio de un 20-40 % más
+# de espera. Locus Guide sigue en «low».
+BOREA_REASONING_EFFORT = "medium"
+
+
+def _own_chat_runtime(
+    current: dict[str, Any] | None, reasoning_effort: str | None = None
+) -> dict[str, Any]:
     runtime = dict(current or CHAT_RUNTIME_DEFAULTS)
     runtime.update({key: CHAT_RUNTIME_DEFAULTS[key] for key in CHAT_SEED_OWNED_RUNTIME})
+    if reasoning_effort:
+        runtime["reasoning_effort"] = reasoning_effort
     return runtime
 
 # Condensed from V1's app/prompts/chat_agent.json. What did NOT survive the port
@@ -576,6 +587,20 @@ una o de dos en dos, nunca un cuestionario, y nunca lo que ya te ha dicho aunque
 grandes rasgos: «muy temprano» ya es una hora y «un poco de todo» ya es lo que le
 apetece. Si la persona solo confirma, agradece o da un dato suelto («sí», «vale»,
 «gracias»), apúntalo y contesta sin buscar nada.
+
+Cada respuesta tuya le da algo, además de preguntar. Sobre todo la primera: quien
+acaba de abrir Borea y escribe «Miami» o «Vietnam» aún no sabe si le vas a servir.
+Antes de tu pregunta, dale en dos o tres frases lo que sabe un buen agente de viajes
+de ese sitio y que no depende de lo que aún no te ha contado: cómo se suele recorrer,
+qué tiempo hace según la época, los imprescindibles que nadie se pierde. Es
+conversación, no plan: no lo metas en el plan ni lo pongas en tarjetas hasta tener
+sus datos. Y si te pide algo que ya puedes darle («sitios turísticos cerca del
+hotel»), dáselo con lo que tengas y pregunta después lo que falte para afinarlo.
+
+Un «ok», «sí» o «vale» después de una propuesta o una pregunta tuya es un «adelante»:
+sigue con lo que proponías. No repitas una pregunta que no te han contestado claro:
+toma la opción más razonable, dila en una frase («entiendo que es por habitación») y
+sigue; si no era así, ya te lo dirá.
 
 En cuanto te cuente algo, apúntalo con las herramientas en ese mismo turno, aunque
 falten datos: la ciudad, las fechas y quién va con set_trip_details; cada cosa ya
@@ -1616,7 +1641,8 @@ async def seed() -> None:
                 status=PublicationStatus.PUBLISHED,
                 content=BOREA_PLANNER_PROMPT,
                 variables_json={"required": []},
-                tools_json=[], runtime_config_json=CHAT_RUNTIME_DEFAULTS,
+                tools_json=[],
+                runtime_config_json=_own_chat_runtime(None, BOREA_REASONING_EFFORT),
                 published_at=utc_now(),
             )
             session.add(borea_prompt)
@@ -1639,7 +1665,7 @@ async def seed() -> None:
             if borea_prompt is not None:
                 borea_prompt.content = BOREA_PLANNER_PROMPT
                 borea_prompt.runtime_config_json = _own_chat_runtime(
-                    borea_prompt.runtime_config_json
+                    borea_prompt.runtime_config_json, BOREA_REASONING_EFFORT
                 )
 
         await session.commit()

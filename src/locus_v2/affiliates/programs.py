@@ -22,7 +22,10 @@ from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from locus_v2.config import Settings
 
 # Lo que el modelo puede querer reservar; cada tool de skill busca en un tipo.
-KINDS = ("activity", "stay", "transport", "car", "gear")
+KINDS = (
+    "activity", "stay", "transport", "car", "gear",
+    "transfer", "esim", "luggage", "flight", "claims",
+)
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,9 @@ class AffiliateProgram:
     kind: str
     # Dominios del programa, sin «www.»; vale cualquier subdominio.
     domains: tuple[str, ...]
+    # «travelpayouts»: el enlace de afiliado lo da su API al hacer clic
+    # (affiliates/travelpayouts.py), sin configurar nada por programa.
+    network: str = ""
 
 
 PROGRAMS: tuple[AffiliateProgram, ...] = (
@@ -54,6 +60,37 @@ PROGRAMS: tuple[AffiliateProgram, ...] = (
         "amazon", "Amazon", "gear",
         ("amazon.es", "amazon.com", "amazon.de", "amazon.fr", "amazon.it", "amazon.co.uk"),
     ),
+    # Aprobados en Travelpayouts (2026-10-31), comprobados uno a uno contra su API de
+    # enlaces. Booking, GetYourGuide, Omio, Viator o DiscoverCars siguen bloqueados
+    # ahí por falta de tráfico; GigSky no convierte su dominio y no está.
+    *(
+        AffiliateProgram(code, name, kind, domains, network="travelpayouts")
+        for code, name, kind, domains in (
+            ("klook", "Klook", "activity", ("klook.com",)),
+            ("wegotrip", "WeGoTrip", "activity", ("wegotrip.com",)),
+            ("gocity", "Go City", "activity", ("gocity.com",)),
+            ("kkday", "KKday", "activity", ("kkday.com",)),
+            ("intui", "intui.travel", "activity", ("intui.travel",)),
+            ("welcomepickups", "Welcome Pickups", "transfer", ("welcomepickups.com",)),
+            ("kiwitaxi", "Kiwitaxi", "transfer", ("kiwitaxi.com",)),
+            ("gettransfer", "GetTransfer", "transfer", ("gettransfer.com",)),
+            ("localrent", "Localrent", "car", ("localrent.com",)),
+            ("getrentacar", "GetRentacar", "car", ("getrentacar.com",)),
+            ("economybookings", "Economybookings", "car", ("economybookings.com",)),
+            ("qeeq", "QEEQ", "car", ("qeeq.com",)),
+            ("autoeurope", "Auto Europe", "car", ("autoeurope.eu", "autoeurope.co.uk")),
+            ("bikesbooking", "BikesBooking", "car", ("bikesbooking.com",)),
+            ("airalo", "Airalo", "esim", ("airalo.com",)),
+            ("yesim", "Yesim", "esim", ("yesim.app",)),
+            ("saily", "Saily", "esim", ("saily.com",)),
+            ("drimsim", "Drimsim", "esim", ("drimsim.com",)),
+            ("radicalstorage", "Radical Storage", "luggage", ("radicalstorage.com",)),
+            ("aviasales", "Aviasales", "flight", ("aviasales.com",)),
+            ("kiwi", "Kiwi.com", "flight", ("kiwi.com",)),
+            ("airhelp", "AirHelp", "claims", ("airhelp.com",)),
+            ("compensair", "Compensair", "claims", ("compensair.com",)),
+        )
+    ),
 )
 
 # Parámetros de seguimiento ajenos que se quitan al decorar un enlace.
@@ -75,6 +112,10 @@ def programs_of(kind: str) -> list[AffiliateProgram]:
     return [p for p in PROGRAMS if p.kind == kind]
 
 
+def _program(code: str) -> AffiliateProgram | None:
+    return next((p for p in PROGRAMS if p.code == code), None)
+
+
 def program_config(settings: Settings, code: str) -> str:
     """Cómo se marca un enlace de ese programa; vacío si no está configurado."""
     configured = (getattr(settings, "affiliate_links", None) or {}).get(code, "")
@@ -87,6 +128,9 @@ def program_config(settings: Settings, code: str) -> str:
 
 
 def is_configured(settings: Settings, code: str) -> bool:
+    program = _program(code)
+    if program is not None and program.network == "travelpayouts":
+        return getattr(settings, "travelpayouts_token", None) is not None
     return bool(program_config(settings, code))
 
 

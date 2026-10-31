@@ -168,6 +168,12 @@ class Settings(BaseSettings):
     # «param=valor» o una plantilla de red de afiliados con {url}. Ejemplo:
     # {"booking": "aid=1234567", "amazon": "tag=borea-21"}.
     affiliate_links: dict[str, str] = Field(default_factory=dict)
+    # Travelpayouts: con el token, su API convierte al hacer clic el enlace de
+    # cualquier programa aprobado (affiliates/travelpayouts.py). marker es la cuenta
+    # y trs el proyecto.
+    travelpayouts_token: SecretStr | None = None
+    travelpayouts_marker: int = 794924
+    travelpayouts_trs: int = 590543
 
     # WeatherKit de Apple para la previsión de los próximos días de un viaje. Va
     # incluido en la cuenta de desarrollador; sin estas claves, Borea solo enseña

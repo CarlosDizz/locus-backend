@@ -5,6 +5,7 @@ from fastapi.responses import RedirectResponse
 
 from locus_v2.affiliates.models import ReferralClick
 from locus_v2.affiliates.tracking import verify
+from locus_v2.affiliates.travelpayouts import partner_url
 from locus_v2.api.auth import SessionDep, SettingsDep
 
 router = APIRouter(prefix="/api/r", tags=["referrals"])
@@ -22,4 +23,4 @@ async def follow_referral(
         trip_public_id=link.trip_id[:36], url=link.url[:2048],
     ))
     await session.commit()
-    return RedirectResponse(link.url, status_code=302)
+    return RedirectResponse(await partner_url(settings, link.url) or link.url, status_code=302)

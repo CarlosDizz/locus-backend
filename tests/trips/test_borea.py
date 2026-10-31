@@ -191,13 +191,15 @@ def test_climate_is_saved_as_ranges() -> None:
 
 def test_accommodation_search_gives_real_hotels_with_their_booking_link(monkeypatch) -> None:
     pedidas: list[str] = []
+    tipos: list[str] = []
 
     class _Places:
         def __init__(self, settings) -> None:
             pass
 
-        async def search_places(self, query, lat, lng, limit=5, locale="es"):
+        async def search_places(self, query, lat, lng, limit=5, locale="es", place_type=""):
             pedidas.append(query)
+            tipos.append(place_type)
             return [{
                 "name": "Hotel Castilla", "description": "Paseo de la Cuba 3, Albacete",
                 "rating": 4.3, "user_ratings_total": 900, "price_level": 2,
@@ -211,6 +213,7 @@ def test_accommodation_search_gives_real_hotels_with_their_booking_link(monkeypa
     result = _run("buscar_alojamiento", {"tipo": "hotel con parking"}, _Turn(), trip)
 
     assert pedidas == ["hotel con parking Roma"]
+    assert tipos == ["lodging"]
     hotel = result["hotels"][0]
     assert (hotel["name"], hotel["price_level"]) == ("Hotel Castilla", 2)
     assert hotel["km_to_center"] == 0.8
@@ -332,3 +335,35 @@ def test_weatherkit_days_become_icons_and_degrees() -> None:
     assert [(d.date.day, d.icon, d.max_c, d.rain_chance) for d in days] == [
         (6, "sun", 21, 5), (7, "rain", 17, 80),
     ]
+
+
+def test_a_hotel_for_one_stage_of_a_multi_city_trip(monkeypatch) -> None:
+    """Vietnam (2026-10-30): con la ciudad del viaje entera salió una agencia de viajes."""
+    pedidas: list[str] = []
+
+    class _Places:
+        def __init__(self, settings) -> None:
+            pass
+
+        async def search_places(self, query, lat, lng, limit=5, locale="es", place_type=""):
+            pedidas.append(query)
+            return [
+                {"name": "VIETNAM DÉCOUVERTE", "description": "Hanoï", "lat": 21.0,
+                 "lng": 105.8, "types": ["travel_agency", "point_of_interest"]},
+                {"name": "Hôtel de charme", "description": "Hanoï", "lat": 21.0,
+                 "lng": 105.8, "types": ["lodging", "point_of_interest"]},
+            ]
+
+    monkeypatch.setattr(borea_tools, "GooglePlacesClient", _Places)
+    trip = _borea_trip()
+    trip.city = "Hanoï, Hué, Hội An, Hô Chi Minh-Ville et Phú Quốc"
+
+    result = _run("buscar_alojamiento", {
+        "ciudad": "Hanoï", "tipo": "hôtel de charme avec piscine",
+        "entrada": "2027-02-12", "salida": "2027-02-16",
+    }, _Turn(), trip)
+
+    assert pedidas == ["hôtel de charme avec piscine Hanoï"]
+    assert [h["name"] for h in result["hotels"]] == ["Hôtel de charme"]
+    query = parse_qs(urlparse(result["hotels"][0]["booking_url"]).query)
+    assert query["checkin"] == ["2027-02-12"] and query["checkout"] == ["2027-02-16"]

@@ -27,6 +27,31 @@ def with_identity(prompt: str) -> str:
     return f"{prompt}\n\n{IDENTITY_RULE}"
 
 
+LANGUAGE_NAMES = {
+    "es": "español", "en": "inglés", "fr": "francés", "it": "italiano", "de": "alemán",
+    "pt": "portugués", "zh": "chino", "ja": "japonés", "ar": "árabe",
+}
+
+
+def language_name(locale: str) -> str:
+    code = (locale or "es").split("-", 1)[0].lower()
+    return LANGUAGE_NAMES.get(code, code)
+
+
+def language_rule(locale: str) -> str:
+    """Contestar en el idioma de quien escribe; el de la app, solo si no se sabe.
+
+    El idioma guardado no es fiable: hasta 2026-10-31 todo usuario quedaba en es-ES y
+    la sesión del mapa en «es», así que a un usuario de Dubái que escribió «jumeirah
+    beach» el chat del mapa le contestó en español.
+    """
+    return (
+        "Idioma: contesta siempre en el idioma en que te escribe la persona en su último "
+        "mensaje, aunque lo anterior esté en otro. Si ese mensaje no deja claro el idioma "
+        f"(un nombre propio, «ok»), usa {language_name(locale)}."
+    )
+
+
 def localized_field(values: dict[str, object], locale: str, language: str) -> str | None:
     for key in (locale, locale.lower(), language, "local", "en"):
         value = values.get(key)

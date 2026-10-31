@@ -14,6 +14,7 @@ Los enlaces que devuelven ya van con nuestro código; el modelo solo los copia e
 booking_url, y aun así el backend los vuelve a decorar al apuntarlos.
 """
 
+from datetime import date
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -95,6 +96,23 @@ BASE_TOOLS: list[dict[str, Any]] = [
         "precio, distancia al centro y su enlace de Booking para las fechas del viaje. Úsalo "
         "solo si la persona aún no tiene dónde dormir.",
         {
+            "ciudad": {
+                "type": "string",
+                "description": (
+                    "Ciudad donde dormirá. Obligatoria si el viaje pasa por varias "
+                    "(«Hué»), y siempre que no sea la ciudad del viaje."
+                ),
+            },
+            "entrada": {
+                "type": "string",
+                "description": (
+                    "Noche de llegada a ese alojamiento, AAAA-MM-DD, si no es la del viaje."
+                ),
+            },
+            "salida": {
+                "type": "string",
+                "description": "Día que lo deja, AAAA-MM-DD, si no es el final del viaje.",
+            },
             "zona": {"type": "string", "description": "Barrio o zona, si se ha elegido."},
             "tipo": {
                 "type": "string",
@@ -104,6 +122,13 @@ BASE_TOOLS: list[dict[str, Any]] = [
         [],
     ),
 ]
+
+def _fecha(valor: Any) -> date | None:
+    try:
+        return date.fromisoformat(str(valor or "").strip()[:10])
+    except ValueError:
+        return None
+
 
 _NOTHING_BOOKABLE = (
     "No hay ninguna actividad reservable concreta para esto. No pongas tarjeta con enlace de "
@@ -253,18 +278,27 @@ async def run_borea_tool(
             return {"ok": False, "error": "Apunta antes la ciudad del viaje."}
         zona = str(args.get("zona") or "").strip()
         tipo = str(args.get("tipo") or "").strip() or "hotel"
-        entrada = trip.starts_at.date() if trip.starts_at else None
-        salida = trip.ends_at.date() if trip.ends_at else None
-        centro = trip.center_json or {}
-        consulta = " ".join(x for x in (tipo, zona, trip.city) if x)
+        # En un viaje por varias ciudades trip.city es «Hanoï, Hué, Hội An…» entera, y
+        # Google devolvía lo que pillaba de cualquiera de ellas (2026-10-30, Vietnam).
+        ciudad = str(args.get("ciudad") or "").strip() or trip.city
+        # Las fechas de esa estancia: con las del viaje entero, Booking buscaba en Hanói
+        # del 12 de febrero al 2 de marzo para una etapa de cuatro noches.
+        entrada = _fecha(args.get("entrada")) or (trip.starts_at.date() if trip.starts_at else None)
+        salida = _fecha(args.get("salida")) or (trip.ends_at.date() if trip.ends_at else None)
+        # El centro del viaje solo orienta la búsqueda si es en esa misma ciudad.
+        centro = (trip.center_json or {}) if ciudad == trip.city else {}
+        consulta = " ".join(x for x in (tipo, zona, ciudad) if x)
         sitios = await GooglePlacesClient(settings).search_places(
-            consulta, centro.get("lat"), centro.get("lng"), limit=8, locale=turn.locale
+            consulta, centro.get("lat"), centro.get("lng"), limit=8, locale=turn.locale,
+            place_type="lodging",
         )
         hoteles = []
         for s in sitios:
+            if s.get("types") and "lodging" not in s["types"]:
+                continue
             # Cada hotel con su búsqueda en Booking por su nombre: abre ese hotel con las
             # fechas del viaje, no una lista de la ciudad.
-            reserva = booking_search(settings, f"{s['name']}, {trip.city}", entrada, salida)
+            reserva = booking_search(settings, f"{s['name']}, {ciudad}", entrada, salida)
             distancia = (
                 round(distance_km(centro["lat"], centro["lng"], s["lat"], s["lng"]), 1)
                 if centro.get("lat") is not None and s.get("lat") is not None else None

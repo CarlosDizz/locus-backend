@@ -14,6 +14,7 @@ from locus_v2.config import Settings
 from locus_v2.sessions.models import SessionStateView
 from locus_v2.shared.prompting import (
     PromptRenderingError,
+    language_rule,
     localized_field,
     render_prompt,
     with_identity,
@@ -139,6 +140,7 @@ class ChatConfigurationResolver:
             )
         try:
             prompt = with_identity(render_prompt(version.content, variables))
+            prompt = f"{prompt}\n\n{language_rule(request.locale)}"
         except (PromptRenderingError, ValueError, KeyError) as error:
             raise ChatConfigurationError(str(error)) from error
         if request.map_session is not None:

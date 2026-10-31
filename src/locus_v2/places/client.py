@@ -37,6 +37,7 @@ class GooglePlacesClient:
         lng: float | None,
         limit: int = 5,
         locale: str = "",
+        place_type: str = "",
     ) -> list[dict[str, Any]]:
         if not self.enabled or not query.strip():
             return []
@@ -47,6 +48,10 @@ class GooglePlacesClient:
             # Spanish user got "Trajan's Column" and, worse, a POI promoted to
             # the catalog was stored under that name for everyone.
             params["language"] = locale.split("-", 1)[0].lower()
+        if place_type:
+            # Restringe a ese tipo de Google («lodging»): sin él, buscando hoteles en
+            # Hanói salió una agencia de viajes como si fuera uno (2026-10-30).
+            params["type"] = place_type
         if lat is not None and lng is not None:
             params["location"] = f"{lat},{lng}"
             params["radius"] = 2500
@@ -89,6 +94,7 @@ class GooglePlacesClient:
                     "user_ratings_total": item.get("user_ratings_total"),
                     "price_level": item.get("price_level"),
                     "open_now": (item.get("opening_hours") or {}).get("open_now"),
+                    "types": [str(t) for t in item.get("types") or []],
                 }
             )
         return normalized

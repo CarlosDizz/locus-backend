@@ -17,7 +17,7 @@ from uuid import uuid4
 
 import structlog
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -34,11 +34,12 @@ from locus_v2.identity.models import User
 from locus_v2.notifications.service import PlanChange, notify_trip
 from locus_v2.places.client import GooglePlacesClient
 from locus_v2.places.service import distance_km
+from locus_v2.sessions.models import MapSession
 from locus_v2.shared.apps import ClientApp, app_bit, visible_in
 from locus_v2.shared.clock import utc_now
 from locus_v2.shared.mobile_ids import mobile_id
 from locus_v2.shared.openai_usage import ToolUsage
-from locus_v2.shared.prompting import IDENTITY_RULE
+from locus_v2.shared.prompting import IDENTITY_RULE, LANGUAGE_NAMES, language_name
 from locus_v2.shared.text import slugify
 from locus_v2.trips.borea_tools import (
     BOREA_TOOL_NAMES,
@@ -897,11 +898,33 @@ class TripPlannerService:
 
     # --- el chat -----------------------------------------------------------------
 
+    async def _remember_language(self, user: User, locale: str) -> None:
+        """El idioma de la app, en el usuario y en su mapa.
+
+        La app solo lo manda aquí, en cada mensaje al planificador; el usuario se
+        quedaba en es-ES y su mapa en «es», así que los avisos push y el chat del mapa
+        iban en español a gente con el iPhone en francés o en inglés (2026-10-31).
+        """
+        code = (locale or "").strip()[:16]
+        if not code or code.split("-", 1)[0].lower() not in LANGUAGE_NAMES:
+            return
+        language = code.split("-", 1)[0].lower()
+        if user.locale.split("-", 1)[0].lower() != language:
+            await self.session.execute(
+                update(User).where(User.id == user.id).values(locale=code)
+            )
+        await self.session.execute(
+            update(MapSession)
+            .where(MapSession.user_id == user.id, MapSession.profile_language != language)
+            .values(profile_language=language)
+        )
+
     async def send_message(self, user: User, public_id: str, text: str, locale: str) -> Trip:
         text = text.strip()
         if not text:
             raise TripError("El mensaje está vacío")
         trip = await self.get(user, public_id)
+        await self._remember_language(user, locale)
         started_at = perf_counter()
         trace_id = uuid4().hex
         configuration = await ChatConfigurationResolver(self.session, self.settings).resolve(
@@ -1383,28 +1406,23 @@ def _add_usage(
     )
 
 
-_LANGUAGE_NAMES = {
-    "es": "español", "en": "inglés", "fr": "francés", "it": "italiano", "de": "alemán",
-    "pt": "portugués", "zh": "chino", "ja": "japonés", "ar": "árabe",
-}
-
-
 def _language_rule(locale: str, app: ClientApp = ClientApp.GUIDE) -> str:
     """La orden de idioma, con nombre y al final de las instrucciones.
 
     El prompt decía solo «Hablas en {locale}», con el código («en») dentro de
     un texto en español y junto a un plan en español: en 2026-10 un viaje
     escrito entero en inglés recibió la primera respuesta en inglés y todo lo
-    demás —respuestas, títulos y notas del plan— en español.
+    demás —respuestas, títulos y notas del plan— en español. Manda el idioma en
+    que escribe la persona; el de la app, solo si su mensaje no lo deja claro.
     """
-    code = (locale or "es").split("-", 1)[0].lower()
-    name = _LANGUAGE_NAMES.get(code, code)
+    name = language_name(locale)
     return (
-        f"Idioma: la persona usa {'Borea' if app == ClientApp.BOREA else 'Locus'} en {name}. "
-        f"Escribe en {name} tus respuestas y "
-        "todo lo que apuntes con las herramientas (títulos, notas, detalles, quién "
-        "va, el ritmo), aunque el estado del viaje o los mensajes anteriores estén en "
-        "otro idioma. Los nombres propios de los sitios se dejan como son."
+        f"Idioma: la app {'Borea' if app == ClientApp.BOREA else 'Locus'} está en {name}. "
+        "Contesta en el idioma en que te escribe la persona en su último mensaje; si no "
+        f"lo deja claro (un nombre propio, «ok»), en {name}. Todo lo que apuntes con las "
+        "herramientas (títulos, notas, detalles, quién va, el ritmo) va en el mismo "
+        "idioma que tus respuestas, aunque el estado del viaje o los mensajes anteriores "
+        "estén en otro. Los nombres propios de los sitios se dejan como son."
     )
 
 

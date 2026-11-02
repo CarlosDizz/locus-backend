@@ -38,6 +38,12 @@ class AffiliateProgram:
     # «travelpayouts»: el enlace de afiliado lo da su API al hacer clic
     # (affiliates/travelpayouts.py), sin configurar nada por programa.
     network: str = ""
+    # Otros tipos en los que también vende: Klook y KKday venden el JR Pass y los
+    # billetes de Shinkansen, no solo actividades.
+    also: tuple[str, ...] = ()
+
+    def sells(self, kind: str) -> bool:
+        return kind == self.kind or kind in self.also
 
 
 PROGRAMS: tuple[AffiliateProgram, ...] = (
@@ -64,12 +70,12 @@ PROGRAMS: tuple[AffiliateProgram, ...] = (
     # enlaces. Booking, GetYourGuide, Omio, Viator o DiscoverCars siguen bloqueados
     # ahí por falta de tráfico; GigSky no convierte su dominio y no está.
     *(
-        AffiliateProgram(code, name, kind, domains, network="travelpayouts")
-        for code, name, kind, domains in (
-            ("klook", "Klook", "activity", ("klook.com",)),
+        AffiliateProgram(code, name, kind, domains, network="travelpayouts", also=tuple(also))
+        for code, name, kind, domains, *also in (
+            ("klook", "Klook", "activity", ("klook.com",), "transport"),
             ("wegotrip", "WeGoTrip", "activity", ("wegotrip.com",)),
             ("gocity", "Go City", "activity", ("gocity.com",)),
-            ("kkday", "KKday", "activity", ("kkday.com",)),
+            ("kkday", "KKday", "activity", ("kkday.com",), "transport"),
             ("intui", "intui.travel", "activity", ("intui.travel",)),
             ("welcomepickups", "Welcome Pickups", "transfer", ("welcomepickups.com",)),
             ("kiwitaxi", "Kiwitaxi", "transfer", ("kiwitaxi.com",)),
@@ -96,7 +102,7 @@ PROGRAMS: tuple[AffiliateProgram, ...] = (
 # Parámetros de seguimiento ajenos que se quitan al decorar un enlace.
 _FOREIGN_TRACKING = {
     "partner_id", "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
-    "aid", "tag", "affid", "cmp", "visitor-id",
+    "aid", "tag", "affid", "cmp", "visitor-id", "msockid",
 }
 
 
@@ -109,7 +115,7 @@ def program_for(url: str) -> AffiliateProgram | None:
 
 
 def programs_of(kind: str) -> list[AffiliateProgram]:
-    return [p for p in PROGRAMS if p.kind == kind]
+    return [p for p in PROGRAMS if p.sells(kind)]
 
 
 def _program(code: str) -> AffiliateProgram | None:

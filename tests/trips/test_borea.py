@@ -416,3 +416,81 @@ async def test_a_search_that_hangs_is_cut_and_the_turn_goes_on(monkeypatch) -> N
     )
 
     assert '"ok": false' in salida["output"]
+
+
+def test_klook_is_searched_for_trains_too() -> None:
+    from locus_v2.affiliates.programs import programs_of
+
+    assert "klook" in {p.code for p in programs_of("transport")}
+    assert "klook" in {p.code for p in programs_of("activity")}
+    assert "klook" not in {p.code for p in programs_of("stay")}
+
+
+def test_files_and_help_pages_are_not_products() -> None:
+    from locus_v2.affiliates.search import _is_concrete_page, _page_key
+
+    assert _is_concrete_page("https://www.klook.com/en-US/activity/46604-universal-studios-japan/")
+    assert not _is_concrete_page("https://res.klook.com/image/upload/Portrait_OAP_How_to_Use.pdf")
+    assert not _is_concrete_page("https://support.thetrainline.com/hc/es/articles/5151-Japan-Rail-Pass")
+    assert not _is_concrete_page("https://www.klook.com/guides/japan-rail-pass.pdf")
+    assert _page_key("https://www.klook.com/en-US/activity/46604-usj/") == _page_key(
+        "https://www.klook.com/en-GB/activity/46604-usj/?aid=14"
+    )
+
+
+def test_paying_programs_are_searched_apart_and_go_first(monkeypatch) -> None:
+    from locus_v2.affiliates import search
+    from locus_v2.affiliates.search import FoundLink
+    from locus_v2.shared.openai_usage import ToolUsage
+
+    buscados: list[list[str]] = []
+
+    async def _search(settings, kind, query, city, domains):
+        buscados.append(domains)
+        if "klook.com" in domains and "omio.com" not in domains:
+            klook = "https://www.klook.com/es/activity/1-shinkansen/"
+            return [FoundLink("Shinkansen", klook, "klook")], ToolUsage()
+        return [FoundLink("Tokio-Osaka", f"https://www.omio.es/trenes/tokio/osaka-{i}", "omio")
+                for i in range(3)], ToolUsage()
+
+    monkeypatch.setattr(search, "_search", _search)
+    settings = _settings(openai_api_key=SecretStr("k"), travelpayouts_token=SecretStr("t"))
+
+    links, _ = asyncio.run(
+        search.web_program_links(settings, "transport", "tren bala Tokio Osaka", "Tokio")
+    )
+
+    assert len(buscados) == 2
+    assert [link.program for link in links] == ["klook", "omio", "omio"]
+
+
+def test_a_ticket_found_elsewhere_is_offered_when_getyourguide_has_none(monkeypatch) -> None:
+    from locus_v2.affiliates.search import FoundLink
+    from locus_v2.shared.openai_usage import ToolUsage
+
+    class _Referrals:
+        def __init__(self, settings) -> None:
+            pass
+
+        async def activity_referrals(self, **kwargs):
+            return {"ok": True, "provider": "getyourguide_fallback_search",
+                    "links": [{"url": "https://www.getyourguide.es/s/?q=USJ"}]}
+
+    usj = "https://www.klook.com/activity/46604-usj/"
+
+    async def _web(settings, kind, query, city, max_results=3):
+        return [FoundLink("USJ e-ticket", usj, "klook")], ToolUsage()
+
+    monkeypatch.setattr(borea_tools, "ReferralService", _Referrals)
+    monkeypatch.setattr(borea_tools, "web_program_links", _web)
+    settings = _settings(affiliate_links={"tiqets": "x={url}"})
+    turn, trip = _Turn(), _borea_trip()
+    trip.city = "Osaka"
+    _run("cargar_skill", {"nombre": "turismo"}, turn, trip, settings)
+
+    consulta = {"consulta": "entrada Universal Studios Japan"}
+    result = _run("buscar_actividades", consulta, turn, trip, settings)
+
+    assert result == {"ok": True, "links": [
+        {"title": "USJ e-ticket", "url": usj, "provider": "klook"},
+    ]}

@@ -458,19 +458,26 @@ async def _run_borea_tool(
         mas_programas = is_configured(settings, "civitatis") or is_configured(settings, "tiqets")
         if mas_programas:
             resultado, (otros, usage_otros) = await asyncio.gather(
-                gyg, web_program_links(settings, "activity", consulta, trip.city, max_results=2)
+                gyg, web_program_links(settings, "activity", consulta, trip.city, max_results=3)
             )
         else:
             resultado, otros, usage_otros = await gyg, [], None
         usage = resultado.pop("_usage", None)
         if usage is not None:
             turn.referral_usages.append(usage)
-        resultado = only_concrete(resultado)
         if usage_otros is not None:
             turn.referral_usages.append(usage_otros)
-        resultado.setdefault("links", []).extend(
-            e.to_dict() for e in otros if e.program != "getyourguide"
+        otros = [e.to_dict() for e in otros if e.program != "getyourguide"]
+        gyg_vacio = (
+            not resultado.get("ok") or resultado.get("provider") == "getyourguide_fallback_search"
         )
+        if otros and gyg_vacio:
+            # La búsqueda genérica de GetYourGuide no vale, pero Klook o Tiqets sí
+            # tienen la entrada: antes se mandaba igualmente «no hay nada reservable» y
+            # el planificador lo obedecía (Universal Studios Japan, 2026-11-02).
+            return {"ok": True, "links": otros}
+        resultado = only_concrete(resultado)
+        resultado.setdefault("links", []).extend(otros)
         return resultado
 
     if name == "buscar_equipamiento":

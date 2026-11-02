@@ -41,9 +41,11 @@ class FoundLink:
 
 
 def booking_search(settings: Settings, city: str, checkin: date | None, checkout: date | None,
-                   adults: int = 2) -> FoundLink:
+                   adults: int = 2, rooms: int = 1) -> FoundLink:
     """Alojamiento en Booking para esas fechas: su búsqueda, con nuestro código."""
-    params: dict[str, Any] = {"ss": city, "group_adults": max(1, adults)}
+    params: dict[str, Any] = {
+        "ss": city, "group_adults": max(1, adults), "no_rooms": max(1, rooms),
+    }
     if checkin and checkout and checkout > checkin:
         params["checkin"] = checkin.isoformat()
         params["checkout"] = checkout.isoformat()

@@ -360,13 +360,14 @@ def test_a_hotel_for_one_stage_of_a_multi_city_trip(monkeypatch) -> None:
 
     result = _run("buscar_alojamiento", {
         "ciudad": "Hanoï", "tipo": "hôtel de charme avec piscine",
-        "entrada": "2027-02-12", "salida": "2027-02-16",
+        "entrada": "2027-02-12", "salida": "2027-02-16", "personas": 3, "habitaciones": 2,
     }, _Turn(), trip)
 
     assert pedidas == ["hôtel de charme avec piscine Hanoï"]
     assert [h["name"] for h in result["hotels"]] == ["Hôtel de charme"]
     query = parse_qs(urlparse(result["hotels"][0]["booking_url"]).query)
     assert query["checkin"] == ["2027-02-12"] and query["checkout"] == ["2027-02-16"]
+    assert query["group_adults"] == ["3"] and query["no_rooms"] == ["2"]
 
 
 async def test_cards_already_shown_are_not_shown_again() -> None:

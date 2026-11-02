@@ -117,6 +117,11 @@ BASE_TOOLS: list[dict[str, Any]] = [
                 "type": "string",
                 "description": "Día que lo deja, AAAA-MM-DD, si no es el final del viaje.",
             },
+            "personas": {
+                "type": "integer",
+                "description": "Cuántos adultos duermen (quien viaja solo, 1).",
+            },
+            "habitaciones": {"type": "integer", "description": "Cuántas habitaciones, si se sabe."},
             "zona": {"type": "string", "description": "Barrio o zona, si se ha elegido."},
             "tipo": {
                 "type": "string",
@@ -126,6 +131,13 @@ BASE_TOOLS: list[dict[str, Any]] = [
         [],
     ),
 ]
+
+def _entero(valor: Any, defecto: int) -> int:
+    try:
+        return max(1, min(int(valor), 30))
+    except (TypeError, ValueError):
+        return defecto
+
 
 def _fecha(valor: Any) -> date | None:
     try:
@@ -367,7 +379,11 @@ async def _run_borea_tool(
                 continue
             # Cada hotel con su búsqueda en Booking por su nombre: abre ese hotel con las
             # fechas del viaje, no una lista de la ciudad.
-            reserva = booking_search(settings, f"{s['name']}, {ciudad}", entrada, salida)
+            # Quien viaja solo veía el hotel para 2 adultos (prueba en local, 2026-11-02).
+            reserva = booking_search(
+                settings, f"{s['name']}, {ciudad}", entrada, salida,
+                adults=_entero(args.get("personas"), 2), rooms=_entero(args.get("habitaciones"), 1),
+            )
             distancia = (
                 round(distance_km(centro["lat"], centro["lng"], s["lat"], s["lng"]), 1)
                 if centro.get("lat") is not None and s.get("lat") is not None else None

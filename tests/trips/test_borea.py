@@ -367,3 +367,51 @@ def test_a_hotel_for_one_stage_of_a_multi_city_trip(monkeypatch) -> None:
     assert [h["name"] for h in result["hotels"]] == ["Hôtel de charme"]
     query = parse_qs(urlparse(result["hotels"][0]["booking_url"]).query)
     assert query["checkin"] == ["2027-02-12"] and query["checkout"] == ["2027-02-16"]
+
+
+async def test_cards_already_shown_are_not_shown_again() -> None:
+    """Con un «oui» volvía a sacar los mismos albergues (Budapest, banco 2026-11-02)."""
+    trip = _borea_trip()
+    trip.conversation_json = [
+        {"role": "assistant", "text": "Tres auberges", "proposals": [
+            {"title": "Onefam", "place": "Onefam Budapest, Budapest", "accepted": False},
+            {"title": "Avenue", "place": "Avenue Hostel, Budapest", "accepted": True},
+        ]},
+    ]
+    service = TripPlannerService(None, _settings(), ClientApp.BOREA)  # type: ignore[arg-type]
+    turn = _Turn()
+
+    async def _sin_mapa(*_args, **_kwargs) -> None:
+        return None
+
+    service._locate_all = _sin_mapa  # type: ignore[method-assign]
+    salida = await service._tool(trip, "suggest_items", {"items": [
+        {"date": "2026-12-21", "time": "12:00", "title": "Onefam", "kind": "logistics",
+         "place": "Onefam Budapest, Budapest"},
+        {"date": "2026-12-21", "time": "12:00", "title": "Avenue", "kind": "logistics",
+         "place": "Avenue Hostel, Budapest"},
+        {"date": "2026-12-22", "time": "10:00", "title": "Bains", "kind": "visit",
+         "place": "Széchenyi, Budapest"},
+    ]}, turn)
+
+    assert [p["title"] for p in turn.proposals] == ["Avenue", "Bains"]
+    assert salida["already_shown"] == ["Onefam"]
+
+
+async def test_a_search_that_hangs_is_cut_and_the_turn_goes_on(monkeypatch) -> None:
+    from locus_v2.chat.providers.openai_responses import ChatFunctionCall
+    from locus_v2.trips import service as trips_service
+
+    monkeypatch.setattr(trips_service, "SEARCH_TIMEOUT_SECONDS", 0.05)
+    service = TripPlannerService(None, _settings(), ClientApp.BOREA)  # type: ignore[arg-type]
+
+    async def _colgada(*_args, **_kwargs):
+        await asyncio.sleep(5)
+
+    service._tool = _colgada  # type: ignore[method-assign]
+    salida = await service._run_tool(
+        _borea_trip(), ChatFunctionCall(call_id="c1", name="buscar_actividades", arguments={}),
+        _Turn(),
+    )
+
+    assert '"ok": false' in salida["output"]

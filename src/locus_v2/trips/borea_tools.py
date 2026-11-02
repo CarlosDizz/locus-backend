@@ -14,6 +14,10 @@ Los enlaces que devuelven ya van con nuestro código; el modelo solo los copia e
 booking_url, y aun así el backend los vuelve a decorar al apuntarlos.
 """
 
+import asyncio
+import copy
+import json
+import time
 from datetime import date
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -162,12 +166,26 @@ SKILL_TOOLS: dict[str, dict[str, Any]] = {
     ),
     "buscar_transporte": _function(
         "buscar_transporte",
-        "Enlaces reales para reservar un tren, un autobús, un vuelo o un coche de alquiler.",
+        "Enlaces reales para reservar un tren, un autobús, un vuelo, un coche de alquiler, "
+        "el traslado del aeropuerto al alojamiento o una consigna de equipaje.",
         {
-            "consulta": {"type": "string", "description": "«Tren Madrid Toledo el domingo»."},
-            "tipo": {"type": "string", "enum": ["tren", "autobús", "vuelo", "coche"]},
+            "consulta": {
+                "type": "string",
+                "description": "«Tren Madrid Toledo el domingo», «vuelo Tokio Okinawa», "
+                               "«traslado aeropuerto Narita a Shinjuku», «consigna Lisboa».",
+            },
+            "tipo": {
+                "type": "string",
+                "enum": ["tren", "autobús", "vuelo", "coche", "traslado", "consigna"],
+            },
         },
         ["consulta"],
+    ),
+    "buscar_esim": _function(
+        "buscar_esim",
+        "Una eSIM de datos para el país del viaje, con su enlace, para no pagar roaming.",
+        {"pais": {"type": "string", "description": "El país en inglés: «Japan», «Vietnam»."}},
+        ["pais"],
     ),
     "buscar_sitios": _function(
         "buscar_sitios",
@@ -198,6 +216,12 @@ SKILL_TOOLS: dict[str, dict[str, Any]] = {
     ),
 }
 
+# Qué programas de referidos (affiliates/programs.py) mira cada tipo de buscar_transporte.
+_TRANSPORT_KINDS = {
+    "tren": "transport", "autobús": "transport", "vuelo": "flight", "coche": "car",
+    "traslado": "transfer", "consigna": "luggage",
+}
+
 BOREA_TOOL_NAMES = frozenset(
     [t["name"] for t in BASE_TOOLS] + list(SKILL_TOOLS)
 )
@@ -214,7 +238,46 @@ def tools_for_turn(base: list[dict[str, Any]], loaded_skills: set[str]) -> list[
     return [*base, *BASE_TOOLS, *(SKILL_TOOLS[n] for n in names)]
 
 
+# Búsquedas que se guardan un día: el resultado de «hoteles con encanto en Hué» o de
+# la eSIM de Japón no cambia de un mensaje a otro, y cada búsqueda son 5-35 s.
+_CACHEABLE = frozenset({
+    "buscar_actividades", "buscar_transporte", "buscar_esim", "buscar_alojamiento",
+    "buscar_equipamiento",
+})
+_CACHE_SECONDS = 24 * 3600
+_CACHE_MAX = 3000
+_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _cache_key(trip: "Trip", name: str, args: dict[str, Any], turn: "_Turn") -> str:
+    fechas = (
+        [str(trip.starts_at), str(trip.ends_at)] if name == "buscar_alojamiento" else []
+    )
+    return json.dumps(
+        [name, args, trip.city, turn.locale, *fechas], sort_keys=True, ensure_ascii=False,
+        default=str,
+    )
+
+
 async def run_borea_tool(
+    service: "TripPlannerService", trip: "Trip", name: str, args: dict[str, Any], turn: "_Turn"
+) -> dict[str, Any]:
+    if name not in _CACHEABLE:
+        return await _run_borea_tool(service, trip, name, args, turn)
+    clave = _cache_key(trip, name, args, turn)
+    ahora = time.monotonic()
+    guardado = _cache.get(clave)
+    if guardado is not None and guardado[0] > ahora:
+        return copy.deepcopy(guardado[1])
+    resultado = await _run_borea_tool(service, trip, name, args, turn)
+    if resultado.get("ok") and (resultado.get("links") or resultado.get("hotels")):
+        if len(_cache) >= _CACHE_MAX:
+            _cache.clear()
+        _cache[clave] = (ahora + _CACHE_SECONDS, copy.deepcopy(resultado))
+    return resultado
+
+
+async def _run_borea_tool(
     service: "TripPlannerService", trip: "Trip", name: str, args: dict[str, Any], turn: "_Turn"
 ) -> dict[str, Any]:
     settings = service.settings
@@ -223,7 +286,13 @@ async def run_borea_tool(
         if skill is None:
             return {"ok": False, "error": "No existe esa skill.", "skills": sorted(load_skills())}
         turn.skills.add(skill.name)
-        return {"ok": True, "instrucciones": skill.body, "herramientas": list(skill.tools)}
+        return {
+            "ok": True, "instrucciones": skill.body, "herramientas": list(skill.tools),
+            # Las skills están en español: tras cargarlas, a un usuario francés le
+            # llegó la respuesta en español (banco, 2026-11-02).
+            "idioma": "Estas instrucciones son para ti; a la persona le sigues "
+                      "contestando en su idioma.",
+        }
 
     if name in SKILL_TOOLS and not any(
         name in load_skills()[s].tools for s in turn.skills if s in load_skills()
@@ -331,11 +400,21 @@ async def run_borea_tool(
         }
 
     if name == "buscar_transporte":
-        kind = "car" if str(args.get("tipo") or "") == "coche" else "transport"
+        kind = _TRANSPORT_KINDS.get(str(args.get("tipo") or ""), "transport")
         enlaces, usage = await web_program_links(
             settings, kind, str(args.get("consulta") or ""), trip.city
         )
         turn.referral_usages.append(usage)
+        return {"ok": True, "links": [e.to_dict() for e in enlaces]}
+
+    if name == "buscar_esim":
+        pais = str(args.get("pais") or "").strip()
+        enlaces, usage = await web_program_links(
+            settings, "esim", f"eSIM de datos para viajar a {pais}", pais, max_results=2
+        )
+        turn.referral_usages.append(usage)
+        if not enlaces:
+            return {"ok": False, "error": "No encuentro una eSIM concreta para ese país."}
         return {"ok": True, "links": [e.to_dict() for e in enlaces]}
 
     if name == "buscar_sitios":
@@ -354,22 +433,28 @@ async def run_borea_tool(
         ]}
 
     if name == "buscar_actividades":
-        resultado = await ReferralService(settings).activity_referrals(
-            session_id="", query=str(args.get("consulta") or ""),
-            poi_name=str(args.get("lugar") or ""), city_name=trip.city,
+        consulta = str(args.get("consulta") or "")
+        # GetYourGuide y los demás programas a la vez: en fila sumaban 25-35 s.
+        gyg = ReferralService(settings).activity_referrals(
+            session_id="", query=consulta, poi_name=str(args.get("lugar") or ""),
+            city_name=trip.city,
         )
+        mas_programas = is_configured(settings, "civitatis") or is_configured(settings, "tiqets")
+        if mas_programas:
+            resultado, (otros, usage_otros) = await asyncio.gather(
+                gyg, web_program_links(settings, "activity", consulta, trip.city, max_results=2)
+            )
+        else:
+            resultado, otros, usage_otros = await gyg, [], None
         usage = resultado.pop("_usage", None)
         if usage is not None:
             turn.referral_usages.append(usage)
         resultado = only_concrete(resultado)
-        if is_configured(settings, "civitatis") or is_configured(settings, "tiqets"):
-            otros, usage = await web_program_links(
-                settings, "activity", str(args.get("consulta") or ""), trip.city, max_results=2
-            )
-            turn.referral_usages.append(usage)
-            resultado.setdefault("links", []).extend(
-                e.to_dict() for e in otros if e.program != "getyourguide"
-            )
+        if usage_otros is not None:
+            turn.referral_usages.append(usage_otros)
+        resultado.setdefault("links", []).extend(
+            e.to_dict() for e in otros if e.program != "getyourguide"
+        )
         return resultado
 
     if name == "buscar_equipamiento":

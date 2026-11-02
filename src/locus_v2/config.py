@@ -196,6 +196,10 @@ class Settings(BaseSettings):
     app_android_update_url: str = ""
     app_ios_latest_build: int = 1
     app_ios_update_url: str = ""
+    # La versión mínima de cada app en iPhone, por la versión visible («1.2»), no por
+    # el build, que vuelve a empezar en cada versión. Por debajo, la app se bloquea con
+    # un botón a la App Store. Se cambia aquí, sin desplegar: {"borea": "1.1"}.
+    app_ios_min_versions: dict[str, str] = Field(default_factory=dict)
 
     def android_update_url(self) -> str:
         return self.app_android_update_url or (

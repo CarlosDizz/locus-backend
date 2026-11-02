@@ -13,6 +13,7 @@ from locus_v2.billing.models import Wallet
 from locus_v2.chat.configuration import ChatConfigurationError
 from locus_v2.shared.apps import ClientApp
 from locus_v2.shared.clock import utc_now
+from locus_v2.trips import progress
 from locus_v2.trips.calendar import trip_ics
 from locus_v2.trips.routes import DayRoute, day_route
 from locus_v2.trips.service import TripError, TripPlannerService, TripView
@@ -63,6 +64,28 @@ async def get_trip(
         return planner.view(await planner.get(current_user, trip_id), current_user.id)
     except TripError as error:
         raise _http(error) from error
+
+
+class PlannerStep(BaseModel):
+    kind: str
+    detail: str = ""
+
+
+class PlannerProgress(BaseModel):
+    running: bool
+    steps: list[PlannerStep]
+
+
+@router.get("/{trip_id}/planner/progress", response_model=PlannerProgress)
+async def planner_progress(
+    trip_id: str, planner: PlannerDep, current_user: CurrentUserDep
+) -> PlannerProgress:
+    """Lo que el planificador está haciendo ahora, para enseñarlo mientras se espera."""
+    try:
+        trip = await planner.get(current_user, trip_id)
+    except TripError as error:
+        raise _http(error) from error
+    return PlannerProgress.model_validate(await progress.read(trip.public_id))
 
 
 @router.post("/{trip_id}/locate", response_model=TripView)

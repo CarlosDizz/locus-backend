@@ -17,6 +17,7 @@ from locus_v2.identity.models import AdminSession, UserSession
 from locus_v2.infrastructure.database import models as database_models  # noqa: F401
 from locus_v2.infrastructure.database.session import get_database
 from locus_v2.logging import configure_logging
+from locus_v2.notifications.reminders import send_due_reminders
 from locus_v2.observability.application.service import LocusEventLogger
 from locus_v2.observability.infrastructure.sqlalchemy_repository import (
     SQLAlchemyEventLogRepository,
@@ -160,6 +161,25 @@ async def prune_old_records(stop: asyncio.Event) -> None:
         await _wait_or_stop(stop, PRUNE_EVERY_SECONDS)
 
 
+REMINDERS_EVERY_SECONDS = 600
+
+
+async def send_trip_reminders(stop: asyncio.Event, redis: Redis) -> None:
+    """Los recordatorios del viaje (notifications/reminders.py), cada diez minutos."""
+    settings = get_settings()
+    database = get_database()
+    logger = structlog.get_logger()
+    while not stop.is_set():
+        try:
+            async with database.sessions() as session:
+                sent = await send_due_reminders(session, settings, redis, utc_now())
+            if sent:
+                logger.info("worker_reminders_sent", sent=sent)
+        except Exception:  # noqa: BLE001 - los avisos no pueden tumbar el cobro
+            logger.exception("worker_reminders_failed")
+        await _wait_or_stop(stop, REMINDERS_EVERY_SECONDS)
+
+
 async def _wait_or_stop(stop: asyncio.Event, seconds: float) -> None:
     try:
         await asyncio.wait_for(stop.wait(), timeout=seconds)
@@ -179,7 +199,9 @@ async def run() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
-    await asyncio.gather(process_pending_usage(stop), prune_old_records(stop))
+    await asyncio.gather(
+        process_pending_usage(stop), prune_old_records(stop), send_trip_reminders(stop, redis)
+    )
     await redis.aclose()
     await get_database().close()
 

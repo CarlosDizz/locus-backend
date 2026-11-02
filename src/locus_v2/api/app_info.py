@@ -9,7 +9,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from locus_v2.api.auth import ClientAppDep
 from locus_v2.config import Settings, get_settings
+from locus_v2.shared.apps import ClientApp
 
 router = APIRouter(prefix="/api/app", tags=["app"])
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -33,10 +35,19 @@ class AppVersionResponse(BaseModel):
     # se cambie el importe la pagina de login mienta. Aqui basta con cambiar
     # LOCUS_BILLING_SIGNUP_BONUS_CENTS y reiniciar.
     signup_bonus_cents: int = 0
+    # De la app que pregunta (cabecera X-Locus-App): la versión mínima en iPhone y su
+    # ficha en la App Store. Las apps antiguas no lo leen; las nuevas se bloquean si
+    # su versión es menor.
+    ios_min_version: str = ""
+    ios_store_url: str = ""
 
 
 @router.get("/version", response_model=AppVersionResponse)
-async def app_version(settings: SettingsDep) -> AppVersionResponse:
+async def app_version(settings: SettingsDep, app: ClientAppDep) -> AppVersionResponse:
+    apple_id = (
+        settings.borea_app_store_app_apple_id if app == ClientApp.BOREA
+        else settings.app_store_app_apple_id
+    )
     return AppVersionResponse(
         android=AndroidVersionInfo(
             latest_version_code=settings.app_android_latest_version_code,
@@ -47,4 +58,6 @@ async def app_version(settings: SettingsDep) -> AppVersionResponse:
             update_url=settings.app_ios_update_url,
         ),
         signup_bonus_cents=settings.billing_signup_bonus_cents,
+        ios_min_version=settings.app_ios_min_versions.get(app.value, ""),
+        ios_store_url=f"https://apps.apple.com/app/id{apple_id}",
     )

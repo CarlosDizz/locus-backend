@@ -55,6 +55,17 @@ def load_skills() -> dict[str, Skill]:
     return {skill.name: skill for skill in sorted(skills, key=lambda s: s.name) if skill.name}
 
 
+def skills_text() -> str:
+    """El criterio de todas las skills, entero, para ir en el prompt.
+
+    Cargarlas bajo demanda costaba una ronda del modelo por skill (2-10 s cada una
+    con razonamiento medium) en casi cada mensaje (banco, 2026-11-02). Con la caché
+    de entrada de OpenAI, llevarlas siempre sale más barato que esperar.
+    """
+    partes = [f"### {s.name}\n{s.body}" for s in load_skills().values()]
+    return "Criterio por áreas (síguelo al trabajar en cada una):\n\n" + "\n\n".join(partes)
+
+
 def skills_index() -> str:
     """La lista que va en el prompt: nombre y cuándo usarla, nada más."""
     lines = [f"- {s.name}: {s.description}" for s in load_skills().values()]

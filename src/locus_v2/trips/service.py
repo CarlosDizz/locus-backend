@@ -126,6 +126,29 @@ _ITEM_FIELDS: dict[str, Any] = {
 # el planificador le contesta con tarjetas, que luego decide el creador.
 _WRITE_TOOLS = frozenset({"set_trip_details", "add_items", "update_item", "remove_item"})
 _BOREA_WRITE_TOOLS = frozenset({"recomendar", "quitar_recomendacion", "guardar_clima"})
+
+# Si ni la ronda de cierre consigue texto: mejor esto que una burbuja vacía, que
+# parece que la app se ha colgado.
+_STUCK_REPLY = {
+    "es": "Se me ha atascado esta parte del plan. ¿Me lo vuelves a pedir? Si es mucho de "
+          "golpe, lo hago por tramos.",
+    "en": "I got stuck on this part of the plan. Could you ask me again? If it's a lot at "
+          "once, I'll do it in stages.",
+    "fr": "Je suis resté bloqué sur cette partie du plan. Tu peux me la redemander ? Si "
+          "c'est beaucoup d'un coup, je le fais par étapes.",
+    "it": "Mi sono bloccato su questa parte del piano. Me la richiedi? Se è tanto tutto "
+          "insieme, lo faccio a tappe.",
+    "de": "Bei diesem Teil des Plans bin ich hängen geblieben. Fragst du mich noch einmal? "
+          "Wenn es viel auf einmal ist, mache ich es in Etappen.",
+    "pt": "Fiquei preso nesta parte do plano. Podes pedir-me outra vez? Se for muito de "
+          "uma vez, faço por etapas.",
+    "zh": "这部分计划我卡住了。可以再问我一次吗？如果一次太多，我会分段来做。",
+    "ja": "この部分の計画で行き詰まってしまいました。もう一度お願いできますか？"
+          "一度に多い場合は、区間ごとに進めます。",
+    "ar": "تعثّرت في هذا الجزء من الخطة. هل يمكنك أن تطلبه مني مرة أخرى؟ "
+          "إذا كان كثيرًا دفعة واحدة، فسأعدّه على مراحل.",
+}
+
 # Las que solo buscan y no tocan la base de datos van en paralelo (_run_tools).
 # Lo más que espera una búsqueda: la persona está mirando la pantalla.
 SEARCH_TIMEOUT_SECONDS = 20.0
@@ -144,7 +167,12 @@ TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "city": {"type": "string"},
+                "city": {
+                    "type": "string",
+                    "description": "Un sitio que exista en el mapa: la ciudad o, en un viaje "
+                                   "por varias, la región o el país («Toscana», «Vietnam»). "
+                                   "Nunca una frase.",
+                },
                 "country": {"type": "string"},
                 "starts_at": {"type": "string", "description": "Llegada, AAAA-MM-DDTHH:MM"},
                 "ends_at": {"type": "string", "description": "Salida, AAAA-MM-DDTHH:MM"},
@@ -831,7 +859,10 @@ class TripPlannerService:
         place = place.strip()
         if not place:
             return None
-        ciudad = slugify(trip.city)
+        # Solo si la ciudad del viaje existe en el mapa: en un road trip el planificador
+        # la apuntó como «Côtes italiennes, avec étape à Cernobbio» y, al exigir eso en
+        # la dirección, ninguna parada encontraba su sitio (2026-11-03).
+        ciudad = slugify(trip.city) if trip.center_json else ""
         # El país también: hay un Toledo en Ohio.
         pais = slugify(getattr(trip, "country", "") or "")
         centro = trip.center_json or None
@@ -875,6 +906,10 @@ class TripPlannerService:
             ciudad = await self._locate(
                 trip, f"{trip.city}, {trip.country}".strip(", "), locale=locale
             )
+            if ciudad is None and trip.country:
+                # Un viaje por varias ciudades o una región: al menos el país, para el
+                # tiempo y la hora local de los avisos.
+                ciudad = await self._locate(trip, trip.country, locale=locale)
             if ciudad:
                 trip.center_json = {"lat": ciudad["lat"], "lng": ciudad["lng"]}
 
@@ -1045,13 +1080,18 @@ class TripPlannerService:
                     model=primary.model,
                     instructions=self._instructions(primary.prompt, trip, user, locale),
                     input_items=cierre,
-                    options=primary.provider_options,
+                    # Con poco razonamiento: con el de siempre, la ronda de cierre volvía
+                    # a gastarse la salida pensando y la respuesta seguía vacía.
+                    options={**primary.provider_options, "reasoning_effort": "low"},
                     tools=None,
                     previous_response_id=result.raw_response_id,
                 )
                 rounds += 1
                 usage = _add_usage(usage, result.usage, result.web_search_calls)
                 reply = result.text
+            if not reply.strip():
+                logger.warning("trip_planner_empty_reply", trace_id=trace_id, rounds=rounds)
+                reply = _STUCK_REPLY.get(locale.split("-", 1)[0].lower(), _STUCK_REPLY["en"])
         finally:
             await adapter.close()
             await progress.finish(trip.public_id)

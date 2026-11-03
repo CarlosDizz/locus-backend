@@ -483,3 +483,34 @@ async def test_a_unique_id_prefix_still_finds_the_item() -> None:
 
     assert salida["ok"] is True
     assert trip.items[0].time == "14:59"
+
+
+async def test_a_road_trip_whose_city_is_a_phrase_still_finds_its_stops(monkeypatch) -> None:
+    """Michel (2026-11-03): la ciudad era «Côtes italiennes, avec étape à Cernobbio» y
+    ninguna parada encontraba su sitio. Sin centro, la ciudad no filtra; el país sí."""
+    _places(monkeypatch, [
+        _resultado("Hotel Il Gatto", "Via al Carmelo 3, 16035 Rapallo GE, Italie"),
+    ])
+    servicio, session = _servicio()
+    trip = Trip(user_id=1, city="Côtes italiennes, avec étape à Cernobbio", country="Italie",
+                conversation_json=[], items=[])
+
+    mapa = await servicio._locate(trip, "Hotel Il Gatto, Rapallo")
+
+    assert mapa is not None and mapa["name"] == "Hotel Il Gatto"
+
+
+async def test_a_road_trip_still_rejects_another_country(monkeypatch) -> None:
+    _places(monkeypatch, [_resultado("Hotel Il Gatto", "Rue du Chat 3, Bruxelles, Belgique")])
+    servicio, session = _servicio()
+    trip = Trip(user_id=1, city="Côtes italiennes", country="Italie",
+                conversation_json=[], items=[])
+
+    assert await servicio._locate(trip, "Hotel Il Gatto, Rapallo") is None
+
+
+def test_the_stuck_reply_exists_in_every_language() -> None:
+    from locus_v2.shared.prompting import LANGUAGE_NAMES
+    from locus_v2.trips.service import _STUCK_REPLY
+
+    assert set(LANGUAGE_NAMES) <= set(_STUCK_REPLY)

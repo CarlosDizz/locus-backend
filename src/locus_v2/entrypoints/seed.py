@@ -352,15 +352,22 @@ CHAT_SEED_OWNED_RUNTIME = ("max_output_tokens", "reasoning_effort")
 # depender de un vuelo desde Phú Quốc el día de salida) a cambio de un 20-40 % más
 # de espera. Locus Guide sigue en «low».
 BOREA_REASONING_EFFORT = "medium"
+# Con «medium», «planifie tout» en un road trip de doce días se comía los 4000 de
+# salida razonando, dos veces seguidas (la ronda de cierre también), y la persona
+# se quedaba sin respuesta (2026-11-03). Solo se paga lo que se usa.
+BOREA_MAX_OUTPUT_TOKENS = 12000
 
 
 def _own_chat_runtime(
-    current: dict[str, Any] | None, reasoning_effort: str | None = None
+    current: dict[str, Any] | None, reasoning_effort: str | None = None,
+    max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     runtime = dict(current or CHAT_RUNTIME_DEFAULTS)
     runtime.update({key: CHAT_RUNTIME_DEFAULTS[key] for key in CHAT_SEED_OWNED_RUNTIME})
     if reasoning_effort:
         runtime["reasoning_effort"] = reasoning_effort
+    if max_output_tokens:
+        runtime["max_output_tokens"] = max_output_tokens
     return runtime
 
 # Condensed from V1's app/prompts/chat_agent.json. What did NOT survive the port
@@ -1663,7 +1670,9 @@ async def seed() -> None:
                 content=BOREA_PLANNER_PROMPT,
                 variables_json={"required": []},
                 tools_json=[],
-                runtime_config_json=_own_chat_runtime(None, BOREA_REASONING_EFFORT),
+                runtime_config_json=_own_chat_runtime(
+                    None, BOREA_REASONING_EFFORT, BOREA_MAX_OUTPUT_TOKENS
+                ),
                 published_at=utc_now(),
             )
             session.add(borea_prompt)
@@ -1686,7 +1695,8 @@ async def seed() -> None:
             if borea_prompt is not None:
                 borea_prompt.content = BOREA_PLANNER_PROMPT
                 borea_prompt.runtime_config_json = _own_chat_runtime(
-                    borea_prompt.runtime_config_json, BOREA_REASONING_EFFORT
+                    borea_prompt.runtime_config_json, BOREA_REASONING_EFFORT,
+                    BOREA_MAX_OUTPUT_TOKENS,
                 )
 
         await session.commit()

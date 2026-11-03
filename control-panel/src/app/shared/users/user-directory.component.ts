@@ -22,6 +22,7 @@ export class UserDirectoryComponent {
   readonly total = signal(0);
   query = '';
   status = '';
+  app = '';
 
   constructor() { this.load(); }
 
@@ -30,6 +31,7 @@ export class UserDirectoryComponent {
     this.error.set(null);
     let params = new HttpParams().set('q', this.query.trim());
     if (this.status) params = params.set('user_status', this.status);
+    if (this.app) params = params.set('app', this.app);
     this.http.get<AdminUserList>('/admin/v2/users', { params }).subscribe({
       next: (result) => {
         this.users.set(result.items);
@@ -58,6 +60,10 @@ export class UserDirectoryComponent {
   }
 
   close(): void { this.selected.set(null); }
+
+  appName(app: string): string {
+    return app === 'borea' ? 'Borea' : 'Locus';
+  }
 
   initials(user: AdminUserSummary): string {
     return user.display_name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();

@@ -9,6 +9,7 @@
 
 <form class="filters" (submit)="$event.preventDefault(); load()">
   <label><span>Buscar</span><input name="query" [(ngModel)]="query" placeholder="Nombre o correo"></label>
+  <label><span>App</span><select name="app" [(ngModel)]="app"><option value="">Todas</option><option value="borea">Borea</option><option value="guide">Locus</option></select></label>
   <label><span>Estado</span><select name="status" [(ngModel)]="status"><option value="">Todos</option><option value="active">Activos</option><option value="blocked">Bloqueados</option><option value="deleted">Eliminados</option></select></label>
   <button type="submit">Encontrar</button>
 </form>
@@ -18,11 +19,13 @@
   <section class="loading">Ordenando la comunidad...</section>
 } @else {
   <section class="user-table" aria-label="Usuarios">
-    <div class="table-head"><span>Persona</span><span>Acceso</span><span>Saldo</span><span>Llamadas</span><span>Alta</span></div>
+    <div class="table-head"><span>Persona</span><span>Llegó por</span><span>Acceso</span><span>Viajes</span><span>Saldo</span><span>Llamadas</span><span>Alta</span></div>
     @for (user of users(); track user.id) {
       <button type="button" class="user-row" (click)="open(user)">
         <span class="identity"><i>{{ initials(user) }}</i><span><strong>{{ user.display_name }}</strong><small>{{ user.email }}</small></span></span>
+        <span><b class="app" [class.borea]="user.signup_app === 'borea'">{{ appName(user.signup_app) }}</b></span>
         <span><b class="status" [class.blocked]="user.status !== 'active'"><i></i>{{ user.status }}</b><small>{{ user.auth_provider }} · {{ user.locale }}</small></span>
+        <strong>{{ user.trip_count }}</strong>
         <strong>{{ money(user.balance_cents) }}</strong>
         <strong>{{ user.voice_sessions }}</strong>
         <span>{{ user.created_at | date:'d MMM y' }}</span>
@@ -37,8 +40,25 @@
   <div class="backdrop" (click)="close()"></div>
   <aside class="detail" aria-label="Ficha de usuario">
     <button type="button" class="close" (click)="close()" aria-label="Cerrar ficha">×</button>
-    <div class="profile"><i>{{ initials(user) }}</i><p class="eyebrow">FICHA DE USUARIO</p><h2>{{ user.display_name }}</h2><a [href]="'mailto:' + user.email">{{ user.email }}</a><div class="roles">@for(role of user.roles; track role){<span>{{ role }}</span>}</div></div>
+    <div class="profile"><i>{{ initials(user) }}</i><p class="eyebrow">FICHA DE USUARIO</p><h2>{{ user.display_name }}</h2><a [href]="'mailto:' + user.email">{{ user.email }}</a><p class="came">Llegó por <b class="app" [class.borea]="user.signup_app === 'borea'">{{ appName(user.signup_app) }}</b> · {{ user.created_at | date:'d MMM y, HH:mm' }}</p><div class="roles">@for(role of user.roles; track role){<span>{{ role }}</span>}</div></div>
     <div class="detail-metrics"><article><span>Saldo</span><strong>{{ money(user.balance_cents) }}</strong></article><article><span>Llamadas</span><strong>{{ user.voice_sessions }}</strong></article><article><span>Cobrado</span><strong>{{ money(user.charged_amount_cents) }}</strong></article><article><span>Coste</span><strong>{{ money(user.provider_cost_eur_cents) }}</strong></article></div>
+    <section>
+      <p class="eyebrow">VIAJES</p>
+      @for (trip of user.trips; track trip.id) {
+        <div class="trip">
+          <span>
+            <strong>{{ trip.city || 'Sin destino aún' }}</strong>
+            <small>
+              @if (trip.starts_on) { {{ trip.starts_on | date:'d MMM' }}@if (trip.ends_on && trip.ends_on !== trip.starts_on) { – {{ trip.ends_on | date:'d MMM y' }} } } @else { Sin fechas }
+            </small>
+            <small>@if (trip.travelers) { {{ trip.travelers }} · }{{ trip.stops }} paradas · {{ trip.booked }} reservas</small>
+          </span>
+          <span class="trip-side">@for (app of trip.apps; track app) {<b class="app" [class.borea]="app === 'borea'">{{ appName(app) }}</b>}<i>creado {{ trip.created_at | date:'d MMM' }}</i></span>
+        </div>
+      } @empty {
+        <p class="empty-line">Todavía no ha creado ningún viaje.</p>
+      }
+    </section>
     <section><p class="eyebrow">ÚLTIMAS LLAMADAS</p>@for(call of user.recent_voice_sessions;track call.id){<div class="activity"><i></i><span><strong>{{ call.context_type }} · {{ call.locale }}</strong><small>{{ (call.started_at || call.ended_at) | date:'d MMM, HH:mm' }}</small></span><b>{{ call.status }}</b></div>}@empty{<p class="empty-line">Todavía no hay llamadas.</p>}</section>
     <section><p class="eyebrow">MOVIMIENTOS</p>@for(entry of user.ledger_entries;track entry.id){<div class="activity ledger"><i></i><span><strong>{{ entry.description }}</strong><small>{{ entry.created_at | date:'d MMM, HH:mm' }}</small></span><b [class.positive]="entry.amount_cents > 0">{{ money(entry.amount_cents) }}</b></div>}@empty{<p class="empty-line">Todavía no hay movimientos.</p>}</section>
     <footer><span>ID público</span><code>{{ user.public_id }}</code></footer>

@@ -5,11 +5,13 @@ export interface AdminUserSummary {
   avatar_url: string | null;
   auth_provider: string;
   locale: string;
+  signup_app: string;
   status: string;
   roles: string[];
   balance_cents: number;
   voice_sessions: number;
   charged_amount_cents: number;
+  trip_count: number;
   created_at: string;
 }
 
@@ -38,6 +40,18 @@ export interface LedgerEntrySummary {
   created_at: string;
 }
 
+export interface TripSummary {
+  id: string;
+  city: string;
+  apps: string[];
+  travelers: string;
+  starts_on: string | null;
+  ends_on: string | null;
+  stops: number;
+  booked: number;
+  created_at: string;
+}
+
 export interface AdminUserDetail extends AdminUserSummary {
   public_id: string;
   legacy_v1_id: number | null;
@@ -46,4 +60,5 @@ export interface AdminUserDetail extends AdminUserSummary {
   provider_cost_eur_cents: number;
   recent_voice_sessions: VoiceSessionSummary[];
   ledger_entries: LedgerEntrySummary[];
+  trips: TripSummary[];
 }

@@ -17,6 +17,7 @@ from locus_v2.identity.models import AdminSession, UserSession
 from locus_v2.infrastructure.database import models as database_models  # noqa: F401
 from locus_v2.infrastructure.database.session import get_database
 from locus_v2.logging import configure_logging
+from locus_v2.notifications.admin import notify_new_users
 from locus_v2.notifications.reminders import send_due_reminders
 from locus_v2.observability.application.service import LocusEventLogger
 from locus_v2.observability.infrastructure.sqlalchemy_repository import (
@@ -180,6 +181,25 @@ async def send_trip_reminders(stop: asyncio.Event, redis: Redis) -> None:
         await _wait_or_stop(stop, REMINDERS_EVERY_SECONDS)
 
 
+ADMIN_NOTICES_EVERY_SECONDS = 60
+
+
+async def send_admin_notices(stop: asyncio.Event, redis: Redis) -> None:
+    """Las cuentas nuevas, al móvil del administrador (notifications/admin.py)."""
+    settings = get_settings()
+    database = get_database()
+    logger = structlog.get_logger()
+    while not stop.is_set():
+        try:
+            async with database.sessions() as session:
+                sent = await notify_new_users(session, settings, redis)
+            if sent:
+                logger.info("worker_admin_notices_sent", sent=sent)
+        except Exception:  # noqa: BLE001 - los avisos no pueden tumbar el cobro
+            logger.exception("worker_admin_notices_failed")
+        await _wait_or_stop(stop, ADMIN_NOTICES_EVERY_SECONDS)
+
+
 async def _wait_or_stop(stop: asyncio.Event, seconds: float) -> None:
     try:
         await asyncio.wait_for(stop.wait(), timeout=seconds)
@@ -200,7 +220,8 @@ async def run() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
     await asyncio.gather(
-        process_pending_usage(stop), prune_old_records(stop), send_trip_reminders(stop, redis)
+        process_pending_usage(stop), prune_old_records(stop), send_trip_reminders(stop, redis),
+        send_admin_notices(stop, redis),
     )
     await redis.aclose()
     await get_database().close()

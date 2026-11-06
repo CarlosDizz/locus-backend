@@ -54,3 +54,18 @@ async def test_not_on_every_request() -> None:
     assert await servicio.authenticate("token") is not None
     assert sesion.expires_at == vence
     assert session.commits == 0
+
+
+async def test_the_app_version_is_kept_when_it_changes() -> None:
+    # Desde Borea 1.2 la app manda su versión: así se sabe quién sigue en una vieja.
+    ahora = utc_now()
+    sesion = SimpleNamespace(
+        user_id=1, last_seen_at=ahora, expires_at=ahora + timedelta(days=30), app_version="1.1"
+    )
+    servicio, session = _servicio(sesion)
+
+    assert await servicio.authenticate("token", "1.2") is not None
+    assert (sesion.app_version, session.commits) == ("1.2", 1)
+    session.resultados = [sesion, SimpleNamespace(id=1)]
+    assert await servicio.authenticate("token", "1.2") is not None
+    assert session.commits == 1

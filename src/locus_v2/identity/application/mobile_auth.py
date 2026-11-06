@@ -162,7 +162,9 @@ class MobileAuthService:
         raw_token = await self._create_session(user, user_agent)
         return self._view(user), raw_token
 
-    async def authenticate(self, raw_token: str | None) -> User | None:
+    async def authenticate(
+        self, raw_token: str | None, app_version: str | None = None
+    ) -> User | None:
         if not raw_token:
             return None
         now = utc_now()
@@ -180,6 +182,10 @@ class MobileAuthService:
         )
         if user is None:
             return None
+        version = (app_version or "").strip()[:20]
+        if version and auth_session.app_version != version:
+            auth_session.app_version = version
+            await self.session.commit()
         if now - auth_session.last_seen_at > timedelta(minutes=5):
             auth_session.last_seen_at = now
             # La sesion se renueva con el uso: caduca a los MOBILE_SESSION_DAYS

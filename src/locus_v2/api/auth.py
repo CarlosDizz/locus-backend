@@ -109,9 +109,13 @@ async def get_current_user_required(
     session: SessionDep,
     settings: SettingsDep,
     authorization: str | None = Header(default=None),
+    x_app_version: str | None = Header(default=None),
 ) -> User:
     token = _extract_bearer(authorization)
-    user = await MobileAuthService(session, settings).authenticate(token) if token else None
+    user = (
+        await MobileAuthService(session, settings).authenticate(token, x_app_version)
+        if token else None
+    )
     if user is None:
         raise HTTPException(status_code=401, detail="Autenticación requerida")
     return user
@@ -124,11 +128,12 @@ async def get_current_user_optional(
     session: SessionDep,
     settings: SettingsDep,
     authorization: str | None = Header(default=None),
+    x_app_version: str | None = Header(default=None),
 ) -> User | None:
     token = _extract_bearer(authorization)
     if not token:
         return None
-    return await MobileAuthService(session, settings).authenticate(token)
+    return await MobileAuthService(session, settings).authenticate(token, x_app_version)
 
 
 OptionalUserDep = Annotated[User | None, Depends(get_current_user_optional)]

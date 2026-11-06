@@ -119,6 +119,8 @@ class UserSession(TimestampMixin, Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime())
     user_agent: Mapped[str | None] = mapped_column(String(500))
+    # La versión de la app (cabecera X-App-Version, desde Borea 1.2); las anteriores no la mandan.
+    app_version: Mapped[str | None] = mapped_column(String(20))
 
 
 class AdminSession(TimestampMixin, Base):
